@@ -1,0 +1,58 @@
+[
+  {
+    "candidate_name": "Fictional Beauty by Ada",
+    "business_name": "Fictional Beauty by Ada",
+    "city": "Port Harcourt",
+    "country": "Nigeria",
+    "phone": "+234 800 000 0001",
+    "instagram_url": "https://instagram.example.invalid/beautybyada",
+    "address": "Fictional address only",
+    "services": ["Braiding", "Makeup"],
+    "activity_signal": "recent public social update in fixture",
+    "source_url": "https://research.example.invalid/beauty-by-ada"
+  },
+  {
+    "candidate_name": "Fictional Glow Studio",
+    "business_name": "Fictional Glow Studio",
+    "city": "Port Harcourt",
+    "country": "Nigeria",
+    "facebook_url": "https://facebook.example.invalid/fictionalglow",
+    "services": ["Facials"],
+    "activity_signal": "current services listed in fixture",
+    "website_observation": {
+      "source_url": "https://inspection.example.invalid/glow",
+      "load": "loaded",
+      "correct_business": true,
+      "mobile_friendly": false,
+      "poor_mobile": true,
+      "missing_contact": true
+    },
+    "source_url": "https://research.example.invalid/fictional-glow"
+  },
+  {
+    "candidate_name": "Fictional Modern Salon",
+    "business_name": "Fictional Modern Salon",
+    "city": "Port Harcourt",
+    "country": "Nigeria",
+    "instagram_url": "https://instagram.example.invalid/fictionalmodern",
+    "activity_signal": "recent public social update in fixture",
+    "website_observation": {
+      "source_url": "https://inspection.example.invalid/modern",
+      "load": "loaded",
+      "correct_business": true,
+      "mobile_friendly": true,
+      "clear_navigation": true,
+      "clear_services": true,
+      "easy_contact": true,
+      "clear_cta": true
+    },
+    "source_url": "https://research.example.invalid/fictional-modern"
+  },
+  {
+    "candidate_name": "Fictional Unverified Salon",
+    "business_name": "Different Fictional Salon",
+    "city": "Lagos",
+    "country": "Nigeria",
+    "source_url": "https://research.example.invalid/different-salon"
+  }
+]

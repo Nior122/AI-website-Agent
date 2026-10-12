@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-website-agent.local/schemas/scout-job.schema.json",
+  "title": "Scout Job Result",
+  "description": "Portable record for a recoverable Scout Agent run. This records candidate output, not a persistence implementation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["job_id", "status", "target", "started_at", "source_counts", "candidate_count", "deduplicated_count", "errors", "leads"],
+  "properties": {
+    "job_id": { "type": "string" },
+    "status": { "type": "string", "enum": ["pending", "running", "completed", "partial", "failed"] },
+    "target": { "type": "object" },
+    "started_at": { "type": "string", "format": "date-time" },
+    "completed_at": { "type": ["string", "null"], "format": "date-time" },
+    "source_counts": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+    "candidate_count": { "type": "integer", "minimum": 0 },
+    "deduplicated_count": { "type": "integer", "minimum": 0 },
+    "errors": { "type": "array", "items": { "type": "string" } },
+    "leads": { "type": "array", "description": "Normalized candidate leads. Map them to the persistent lead schema only after later-phase review." }
+  }
+}

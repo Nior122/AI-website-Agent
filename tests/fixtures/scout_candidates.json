@@ -1,0 +1,50 @@
+[
+  {
+    "business_name": "Fictional Beauty by Ada",
+    "niche": "Beauty salons",
+    "city": "Port Harcourt",
+    "country": "Nigeria",
+    "instagram_url": "https://instagram.example.invalid/beautybyada",
+    "phone": "+234 800 000 0001",
+    "services": ["Braiding", "Makeup"],
+    "description": "Fictional fixture only; not a real business.",
+    "source_url": "https://directory.example.invalid/beauty-by-ada"
+  },
+  {
+    "business_name": "Fictional Beauty By Ada - Port Harcourt",
+    "niche": "Beauty salons",
+    "city": "Port Harcourt",
+    "country": "Nigeria",
+    "instagram_url": "https://instagram.example.invalid/beautybyada",
+    "opening_hours": "Mon-Sat 09:00-18:00",
+    "source_url": "https://social.example.invalid/beautybyada"
+  },
+  {
+    "business_name": "Fictional Glow Studio",
+    "niche": "Beauty salons",
+    "city": "Port Harcourt",
+    "country": "Nigeria",
+    "website": "https://glow.example.invalid",
+    "website_status": "outdated",
+    "facebook_url": "https://facebook.example.invalid/fictionalglow",
+    "services": ["Facials"],
+    "source_url": "https://directory.example.invalid/fictional-glow"
+  },
+  {
+    "business_name": "Fictional Modern Salon",
+    "niche": "Beauty salons",
+    "city": "Port Harcourt",
+    "country": "Nigeria",
+    "website": "https://modern.example.invalid",
+    "website_status": "professional",
+    "instagram_url": "https://instagram.example.invalid/fictionalmodern",
+    "source_url": "https://directory.example.invalid/fictional-modern"
+  },
+  {
+    "business_name": "Fictional Unverified Salon",
+    "niche": "Beauty salons",
+    "city": "Port Harcourt",
+    "country": "Nigeria",
+    "source_url": "https://directory.example.invalid/fictional-unverified"
+  }
+]

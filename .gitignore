@@ -1,0 +1,30 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+config/system.settings.local.json
+
+# Local lead/job data and exports (the placeholder files remain tracked)
+data/leads/*
+!data/leads/.gitkeep
+data/tracking/
+jobs/*
+!jobs/.gitkeep
+
+# Dependencies, build output, logs, and OS/editor files
+node_modules/
+dist/
+build/
+coverage/
+output/
+.vercel/
+*.log
+__pycache__/
+*.py[cod]
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+.vercel
+.env*

@@ -1,0 +1,19 @@
+{
+  "businessName": "Fictional Beauty by Ada",
+  "normalizedBusinessName": "fictionalbeautybyada",
+  "niche": "Beauty salons",
+  "location": { "city": "Port Harcourt", "country": "Nigeria", "address": null },
+  "contact": { "phone": "+234 800 000 0001", "email": null, "whatsapp": null },
+  "originalWebsite": null,
+  "social": { "instagramUrl": "https://instagram.example.invalid/beautybyada", "facebookUrl": null, "otherSocialUrls": [] },
+  "sourceUrls": ["https://directory.example.invalid/beauty-by-ada", "https://instagram.example.invalid/beautybyada"],
+  "fieldSources": {
+    "businessName": ["https://directory.example.invalid/beauty-by-ada"],
+    "niche": ["https://directory.example.invalid/beauty-by-ada"],
+    "location": ["https://directory.example.invalid/beauty-by-ada"],
+    "contact": ["https://directory.example.invalid/beauty-by-ada"],
+    "social": ["https://directory.example.invalid/beauty-by-ada"],
+    "publicBusinessInformation": ["https://directory.example.invalid/beauty-by-ada"]
+  },
+  "publicBusinessInformation": { "servicesOrProducts": ["Braiding", "Makeup"], "description": "Fictional fixture only; not a real business.", "openingHours": "Mon-Sat 09:00-18:00" }
+}

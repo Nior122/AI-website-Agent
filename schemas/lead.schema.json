@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-website-agent.local/schemas/lead.schema.json",
+  "title": "AI Website Agent Lead Record",
+  "description": "Initial provider- and database-neutral lead record. Only record legitimate public business information with source context; do not fabricate unknown values.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "businessName", "location", "leadStatus", "agentTaskStatus", "dateDiscovered", "lastUpdated"],
+  "properties": {
+    "id": { "type": "string", "description": "Stable lead identifier selected by the future storage layer." },
+    "businessName": { "type": "string", "minLength": 1 },
+    "normalizedBusinessName": { "type": ["string", "null"], "description": "Deterministic matching aid; never a replacement for the original business name." },
+    "niche": { "type": ["string", "null"] },
+    "location": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["city", "country"],
+      "properties": {
+        "city": { "type": ["string", "null"] },
+        "country": { "type": ["string", "null"] },
+        "address": { "type": ["string", "null"] }
+      }
+    },
+    "originalWebsite": { "type": ["string", "null"], "format": "uri" },
+    "websiteStatus": { "type": ["string", "null"], "enum": ["none_known", "unknown", "professional", "outdated", "poor", "basic", null] },
+    "social": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "instagramUrl": { "type": ["string", "null"], "format": "uri" },
+        "facebookUrl": { "type": ["string", "null"], "format": "uri" },
+        "otherSocialUrls": { "type": "array", "items": { "type": "string", "format": "uri" }, "uniqueItems": true },
+        "whatsapp": { "type": ["string", "null"] }
+      }
+    },
+    "contact": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "phone": { "type": ["string", "null"] },
+        "email": { "type": ["string", "null"], "format": "email" }
+      }
+    },
+    "sourceUrls": { "type": "array", "items": { "type": "string", "format": "uri" }, "uniqueItems": true },
+    "discoverySources": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "fieldSources": { "type": "object", "additionalProperties": { "type": "array", "items": { "type": "string", "format": "uri" }, "uniqueItems": true } },
+    "publicBusinessInformation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "servicesOrProducts": { "type": "array", "items": { "type": "string" } },
+        "description": { "type": ["string", "null"] },
+        "openingHours": { "type": ["string", "null"] },
+        "brandNotes": { "type": ["string", "null"] },
+        "assetReferences": { "type": "array", "items": { "type": "string", "format": "uri" } }
+      }
+    },
+    "leadStatus": { "type": "string", "enum": ["discovered", "researching", "qualified", "not_qualified", "on_hold", "completed", "failed"] },
+    "qualificationReason": { "type": ["string", "null"] },
+    "qualificationStatus": { "type": ["string", "null"], "enum": ["qualified", "lower_priority", "needs_review", "skipped", null] },
+    "onlinePresenceScore": { "type": ["integer", "null"], "minimum": 0, "maximum": 5 },
+    "websiteOpportunityScore": { "type": ["integer", "null"], "minimum": 0, "maximum": 4 },
+    "confidence": { "type": ["string", "null"], "enum": ["low", "medium", "high", null] },
+    "discoveredAt": { "type": ["string", "null"], "format": "date-time" },
+    "lastCheckedAt": { "type": ["string", "null"], "format": "date-time" },
+    "research": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": { "type": "string", "enum": ["pending", "running", "completed", "partial", "failed"] },
+        "startedAt": { "type": ["string", "null"], "format": "date-time" },
+        "completedAt": { "type": ["string", "null"], "format": "date-time" },
+        "researchSources": { "type": "array", "items": { "type": "string", "format": "uri" }, "uniqueItems": true },
+        "verifiedFacts": { "type": "array", "items": { "type": "object", "required": ["field", "value", "sourceUrls"], "properties": { "field": { "type": "string" }, "value": {}, "sourceUrls": { "type": "array", "items": { "type": "string", "format": "uri" } } } } },
+        "inferences": { "type": "array", "items": { "type": "object" } },
+        "uncertainties": { "type": "array", "items": { "type": "object" } },
+        "identity": { "type": "object" },
+        "websiteEvaluation": { "type": "object", "properties": { "status": { "type": "string", "enum": ["NO_WEBSITE", "WEBSITE_UNAVAILABLE", "WEBSITE_BASIC", "WEBSITE_OUTDATED", "WEBSITE_NEEDS_IMPROVEMENT", "WEBSITE_MODERN", "UNKNOWN"] } } },
+        "businessActivity": { "type": "object" },
+        "opportunityFactors": { "type": "object" },
+        "qualificationStatus": { "type": "string", "enum": ["QUALIFIED", "REVIEW", "SKIP"] },
+        "qualificationReason": { "type": ["string", "null"] },
+        "qualificationConfidence": { "type": ["string", "null"], "enum": ["low", "medium", "high", null] },
+        "errors": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "preview": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "url": { "type": ["string", "null"], "format": "uri" },
+        "deploymentStatus": { "type": ["string", "null"], "enum": ["not_started", "pending", "deployed", "failed", null] },
+        "vercelProject": { "type": ["string", "null"] },
+        "deploymentProvider": { "type": ["string", "null"] }
+      }
+    },
+    "outreachStatus": { "type": "string", "enum": ["not_started", "draft_prepared", "awaiting_authorization", "sent", "responded", "do_not_contact"] },
+    "dateDiscovered": { "type": "string", "format": "date-time" },
+    "lastUpdated": { "type": "string", "format": "date-time" },
+    "notes": { "type": "array", "items": { "type": "string" } },
+    "errors": { "type": "array", "items": { "type": "string" } },
+    "agentTaskStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": { "type": "string", "enum": ["queued", "in_progress", "needs_review", "failed", "retryable", "skipped", "completed", "cancelled"] },
+        "currentJob": { "type": ["string", "null"] },
+        "assignedAgent": { "type": ["string", "null"] },
+        "retryCount": { "type": "integer", "minimum": 0 },
+        "lastError": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

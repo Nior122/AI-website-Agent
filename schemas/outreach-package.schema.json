@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Draft Outreach Package",
+  "description": "A local, reviewable outreach draft. This contract has no sending or transport fields.",
+  "type": "object",
+  "required": ["outreach_id", "project_id", "lead_id", "channel", "draft_message", "preview_url", "personalization_points", "status", "generated_at"],
+  "properties": {
+    "outreach_id": {"type": "string"},
+    "project_id": {"type": "string"},
+    "lead_id": {"type": "string"},
+    "build_id": {"type": "string"},
+    "deployment_id": {"type": "string"},
+    "channel": {"enum": ["EMAIL", "WHATSAPP", "INSTAGRAM", "FACEBOOK", "LINKEDIN", "SMS", "OTHER"]},
+    "recipient": {"type": ["string", "null"], "description": "A pre-existing public contact value only; it is never inferred."},
+    "subject": {"type": ["string", "null"]},
+    "draft_message": {"type": "string"},
+    "preview_url": {"type": "string", "format": "uri"},
+    "personalization_points": {"type": "array", "items": {"type": "object", "required": ["claim", "source_urls", "confidence"]}},
+    "status": {"enum": ["AWAITING_REVIEW", "CHANGES_REQUESTED", "REJECTED", "READY_TO_SEND"]},
+    "revision_of": {"type": ["string", "null"]},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "reviewed_at": {"type": ["string", "null"], "format": "date-time"},
+    "review_notes": {"type": ["string", "null"]}
+  },
+  "additionalProperties": false
+}

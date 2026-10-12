@@ -1,0 +1,18 @@
+{
+  "demo": true,
+  "business_name": "Demo Riverside Kitchen",
+  "category": "restaurant",
+  "city": "Port Harcourt",
+  "address": "Fictional address, Port Harcourt",
+  "description": "A fictional restaurant used only to demonstrate the reusable template system.",
+  "phone": "+234 800 000 0002",
+  "whatsapp": null,
+  "opening_hours": "Daily, 11:00–22:00",
+  "menu_items": [
+    { "name": "Signature Rice Bowl", "description": "Fictional menu description.", "price": "₦0 demo price" },
+    { "name": "Grilled Plantain Plate", "description": "Fictional menu description.", "price": "₦0 demo price" }
+  ],
+  "images": [],
+  "brand": { "primary_color": "#9a3412", "secondary_color": "#fff7ed", "accent_color": "#0f766e" },
+  "content": { "hero_title": "Made for your table", "hero_subtitle": "Fictional restaurant demo content; no real menu or pricing is represented." }
+}

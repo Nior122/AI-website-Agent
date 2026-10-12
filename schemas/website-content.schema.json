@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-website-agent.local/schemas/website-content.schema.json",
+  "title": "Generated Website Content",
+  "description": "Provider-neutral content contract. All non-null values must be grounded in verified business data.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["hero_title", "hero_subtitle", "cta"],
+  "properties": {
+    "hero_title": { "type": "string", "minLength": 1 },
+    "hero_subtitle": { "type": ["string", "null"] },
+    "about_title": { "type": ["string", "null"] },
+    "about_text": { "type": ["string", "null"] },
+    "cta": { "type": "object", "properties": { "whatsapp": { "type": ["string", "null"] }, "phone": { "type": ["string", "null"] } } }
+  }
+}

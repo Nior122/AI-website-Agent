@@ -1,0 +1,127 @@
+{
+  "lead_id": "fictional-lagos-fresh-kitchen-001",
+  "demo": false,
+  "data_classification": "TEST_FIXTURE",
+  "candidate": {
+    "candidate_id": "fictional-candidate-lagos-fresh-kitchen",
+    "businessName": "Lagos Fresh Kitchen — FICTIONAL TEST BUSINESS",
+    "niche": "Restaurant",
+    "location": {
+      "city": "Lagos",
+      "country": "Nigeria",
+      "address": "Fictional Test Kitchen Street, Test Area, Lagos"
+    },
+    "contact": {
+      "phone": "+234 800 000 0099",
+      "whatsapp": "+234 800 000 0099"
+    },
+    "social": {
+      "instagramUrl": "https://instagram.example.invalid/lagosfreshkitchen",
+      "facebookUrl": "https://facebook.example.invalid/lagosfreshkitchen"
+    },
+    "publicBusinessInformation": {
+      "description": "A fictional Nigerian restaurant used exclusively for software testing.",
+      "openingHours": "Mon-Sun, 10:00-21:00",
+      "servicesOrProducts": [
+        {
+          "name": "Lagos Jollof Plate",
+          "description": "Fictional smoky jollof with a bright, spiced test-side pairing",
+          "price": "₦2,500 [TEST]"
+        },
+        {
+          "name": "Grilled Fish & Plantain",
+          "description": "Fictional grilled fish with a golden plantain accompaniment",
+          "price": "₦4,000 [TEST]"
+        },
+        {
+          "name": "Golden Plantain Bites",
+          "description": "Fictional crisp plantain bites with a subtle spice finish",
+          "price": "₦800 [TEST]"
+        }
+      ]
+    },
+    "sourceUrls": [
+      "https://fixture.example.invalid/lagos-fresh-kitchen-source-1",
+      "https://fixture.example.invalid/lagos-fresh-kitchen-source-2"
+    ],
+    "websiteStatus": "outdated",
+    "dataClassification": "TEST_FIXTURE"
+  },
+  "research": {
+    "qualificationStatus": "QUALIFIED",
+    "verifiedFacts": [
+      {
+        "field": "businessName",
+        "value": "Lagos Fresh Kitchen — FICTIONAL TEST BUSINESS",
+        "sourceUrls": [
+          "https://fixture.example.invalid/lagos-fresh-kitchen-source-1"
+        ]
+      },
+      {
+        "field": "location",
+        "value": {
+          "city": "Lagos",
+          "country": "Nigeria",
+          "address": "Fictional Test Kitchen Street, Test Area, Lagos"
+        },
+        "sourceUrls": [
+          "https://fixture.example.invalid/lagos-fresh-kitchen-source-1"
+        ]
+      },
+      {
+        "field": "contact",
+        "value": {
+          "phone": "+234 800 000 0099",
+          "whatsapp": "+234 800 000 0099"
+        },
+        "sourceUrls": [
+          "https://fixture.example.invalid/lagos-fresh-kitchen-source-1"
+        ]
+      },
+      {
+        "field": "address",
+        "value": "Fictional Test Kitchen Street, Test Area, Lagos",
+        "sourceUrls": [
+          "https://fixture.example.invalid/lagos-fresh-kitchen-source-1"
+        ]
+      },
+      {
+        "field": "description",
+        "value": "A fictional Nigerian restaurant used exclusively for software testing.",
+        "sourceUrls": [
+          "https://fixture.example.invalid/lagos-fresh-kitchen-source-1"
+        ]
+      },
+      {
+        "field": "openingHours",
+        "value": "Mon-Sun, 10:00-21:00",
+        "sourceUrls": [
+          "https://fixture.example.invalid/lagos-fresh-kitchen-source-1"
+        ]
+      },
+      {
+        "field": "services",
+        "value": [
+          {
+            "name": "Lagos Jollof Plate",
+            "description": "Fictional smoky jollof with a bright, spiced test-side pairing",
+            "price": "₦2,500 [TEST]"
+          },
+          {
+            "name": "Grilled Fish & Plantain",
+            "description": "Fictional grilled fish with a golden plantain accompaniment",
+            "price": "₦4,000 [TEST]"
+          },
+          {
+            "name": "Golden Plantain Bites",
+            "description": "Fictional crisp plantain bites with a subtle spice finish",
+            "price": "₦800 [TEST]"
+          }
+        ],
+        "sourceUrls": [
+          "https://fixture.example.invalid/lagos-fresh-kitchen-source-1"
+        ]
+      }
+    ]
+  }
+}

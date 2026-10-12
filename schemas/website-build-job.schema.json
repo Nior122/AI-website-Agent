@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-website-agent.local/schemas/website-build-job.schema.json",
+  "title": "Website Build Job Result",
+  "description": "Recoverable local website build result. Output locations are local artifact paths, not deployments.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["build_id", "lead_id", "status", "started_at", "errors"],
+  "properties": {
+    "build_id": { "type": "string" },
+    "lead_id": { "type": "string" },
+    "template_id": { "type": ["string", "null"] },
+    "status": { "type": "string", "enum": ["PENDING", "ANALYZING", "GENERATING_CONTENT", "BUILDING", "VALIDATING", "COMPLETED", "FAILED", "NEEDS_REVIEW"] },
+    "started_at": { "type": "string", "format": "date-time" },
+    "completed_at": { "type": ["string", "null"], "format": "date-time" },
+    "generated_content": { "type": ["object", "null"] },
+    "validation": { "type": ["object", "null"] },
+    "output_location": { "type": ["string", "null"] },
+    "metadata": { "type": "object" },
+    "errors": { "type": "array", "items": { "type": "string" } }
+  }
+}

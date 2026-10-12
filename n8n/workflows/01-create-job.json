@@ -1,0 +1,11 @@
+{
+  "name": "AI Website Agent - Create Dry Run Job",
+  "nodes": [
+    {"parameters": {}, "id": "manual", "name": "Manual Trigger", "type": "n8n-nodes-base.manualTrigger", "typeVersion": 1, "position": [240, 300]},
+    {"parameters": {"method": "POST", "url": "={{ $env.AI_WEBSITE_AGENT_API_URL }}/jobs", "sendHeaders": true, "headerParameters": {"parameters": [{"name": "Authorization", "value": "=Bearer {{ $env.AI_WEBSITE_AGENT_API_TOKEN }}"}, {"name": "Content-Type", "value": "application/json"}]}, "sendBody": true, "contentType": "json", "jsonBody": "={\"job_type\":\"SCOUT\",\"job_id\":\"n8n-scout-{{$execution.id}}\",\"priority\":\"LOW\",\"dry_run\":true,\"input\":{\"mode\":\"fixture_only\"}}"}, "id": "create", "name": "Create application job", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [480, 300]}
+  ],
+  "connections": {"Manual Trigger": {"main": [[{"node": "Create application job", "type": "main", "index": 0}]]}},
+  "active": false,
+  "settings": {"executionOrder": "v1"},
+  "versionId": "example-no-secrets"
+}

@@ -1,0 +1,19 @@
+{
+  "demo": true,
+  "business_name": "Demo Glow Studio",
+  "category": "beauty_salon",
+  "city": "Port Harcourt",
+  "address": "Fictional address, Port Harcourt",
+  "description": "A fictional salon used only to demonstrate the reusable template system.",
+  "phone": "+234 800 000 0001",
+  "whatsapp": "+234 800 000 0001",
+  "instagram_url": "https://instagram.example.invalid/demoglowstudio",
+  "opening_hours": "Mon–Sat, 09:00–18:00",
+  "services": [
+    { "name": "Natural Hair Care", "description": "Fictional service description." },
+    { "name": "Makeup", "description": "Fictional service description." }
+  ],
+  "images": [],
+  "brand": { "primary_color": "#8b2454", "secondary_color": "#fff7fb", "accent_color": "#e3a018", "border_radius": "1rem" },
+  "content": { "hero_title": "Care designed around you", "hero_subtitle": "Fictional salon demo content; replace only with approved business facts." }
+}

@@ -1,0 +1,22 @@
+{
+  "lead_id": "fictional-salon-001",
+  "demo": false,
+  "candidate": {
+    "businessName": "Fictional Glow Studio",
+    "niche": "Beauty salons",
+    "location": { "city": "Port Harcourt", "country": "Nigeria", "address": null },
+    "contact": { "phone": "+234 800 000 0001", "whatsapp": "+234 800 000 0001" },
+    "social": { "instagramUrl": "https://instagram.example.invalid/fictionalglow", "facebookUrl": null },
+    "publicBusinessInformation": { "description": "Fictional local salon for build tests.", "openingHours": "Mon-Sat, 09:00-18:00", "servicesOrProducts": ["Hair care", "Makeup"] }
+  },
+  "research": {
+    "qualificationStatus": "QUALIFIED",
+    "verifiedFacts": [
+      { "field": "businessName", "value": "Fictional Glow Studio", "sourceUrls": ["https://research.example.invalid/glow"] },
+      { "field": "location", "value": { "city": "Port Harcourt", "country": "Nigeria" }, "sourceUrls": ["https://research.example.invalid/glow"] },
+      { "field": "contact", "value": { "phone": "+234 800 000 0001", "whatsapp": "+234 800 000 0001" }, "sourceUrls": ["https://research.example.invalid/glow"] },
+      { "field": "services", "value": ["Hair care", "Makeup"], "sourceUrls": ["https://research.example.invalid/glow"] },
+      { "field": "description", "value": "Fictional local salon for build tests.", "sourceUrls": ["https://research.example.invalid/glow"] }
+    ]
+  }
+}

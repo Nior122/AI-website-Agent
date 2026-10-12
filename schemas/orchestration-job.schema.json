@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-website-agent.local/schemas/orchestration-job.schema.json",
+  "title": "Application-owned orchestration job",
+  "type": "object",
+  "required": ["job_id", "job_type", "status", "priority", "attempts", "input", "created_at", "dry_run"],
+  "properties": {
+    "job_id": {"type": "string", "description": "Caller-provided idempotency key."},
+    "job_type": {"enum": ["SCOUT", "RESEARCH", "QUALIFY", "BUILD", "VALIDATE", "DEPLOY", "PREPARE_OUTREACH"]},
+    "status": {"enum": ["PENDING", "QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELLED", "NEEDS_REVIEW", "BLOCKED"]},
+    "priority": {"enum": ["HIGH", "NORMAL", "LOW"]},
+    "lead_id": {"type": ["string", "null"]}, "project_id": {"type": ["string", "null"]}, "build_id": {"type": ["string", "null"]},
+    "parent_job_id": {"type": ["string", "null"]}, "attempts": {"type": "integer", "minimum": 0}, "max_attempts": {"type": "integer", "minimum": 1},
+    "input": {"type": "object"}, "output": {"type": ["object", "null"]}, "error": {"type": ["string", "null"]}, "artifacts": {"type": "array", "items": {"type": "string"}},
+    "created_at": {"type": "string", "format": "date-time"}, "started_at": {"type": ["string", "null"], "format": "date-time"}, "heartbeat_at": {"type": ["string", "null"], "format": "date-time"}, "completed_at": {"type": ["string", "null"], "format": "date-time"},
+    "dry_run": {"type": "boolean"}
+  }
+}

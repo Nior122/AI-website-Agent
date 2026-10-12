@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-website-agent.local/schemas/website-validation-job.schema.json",
+  "title": "Website Validation Result",
+  "description": "Repeatable local QA result for a generated website artifact. A passing result is not a deployment action.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["validation_id", "status", "score", "started_at", "completed_at", "checks", "findings"],
+  "properties": {
+    "validation_id": { "type": "string" },
+    "build_id": { "type": ["string", "null"] },
+    "lead_id": { "type": ["string", "null"] },
+    "status": { "type": "string", "enum": ["PASS", "FAIL", "NEEDS_REVIEW"] },
+    "score": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "started_at": { "type": "string", "format": "date-time" },
+    "completed_at": { "type": "string", "format": "date-time" },
+    "checks": { "type": "object", "additionalProperties": { "type": "boolean" } },
+    "findings": { "type": "array", "items": { "type": "object", "required": ["severity", "category", "code", "message"], "properties": { "severity": { "type": "string", "enum": ["CRITICAL", "ERROR", "WARNING", "INFO"] }, "category": { "type": "string" }, "code": { "type": "string" }, "message": { "type": "string" }, "repair_suggestion": { "type": ["string", "null"] } } } }
+  }
+}

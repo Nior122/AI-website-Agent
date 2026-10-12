@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-website-agent.local/schemas/template-business-data.schema.json",
+  "title": "Template Business Data",
+  "description": "Structured data supplied to a generic website template. Demo files must set demo to true; real records require approved research in a later phase.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["business_name", "category", "city"],
+  "properties": {
+    "demo": { "type": "boolean" },
+    "business_name": { "type": "string", "minLength": 1 },
+    "category": { "type": "string", "minLength": 1 },
+    "city": { "type": "string", "minLength": 1 },
+    "address": { "type": ["string", "null"] },
+    "description": { "type": ["string", "null"] },
+    "phone": { "type": ["string", "null"] },
+    "whatsapp": { "type": ["string", "null"] },
+    "instagram_url": { "type": ["string", "null"], "format": "uri" },
+    "facebook_url": { "type": ["string", "null"], "format": "uri" },
+    "opening_hours": { "type": ["string", "null"] },
+    "services": { "type": "array", "items": { "$ref": "#/$defs/item" } },
+    "menu_items": { "type": "array", "items": { "$ref": "#/$defs/item" } },
+    "images": { "type": "array", "items": { "type": "object", "required": ["url", "alt"], "properties": { "url": { "type": "string", "format": "uri" }, "alt": { "type": "string", "minLength": 1 } } } },
+    "brand": { "type": "object", "properties": { "primary_color": { "type": "string" }, "secondary_color": { "type": "string" }, "accent_color": { "type": "string" }, "background_color": { "type": "string" }, "text_color": { "type": "string" }, "border_radius": { "type": "string" }, "spacing": { "type": "string" } } },
+    "content": { "type": "object", "properties": { "hero_title": { "type": "string" }, "hero_subtitle": { "type": "string" }, "about_title": { "type": "string" }, "about_text": { "type": "string" } } }
+  },
+  "$defs": {
+    "item": { "type": "object", "required": ["name", "description"], "properties": { "name": { "type": "string" }, "description": { "type": "string" }, "price": { "type": ["string", "null"] } } }
+  }
+}

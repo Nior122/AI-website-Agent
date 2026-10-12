@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Non-secret example settings for future implementations. Copy to system.settings.local.json only when an approved runtime needs local overrides.",
+  "target": {
+    "country": null,
+    "city": null,
+    "niche": null
+  },
+  "limits": {
+    "dailyLeadLimit": 10
+  },
+  "scout": {
+    "mode": "approved_manual_review_only",
+    "defaultLeadLimit": 5,
+    "approvedSources": ["openstreetmap_overpass"],
+    "allowLiveDiscovery": true,
+    "realDataRequiresReviewOnly": true,
+    "maxCandidatesPerRun": 5,
+    "maxRequestsPerSourceRun": 1,
+    "requestTimeoutSeconds": 30,
+    "approvedPilot": {"country": "Nigeria", "city": "Lagos", "niche": "Restaurants"}
+  },
+  "research": {
+    "mode": "dry_run_only",
+    "approvedSources": [],
+    "allowLiveResearch": false,
+    "requiresSourceProvenance": true,
+    "requiresHumanReviewForSubjectiveWebsiteEvaluation": true
+  },
+  "templates": {
+    "mode": "local_demo_only",
+    "defaultTemplate": null,
+    "requireAccessibleAltText": true,
+    "allowExternalImages": false
+  },
+  "builder": {
+    "mode": "local_preview_only",
+    "outputRoot": "output",
+    "contentGenerator": "deterministic-fallback",
+    "allowProviderGeneration": false,
+    "requireQualifiedResearch": true,
+    "requireValidationBeforeArtifact": true
+  },
+  "validation": {
+    "mode": "local_static_only",
+    "requirePassBeforeDeployment": true,
+    "allowWarningsWithExplicitApproval": false,
+    "enableBrowserChecks": false,
+    "placeholderPatterns": ["Lorem ipsum", "Demo Business", "Example Company", "Your Business Name"]
+  },
+  "tracking": {
+    "mode": "local_json",
+    "statePath": "data/tracking/state.json",
+    "allowManualStateEdits": false
+  },
+  "orchestration": {
+    "mode": "local_job_ledger_only",
+    "maxAttempts": 3,
+    "concurrencyLimit": 1,
+    "staleJobTimeoutSeconds": 900,
+    "allowN8nCoordination": false,
+    "apiBindHost": "127.0.0.1",
+    "apiTokenEnvironmentVariable": "AI_WEBSITE_AGENT_API_TOKEN"
+  },
+  "workers": {
+    "mode": "registry_and_mock_only",
+    "leaseSeconds": 300,
+    "heartbeatTimeoutSeconds": 90,
+    "maxConcurrentMutatingJobsPerProject": 1,
+    "routingPreferences": {},
+    "costClasses": ["FREE", "LOW", "STANDARD", "PREMIUM"]
+  },
+  "qualification": {
+    "considerNoProfessionalWebsite": true,
+    "considerOutdatedOrPoorWebsite": true,
+    "requireActiveOnlinePresence": true,
+    "requiresHumanReviewBeforeOutreach": true,
+    "opportunityMinimumScore": 60,
+    "requiresTwoIndependentSourcesForAutomaticQualification": true,
+    "missingDirectoryWebsiteFieldMeans": "WEBSITE_UNKNOWN"
+  },
+  "outreach": {
+    "mode": "draft_only",
+    "allowedChannels": ["EMAIL", "WHATSAPP", "INSTAGRAM", "FACEBOOK", "LINKEDIN", "SMS", "OTHER"],
+    "requireQualifiedLead": true,
+    "requirePassValidation": true,
+    "requirePreviewDeployment": true,
+    "requireHumanReview": true,
+    "allowSending": false,
+    "sendingRequiresExplicitAuthorization": true
+  },
+  "deployment": {
+    "mode": "preview_dry_run_only",
+    "previewVisibility": "not_configured",
+    "provider": "vercel",
+    "allowProduction": false,
+    "requirePassValidation": true,
+    "requireExistingProjectLink": true,
+    "dryRunByDefault": true
+  },
+  "ai": {
+    "provider": null,
+    "model": null,
+    "providerProfiles": [],
+    "credentialsSource": "not_configured"
+  },
+  "automation": {
+    "mode": "disabled",
+    "orchestrator": null,
+    "dryRun": true
+  }
+}

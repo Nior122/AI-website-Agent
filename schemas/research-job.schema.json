@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-website-agent.local/schemas/research-job.schema.json",
+  "title": "Research Job Result",
+  "description": "Recoverable result of researching one Scout candidate. A completed job may still yield REVIEW or SKIP.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["job_id", "status", "started_at", "research_sources", "errors", "record"],
+  "properties": {
+    "job_id": { "type": "string" },
+    "status": { "type": "string", "enum": ["pending", "running", "completed", "partial", "failed"] },
+    "started_at": { "type": "string", "format": "date-time" },
+    "completed_at": { "type": ["string", "null"], "format": "date-time" },
+    "research_sources": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "errors": { "type": "array", "items": { "type": "string" } },
+    "record": { "type": ["object", "null"], "description": "Candidate plus its additive research record." }
+  }
+}

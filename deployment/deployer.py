@@ -1,0 +1,218 @@
+"""Safe, preview-only Vercel deployment adapter for validated local artifacts."""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from html.parser import HTMLParser
+from pathlib import Path, PureWindowsPath
+from tempfile import TemporaryDirectory
+from typing import Callable
+import json
+import os
+import re
+import shutil
+import subprocess
+from urllib.parse import unquote, urlparse, urlsplit
+
+DEPLOYMENT_STATES = {"PENDING", "PREPARING", "DEPLOYING", "DEPLOYED", "FAILED", "NEEDS_REVIEW"}
+EXPECTED_PREVIEW_PROJECT = "ai-website-agent-preview"
+_FORBIDDEN_PAYLOAD_NAMES = {"build.json", "deployment.json", "vercel.json", ".env"}
+_SECRET_PATTERNS = (r"(?:api[_-]?key|secret|token|password)\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{8,}", r"sk-[A-Za-z0-9]{12,}")
+_TEXT_PAYLOAD_SUFFIXES = {".css", ".html", ".js", ".json", ".svg", ".txt"}
+_CSS_URL = re.compile(r"url\(\s*(['\"]?)(.*?)\1\s*\)", re.IGNORECASE)
+
+
+@dataclass
+class DeploymentResult:
+    deployment_id: str; lead_id: str; business_name: str | None; build_id: str; validation_id: str | None
+    validation_status: str; deployment_provider: str; deployment_status: str; deployment_url: str | None
+    vercel_deployment_id: str | None; vercel_project_id: str | None; git_commit_sha: str | None
+    source_build_path: str; created_at: str; completed_at: str | None = None; error: str | None = None
+    metadata: dict = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class StagedPayload:
+    """A deliberately small, public-only copy of a validated website artifact."""
+    directory: Path
+    files: tuple[str, ...]
+
+
+class _AssetParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(); self.references: list[str] = []; self._in_style = False; self._style_parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = {key.casefold(): value or "" for key, value in attrs}
+        if tag.casefold() in {"img", "script", "source", "video", "audio", "track", "embed", "object"}:
+            self.references.append(values.get("src", ""))
+        if tag.casefold() == "link" and values.get("href"):
+            self.references.append(values["href"])
+        if values.get("srcset"):
+            self.references.extend(item.strip().split()[0] for item in values["srcset"].split(",") if item.strip())
+        if values.get("style"):
+            self.references.extend(_css_references(values["style"]))
+        if tag.casefold() == "style": self._in_style = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.casefold() == "style": self._in_style = False
+
+    def handle_data(self, data: str) -> None:
+        if self._in_style: self._style_parts.append(data)
+
+    def close(self) -> None:
+        super().close(); self.references.extend(_css_references("".join(self._style_parts)))
+
+
+class VercelDeploymentProvider:
+    """Deploys only a staged public payload to the dedicated Vercel preview project."""
+    name = "vercel"
+
+    def __init__(self, repository_root: Path, runner: Callable[..., subprocess.CompletedProcess] = subprocess.run, *, expected_project_name: str = EXPECTED_PREVIEW_PROJECT) -> None:
+        self.repository_root, self.runner, self.expected_project_name = repository_root, runner, expected_project_name
+
+    def deploy(self, build_path: Path, *, dry_run: bool = True, approve_needs_review: bool = False) -> DeploymentResult:
+        created_at, build_path = _now(), build_path.resolve()
+        manifest = _load_build_manifest(build_path); build_id = str(manifest.get("build_id") or "unknown-build")
+        suffix = build_id.removeprefix("build-") if manifest.get("build_id") else created_at.replace(":", "").replace("Z", "z")
+        result = DeploymentResult(f"deployment-{suffix}", str(manifest.get("lead_id") or "unknown-lead"), _business_name(build_path), build_id,
+            (manifest.get("validation") or {}).get("validation_id"), (manifest.get("validation") or {}).get("status", "MISSING"), self.name,
+            "PREPARING", None, None, _vercel_project_id(self.repository_root), _git_sha(self.repository_root), str(build_path), created_at)
+        try:
+            _assert_safe_build(build_path, manifest, approve_needs_review)
+            project = _assert_project_linked(self.repository_root, self.expected_project_name)
+            result.vercel_project_id = project["projectId"]
+            result.metadata.update({"target": "preview", "dry_run": dry_run, "project_name": project["projectName"]})
+            with TemporaryDirectory(prefix="ai-website-agent-preview-") as temporary:
+                payload = stage_public_payload(build_path, Path(temporary))
+                result.metadata["payload_files"] = list(payload.files)
+                if dry_run:
+                    result.deployment_status, result.completed_at = "PENDING", _now(); _write_manifest(build_path, result); return result
+                result.deployment_status = "DEPLOYING"
+                cmd = [_vercel_command(), "deploy", str(payload.directory), "--yes", "--project", project["projectId"]]
+                completed = self.runner(cmd, cwd=str(self.repository_root), capture_output=True, text=True, check=False)
+                output = "\n".join(part for part in (completed.stdout, completed.stderr) if part)
+                if completed.returncode != 0: raise RuntimeError(_safe_error(output) or f"Vercel CLI exited with code {completed.returncode}.")
+                url = _preview_url(output)
+                if not url: raise RuntimeError("Vercel CLI completed but did not return an HTTPS preview URL.")
+                result.deployment_url, result.vercel_deployment_id, result.deployment_status = url, _deployment_id_from_url(url), "DEPLOYED"
+        except NeedsReview as error:
+            result.deployment_status, result.error = "NEEDS_REVIEW", str(error)
+        except Exception as error:
+            result.deployment_status, result.error = "FAILED", str(error)
+        result.completed_at = _now(); _write_manifest(build_path, result); return result
+
+
+class NeedsReview(Exception): pass
+
+
+def stage_public_payload(build_path: Path, staging_directory: Path) -> StagedPayload:
+    """Copy only index.html and directly referenced safe local assets into a clean directory."""
+    build_path, staging_directory = build_path.resolve(), staging_directory.resolve()
+    if staging_directory.exists() and any(staging_directory.iterdir()): raise ValueError("Deployment staging directory must be empty.")
+    staging_directory.mkdir(parents=True, exist_ok=True)
+    index_path = build_path / "index.html"; html = index_path.read_text(encoding="utf-8")
+    parser = _AssetParser(); parser.feed(html); parser.close()
+    files: dict[Path, Path] = {Path("index.html"): index_path}; pending = [(reference, build_path) for reference in parser.references]
+    while pending:
+        reference, origin = pending.pop()
+        local = _safe_local_asset(build_path, reference, origin)
+        if local is None: continue
+        relative, source = local
+        if relative in files: continue
+        files[relative] = source
+        if source.suffix.casefold() == ".css": pending.extend((nested, source.parent) for nested in _css_references(source.read_text(encoding="utf-8")))
+    copied: list[str] = []
+    for relative, source in sorted(files.items(), key=lambda item: item[0].as_posix()):
+        destination = staging_directory / relative; destination.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(source, destination)
+        _assert_no_payload_secret(destination); copied.append(relative.as_posix())
+    _assert_payload_only_contains(staging_directory, set(copied))
+    return StagedPayload(staging_directory, tuple(copied))
+
+
+def _safe_local_asset(build_path: Path, reference: str, origin: Path | None = None) -> tuple[Path, Path] | None:
+    reference = reference.strip()
+    if not reference or reference.startswith("#") or reference.startswith("data:"): return None
+    parsed = urlsplit(reference)
+    if parsed.scheme.casefold() in {"http", "https", "mailto", "tel"} or parsed.netloc: return None
+    if parsed.scheme: raise ValueError(f"Unsupported asset URL scheme in deployment payload: {parsed.scheme}.")
+    value = unquote(parsed.path)
+    if not value: return None
+    if Path(value).is_absolute() or PureWindowsPath(value).is_absolute() or PureWindowsPath(value).drive:
+        raise ValueError(f"Absolute asset path is not allowed in deployment payload: {reference}.")
+    relative = Path(value)
+    if any(part in {"", ".", ".."} or part.startswith(".") for part in relative.parts): raise ValueError(f"Unsafe asset path is not allowed in deployment payload: {reference}.")
+    if relative.name.casefold() in _FORBIDDEN_PAYLOAD_NAMES: raise ValueError(f"Internal metadata is not allowed in deployment payload: {reference}.")
+    source = ((origin or build_path) / relative).resolve()
+    try: source.relative_to(build_path)
+    except ValueError as error: raise ValueError(f"Asset path escapes the build directory: {reference}.") from error
+    if not source.is_file(): raise ValueError(f"Required local asset is missing: {reference}.")
+    return source.relative_to(build_path), source
+
+
+def _css_references(css: str) -> list[str]: return [match.group(2).strip() for match in _CSS_URL.finditer(css) if match.group(2).strip()]
+
+def _assert_no_payload_secret(path: Path) -> None:
+    if path.suffix.casefold() not in _TEXT_PAYLOAD_SUFFIXES: return
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if any(re.search(pattern, text, re.IGNORECASE) for pattern in _SECRET_PATTERNS): raise ValueError(f"Potential secret-like value detected in staged payload file: {path.name}.")
+
+def _assert_payload_only_contains(staging_directory: Path, expected: set[str]) -> None:
+    actual = {path.relative_to(staging_directory).as_posix() for path in staging_directory.rglob("*") if path.is_file()}
+    if actual != expected or any(any(segment.startswith(".") for segment in Path(part).parts) or Path(part).name.casefold() in _FORBIDDEN_PAYLOAD_NAMES for part in actual): raise ValueError("Deployment staging integrity check failed.")
+
+def _load_build_manifest(build_path: Path) -> dict:
+    if not build_path.is_dir() or not (build_path / "index.html").is_file(): raise ValueError("Build directory or required index.html is missing.")
+    manifest_path = build_path / "build.json"
+    if not manifest_path.is_file(): raise ValueError("Build manifest build.json is missing.")
+    return json.loads(manifest_path.read_text(encoding="utf-8"))
+
+def _assert_safe_build(build_path: Path, manifest: dict, approve_needs_review: bool) -> None:
+    if Path(manifest.get("output_location") or "").resolve() != (build_path / "index.html").resolve(): raise ValueError("Build manifest output location does not match the requested deployment directory.")
+    status = (manifest.get("validation") or {}).get("status")
+    if status == "PASS": return
+    if status == "NEEDS_REVIEW" and approve_needs_review: return
+    if status == "NEEDS_REVIEW": raise NeedsReview("Validation requires explicit review approval before preview deployment.")
+    raise ValueError(f"Deployment is blocked because validation status is {status or 'missing'}, not PASS.")
+
+def _assert_project_linked(root: Path, expected_project_name: str) -> dict:
+    project = root / ".vercel" / "project.json"
+    if not project.is_file(): raise ValueError("No linked Vercel project found (.vercel/project.json). Link the approved dedicated preview project before deploying.")
+    try: record = json.loads(project.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error: raise ValueError("Linked Vercel project configuration is not valid JSON.") from error
+    if not isinstance(record.get("projectId"), str) or not record["projectId"].strip(): raise ValueError("Linked Vercel project configuration has no projectId.")
+    if record.get("projectName") != expected_project_name: raise ValueError(f"Refusing deployment: linked Vercel project is not the dedicated preview project '{expected_project_name}'.")
+    return record
+
+def _vercel_project_id(root: Path) -> str | None:
+    project = root / ".vercel" / "project.json"
+    try: return json.loads(project.read_text(encoding="utf-8")).get("projectId") if project.is_file() else None
+    except json.JSONDecodeError: return None
+
+def _vercel_command() -> str:
+    candidates = ["vercel.cmd", "vercel.exe", "vercel"] if os.name == "nt" else ["vercel"]
+    return next((path for candidate in candidates if (path := shutil.which(candidate))), candidates[-1])
+
+def _git_sha(root: Path) -> str | None:
+    completed = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(root), capture_output=True, text=True, check=False)
+    return completed.stdout.strip() if completed.returncode == 0 else None
+
+def _business_name(build_path: Path) -> str | None:
+    title = re.search(r"<title>([^<]+)</title>", (build_path / "index.html").read_text(encoding="utf-8"), re.IGNORECASE)
+    return title.group(1) if title else None
+
+def _preview_url(output: str) -> str | None:
+    matches = re.findall(r"https://[^\s'\"]+", output); return next((url.rstrip(".,)") for url in reversed(matches) if urlparse_https(url)), None)
+
+def urlparse_https(url: str) -> bool:
+    parsed = urlparse(url); host = (parsed.hostname or "").casefold()
+    return parsed.scheme == "https" and host.endswith(".vercel.app") and host != "vercel.app"
+
+def _deployment_id_from_url(url: str) -> str | None: return url.removeprefix("https://").split(".")[0] or None
+def _safe_error(output: str) -> str: return re.sub(r"(?i)(token|secret|password)\s*[:=]\s*\S+", r"\1=[REDACTED]", output).strip()[-1000:]
+def _write_manifest(build_path: Path, result: DeploymentResult) -> None: (build_path / "deployment.json").write_text(json.dumps(result.to_dict(), indent=2) + "\n", encoding="utf-8")
+def _now() -> str: return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")

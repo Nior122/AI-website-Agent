@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-website-agent.local/schemas/deployment-record.schema.json",
+  "title": "Preview Deployment Record",
+  "description": "Artifact-local, recoverable preview deployment record. It never represents a production deployment.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["deployment_id", "lead_id", "build_id", "validation_status", "deployment_provider", "deployment_status", "source_build_path", "created_at"],
+  "properties": {
+    "deployment_id": { "type": "string" },
+    "lead_id": { "type": "string" },
+    "business_name": { "type": ["string", "null"] },
+    "build_id": { "type": "string" },
+    "validation_id": { "type": ["string", "null"] },
+    "validation_status": { "type": "string", "enum": ["PASS", "FAIL", "NEEDS_REVIEW", "MISSING"] },
+    "deployment_provider": { "type": "string", "enum": ["vercel"] },
+    "deployment_status": { "type": "string", "enum": ["PENDING", "PREPARING", "DEPLOYING", "DEPLOYED", "FAILED", "NEEDS_REVIEW"] },
+    "deployment_url": { "type": ["string", "null"], "format": "uri" },
+    "vercel_deployment_id": { "type": ["string", "null"] },
+    "vercel_project_id": { "type": ["string", "null"] },
+    "git_commit_sha": { "type": ["string", "null"] },
+    "source_build_path": { "type": "string" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "completed_at": { "type": ["string", "null"], "format": "date-time" },
+    "error": { "type": ["string", "null"] },
+    "metadata": { "type": "object" }
+  }
+}

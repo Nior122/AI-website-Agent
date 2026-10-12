@@ -1,0 +1,11 @@
+{
+  "name": "AI Website Agent - Inspect Job",
+  "nodes": [
+    {"parameters": {}, "id": "manual", "name": "Manual Trigger", "type": "n8n-nodes-base.manualTrigger", "typeVersion": 1, "position": [240, 300]},
+    {"parameters": {"method": "GET", "url": "={{ $env.AI_WEBSITE_AGENT_API_URL }}/jobs/REPLACE_WITH_JOB_ID", "sendHeaders": true, "headerParameters": {"parameters": [{"name": "Authorization", "value": "=Bearer {{ $env.AI_WEBSITE_AGENT_API_TOKEN }}"}]}}, "id": "inspect", "name": "Inspect application job", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [480, 300]}
+  ],
+  "connections": {"Manual Trigger": {"main": [[{"node": "Inspect application job", "type": "main", "index": 0}]]}},
+  "active": false,
+  "settings": {"executionOrder": "v1"},
+  "versionId": "example-no-secrets"
+}
