@@ -51,6 +51,7 @@ Keep this file concise. It is the shared handoff record, not a replacement for G
 - [x] Completed Phase 24 deployment: configured dedicated `ai-website-agent-preview` project, resolved skipped symlink test portably, deployed staged public payload (`index.html` only) to Vercel preview without `--prod`, verified live HTTPS URL (`https://ai-website-agent-preview.vercel.app`), and confirmed anonymous accessibility with full responsive content.
 - [x] Completed Phase 25 real-business discovery and qualification: audited pipeline bottlenecks; added fallback endpoint support to OverpassRestaurantSource; conducted bounded research on 5 unreviewed independent Lagos restaurants with public evidence; identified Pitstop Lagos with confirmed production defect (broken markup and 70+ hidden casino backlinks); qualified candidate under unmodified `assess_opportunity()` (score 95, P2, high confidence); created `lead-0002` in TrackingStore as `REAL_PUBLIC_DATA` while strictly holding projects/builds/deployments/outreach; preserved historical audits and fictional preview intact; passed 103 unit tests.
 - [x] Completed Phase 26 real-business website draft: reverified live website pitstoplagos.com defects; established strict fact ledger omitting unverified dishes, prices, hours, reviews, and booking forms; reused restaurant-menu-v1 template with 'PL' initials, preview draft eyebrow, and uncommissioned evaluation disclosure; generated isolated draft build at `output/lead-0002/build-2026-10-12T041042z/index.html`; passed static QA at 100/100 (14/14 checks passed); hardened validator against casino spam, unparsed shortcodes, and off-screen styles; recorded project-0002 in TrackingStore at `READY_FOR_REVIEW` with `PENDING` human review; zero deployments or outreach; passed 112 unit tests.
+- [x] Initialized Git repository on `main` branch, verified `.gitignore` safety boundaries (excluding secrets, credentials, environment files, build artifacts, tracking state, and discovery data), created public GitHub repository `AI-website-Agent` (`https://github.com/Nior122/AI-website-Agent`), and pushed repository code and documentation.
 
 ## Open work
 
@@ -61,7 +62,6 @@ Keep this file concise. It is the shared handoff record, not a replacement for G
 - [ ] Approve a future AI content-provider adapter before enabling model-generated content.
 - [ ] Approve a browser-testing tool before adding computed-layout, overflow, or live-link checks.
 - [ ] Provide/approve an existing Vercel preview project link before any actual preview deployment.
-- [ ] Decide whether and when to create the first Git commit and configure a GitHub remote; no remote exists today.
 - [ ] Select persistent storage only when a future scale or retention decision requires it.
 - [ ] Approve outreach delivery policy, sender identity, channel-specific compliance, and any future integration before adding a delivery capability.
 - [ ] Approve a worker-host design and any n8n-to-application networking before registering or running a real worker.

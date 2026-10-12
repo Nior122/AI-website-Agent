@@ -4,6 +4,11 @@ All notable project changes are recorded here. Dates use ISO 8601 (`YYYY-MM-DD`)
 
 ## [Unreleased]
 
+### Added — 2026-10-12 (Repository Publishing)
+
+- Initialized Git repository on `main` branch with strict `.gitignore` safety boundaries keeping credentials, local environment files (`.env.local`), Vercel state (`.vercel/`), generated build artifacts (`output/`), local tracking records (`data/tracking/`), and raw discovery data (`data/leads/*`) completely uncommitted.
+- Created public GitHub repository `AI-website-Agent` (`https://github.com/Nior122/AI-website-Agent`) under account `Nior122` via GitHub CLI and pushed full codebase history through Phase 26.
+
 ### Added — 2026-10-12 (Phase 26)
 
 - Fact-grounded local website draft for first qualified real lead Pitstop Lagos (`lead-0002`): reused `restaurant-menu-v1` template with clean brand initials (`PL`), `Lagos · uncommissioned preview draft` eyebrow, and explicit evaluation disclosure (`Uncommissioned preview draft prepared for internal evaluation · Not an authorized or official website of Pitstop Lagos`).
