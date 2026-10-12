@@ -66,8 +66,22 @@ class WebsiteBuilder:
             facts["content"] = content
             result.status = "BUILDING"
             html = render_site(facts, template.template_id)
-            result.status = "VALIDATING"
-            validation = validate_html(html, facts["business_name"], real_build=not bool(lead.get("demo")), build_id=build_id, lead_id=lead_id, expected_contact={"phone": facts.get("phone"), "whatsapp": facts.get("whatsapp")}, synthetic_contact=facts.get("data_classification") == "TEST_FIXTURE" or bool(facts.get("demo")))
+            is_fixture = (
+                bool(lead.get("demo"))
+                or lead.get("data_classification") == "TEST_FIXTURE"
+                or str(lead.get("lead_id", "")).startswith("fictional-")
+                or "FICTIONAL" in str(lead.get("candidate", {}).get("businessName", "")).upper()
+                or lead.get("candidate", {}).get("dataClassification") == "TEST_FIXTURE"
+            )
+            validation = validate_html(
+                html,
+                facts["business_name"],
+                real_build=not is_fixture,
+                build_id=build_id,
+                lead_id=lead_id,
+                expected_contact={"phone": facts.get("phone"), "whatsapp": facts.get("whatsapp"), "email": facts.get("email")},
+                synthetic_contact=is_fixture,
+            )
             result.validation = validation
             if not validation["passed"]:
                 result.status = "NEEDS_REVIEW"
@@ -106,8 +120,39 @@ def _verified_template_data(lead: dict[str, Any]) -> dict[str, Any]:
     services = [{"name": value.get("name") if isinstance(value, dict) else str(value), "description": value.get("description", "") if isinstance(value, dict) else ""} for value in service_values]
     assets = lead.get("approved_assets", [])
     images = [{"url": asset["url"], "alt": asset["alt"]} for asset in assets if asset.get("approved") is True and asset.get("sourceUrls") and asset.get("url") and asset.get("alt")]
-    menu_items = facts["menu_items"] if "menu_items" in facts else services
-    return {"business_name": name, "category": category, "city": location["city"], "address": facts.get("address") or location.get("address"), "description": facts.get("description") or info.get("description"), "phone": contact.get("phone"), "whatsapp": contact.get("whatsapp"), "instagram_url": social.get("instagramUrl"), "facebook_url": social.get("facebookUrl"), "opening_hours": facts.get("openingHours") or info.get("openingHours"), "services": services, "menu_items": menu_items, "images": images, "brand": _approved_brand(lead), "data_classification": lead.get("data_classification") or candidate.get("dataClassification"), "demo": bool(lead.get("demo"))}
+    is_fixture = bool(lead.get("demo")) or lead.get("data_classification") == "TEST_FIXTURE" or candidate.get("dataClassification") == "TEST_FIXTURE"
+    if "menu_items" in facts:
+        menu_items = facts["menu_items"]
+    elif is_fixture:
+        menu_items = services
+    else:
+        menu_items = []
+    email = facts.get("email") or contact.get("email")
+    phone = contact.get("phone") or facts.get("phone")
+    whatsapp = contact.get("whatsapp") or facts.get("whatsapp")
+    instagram = social.get("instagramUrl") or facts.get("instagram_url")
+    facebook = social.get("facebookUrl") or facts.get("facebook_url")
+    address = facts.get("address") or location.get("address")
+    opening_hours = facts.get("openingHours") or info.get("openingHours")
+    return {
+        "business_name": name,
+        "category": category,
+        "city": location["city"],
+        "address": address,
+        "description": facts.get("description") or info.get("description"),
+        "phone": phone,
+        "email": email,
+        "whatsapp": whatsapp,
+        "instagram_url": instagram,
+        "facebook_url": facebook,
+        "opening_hours": opening_hours,
+        "services": services,
+        "menu_items": menu_items,
+        "images": images,
+        "brand": _approved_brand(lead),
+        "data_classification": lead.get("data_classification") or candidate.get("dataClassification"),
+        "demo": bool(lead.get("demo")),
+    }
 
 
 def _approved_brand(lead: dict[str, Any]) -> dict[str, Any]:

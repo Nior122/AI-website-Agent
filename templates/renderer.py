@@ -34,7 +34,11 @@ def _sections(data: dict, template: TemplateDefinition) -> dict:
     if template.template_id == "salon-service-v1":
         parts.append(("services", components.card_list("services", "Services", data.get("services", []))))
     else:
-        parts.append(("menu", components.card_list("menu", "Signature dishes", data.get("menu_items", []), price=True, fictional=components.is_fictional(data))))
+        menu_items = data.get("menu_items")
+        if menu_items:
+            parts.append(("menu", components.card_list("menu", "Signature dishes", menu_items, price=True, fictional=components.is_fictional(data))))
+        elif data.get("services"):
+            parts.append(("offerings", components.card_list("offerings", "Offerings", data.get("services", []), price=False, fictional=components.is_fictional(data))))
     parts.extend([("gallery", components.gallery(data.get("images", []))), ("location", components.location(data)), ("hours", components.hours(data)), ("contact", components.contact(data))])
     rendered = [(section_id, html) for section_id, html in parts if html]
     return {"nav": [section_id for section_id, _ in rendered], "html": components.hero(data) + "".join(html for _, html in rendered)}

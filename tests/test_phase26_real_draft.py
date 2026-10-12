@@ -146,6 +146,64 @@ class Phase26RealDraftTests(unittest.TestCase):
         self.assertTrue(res.validation["checks"]["links"])
         self.assertEqual(len(res.validation["errors"]), 0)
 
+    def test_fictional_demo_artifacts_rejected_by_validator_in_real_build(self):
+        base_html = "<html><header></header><main><h1>Pitstop Lagos</h1><p>Wellness cafe</p></main><footer></footer></html>"
+        for leak in ("Lagos Fresh Kitchen", "The Lagos Kitchen", "Signature Rice Bowl", "Made for the table", "From the test kitchen", "₦0 demo price"):
+            leaked_html = base_html.replace("<p>Wellness cafe</p>", f"<p>Wellness cafe - {leak}</p>")
+            val = validate_rendered_html(leaked_html, "Pitstop Lagos", real_build=True)
+            self.assertFalse(val.checks["placeholder_scan"])
+            self.assertTrue(any(e.code == "FICTIONAL_DEMO_DATA_IN_REAL_BUILD" for e in val.findings))
+
+    def test_verified_offerings_rendered_and_food_illustration_omitted(self):
+        builder = WebsiteBuilder(output_root=self.root / "output")
+        res = builder.build(pitstop_lead_payload())
+        self.assertEqual(res.status, "COMPLETED")
+        html = Path(res.output_location).read_text(encoding="utf-8")
+        # Verified services rendered as offerings cards
+        self.assertIn("Offerings", html)
+        self.assertIn("Healthy-Inspired Cafe", html)
+        self.assertIn("Cycling Community Rides", html)
+        self.assertIn("Wattbike Training Studio", html)
+        self.assertIn("Bicycle Service", html)
+        # Remnants of fictional shared meal illustration strictly omitted
+        self.assertNotIn("Made for the table", html)
+        self.assertNotIn("Decorative illustration of a shared meal", html)
+        self.assertNotIn("<div class=\"hero-art\"", html)
+        self.assertNotIn("<path class=\"art-rice\"", html)
+
+    def test_verified_contacts_and_address_present_in_output(self):
+        builder = WebsiteBuilder(output_root=self.root / "output")
+        res = builder.build(pitstop_lead_payload())
+        self.assertEqual(res.status, "COMPLETED")
+        html = Path(res.output_location).read_text(encoding="utf-8")
+        self.assertIn("tel:+234 807 749 8324", html)
+        self.assertIn("info@pitstoplagos.com", html)
+        self.assertIn("92A Younis Bashorun Street, Victoria Island, Lagos", html)
+        self.assertIn("https://www.instagram.com/pitstoplagos/", html)
+
+    def test_validator_detects_missing_verified_email(self):
+        html_without_email = "<html><header></header><main><h1>Pitstop Lagos</h1><a href='tel:+2348077498324'>Call</a></main><footer></footer></html>"
+        val = validate_rendered_html(
+            html_without_email,
+            "Pitstop Lagos",
+            real_build=True,
+            expected_contact={"phone": "+2348077498324", "email": "info@pitstoplagos.com"},
+        )
+        self.assertFalse(val.checks["contact_cta"])
+        self.assertTrue(any(e.code == "MISSING_VERIFIED_EMAIL" for e in val.findings))
+
+    def test_real_build_output_does_not_modify_lead_0001_directory(self):
+        lead1_dir = self.root / "output" / "lead-0001" / "build-001"
+        lead1_dir.mkdir(parents=True)
+        (lead1_dir / "index.html").write_text("Lead 1 Content", encoding="utf-8")
+
+        builder = WebsiteBuilder(output_root=self.root / "output")
+        res = builder.build(pitstop_lead_payload())
+        self.assertEqual(res.lead_id, "lead-0002")
+        self.assertIn("lead-0002", res.output_location)
+        # Verify lead-0001 was untouched
+        self.assertEqual((lead1_dir / "index.html").read_text(encoding="utf-8"), "Lead 1 Content")
+
     def test_tracking_lifecycle_transitions_and_pending_review(self):
         store = TrackingStore(self.root / "state.json")
         store.create_lead({

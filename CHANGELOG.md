@@ -9,6 +9,18 @@ All notable project changes are recorded here. Dates use ISO 8601 (`YYYY-MM-DD`)
 - Initialized Git repository on `main` branch with strict `.gitignore` safety boundaries keeping credentials, local environment files (`.env.local`), Vercel state (`.vercel/`), generated build artifacts (`output/`), local tracking records (`data/tracking/`), and raw discovery data (`data/leads/*`) completely uncommitted.
 - Created public GitHub repository `AI-website-Agent` (`https://github.com/Nior122/AI-website-Agent`) under account `Nior122` via GitHub CLI and pushed full codebase history through Phase 26.
 
+### Fixed — 2026-10-12 (Phase 26 Correction: Real-Business Draft Content Purification)
+
+- Complete elimination of fictional demonstration remnants: diagnosed and resolved root causes where the real-business Pitstop Lagos draft inherited the hardcoded fictional shared-meal illustration and 'Made for the table' caption from `components._restaurant_illustration()`. Guarded illustration strictly to fictional demo fixtures (`is_fictional(data) == True`).
+- Added responsive single-column layout `.hero-restaurant.no-art` for real-business restaurant concepts without visual illustration dependencies.
+- Re-architected template section routing in `templates/renderer.py`: added support for verified offerings/services under section `offerings` with 'What we offer' heading and item indices when menu dishes are unverified, preventing the entire central card section from disappearing.
+- Fixed `builder/website_builder.py` data extraction: stopped silent aliasing of services to `menu_items` for real leads, ensuring non-food offerings are never mislabeled as 'Signature dishes'; added extraction of verified contact email into template data.
+- Hardened automated validation in `validation/quality_validator.py`: added `FICTIONAL_DEMO_PATTERNS` enforcement blocking fictional business names ('Lagos Fresh Kitchen', 'The Lagos Kitchen', 'Demo Riverside Kitchen'), fictional dishes ('Signature Rice Bowl', 'Lagos Jollof Plate', 'Golden Plantain Bites'), fictional demo prices ('₦0 demo price', '[TEST]'), fictional disclosures ('From the test kitchen', 'Made for the table', 'Fictional dishes for layout testing'), brand mark 'LF', and test fixture domains ('example.invalid') from passing in real builds.
+- Added email presence validation ensuring verified business emails appear in rendered customer contact copy.
+- Generated new isolated corrected build artifact at `output/lead-0002/build-2026-10-12T044011z/index.html` passing static QA at 100/100 (14/14 checks passed).
+- Updated TrackingStore `project-0002` to reference `build-2026-10-12T044011z` at `READY_FOR_REVIEW` with human review held at `PENDING`.
+- Preserved historical fictional preview and audit records completely intact.
+
 ### Added — 2026-10-12 (Phase 26)
 
 - Fact-grounded local website draft for first qualified real lead Pitstop Lagos (`lead-0002`): reused `restaurant-menu-v1` template with clean brand initials (`PL`), `Lagos · uncommissioned preview draft` eyebrow, and explicit evaluation disclosure (`Uncommissioned preview draft prepared for internal evaluation · Not an authorized or official website of Pitstop Lagos`).

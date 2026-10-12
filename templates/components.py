@@ -78,7 +78,9 @@ def hero(data: dict) -> str:
     subtitle = data.get("content", {}).get("hero_subtitle") or data.get("description") or f"Local {data['category'].replace('_', ' ')} in {data['city']}."
     if data.get("category") in {"restaurant", "food_business"}:
         eyebrow = "Lagos table · fictional test kitchen" if is_fictional(data) else f"{text(data.get('city', 'Lagos'))} · uncommissioned preview draft"
-        return f'''<section class="hero hero-restaurant" id="top"><div class="hero-copy"><p class="eyebrow">{eyebrow}</p><h1>{text(title)}</h1><p class="hero-intro">{text(subtitle)}</p><div class="actions">{action_links(data)}</div></div>{_restaurant_illustration()}</section>'''
+        hero_art = _restaurant_illustration() if is_fictional(data) else ""
+        art_class = " has-art" if hero_art else " no-art"
+        return f'<section class="hero hero-restaurant{art_class}" id="top"><div class="hero-copy"><p class="eyebrow">{eyebrow}</p><h1>{text(title)}</h1><p class="hero-intro">{text(subtitle)}</p><div class="actions">{action_links(data)}</div></div>{hero_art}</section>'
     return f'<section class="hero" id="top"><p class="eyebrow">{text(data["city"])}</p><h1>{text(title)}</h1><p>{text(subtitle)}</p><div class="actions">{action_links(data)}</div></section>'
 
 
@@ -100,10 +102,16 @@ def card_list(section_id: str, title: str, entries: list[dict], price: bool = Fa
         heading = text(entry.get("name"))
         detail = text(entry.get("description"))
         amount = f'<p class="price">{text(entry.get("price"))}</p>' if price and entry.get("price") and not fictional else ""
-        number = f'<span class="menu-index" aria-hidden="true">0{index}</span>' if section_id == "menu" else ""
+        number = f'<span class="menu-index" aria-hidden="true">0{index}</span>' if section_id in {"menu", "offerings", "services"} else ""
         cards.append(f'<article class="card">{number}<div><h3>{heading}</h3><p>{detail}</p>{amount}</div></article>')
-    heading = f'<div class="section-heading"><div><p class="section-kicker">From the test kitchen</p><h2>{text(title)}</h2></div><p class="section-note">Fictional dishes for layout testing. Availability and prices are not represented.</p></div>' if section_id == "menu" and fictional else f'<h2>{text(title)}</h2>'
-    class_name = "menu-section" if section_id == "menu" else ""
+    if section_id == "menu" and fictional:
+        heading = f'<div class="section-heading"><div><p class="section-kicker">From the test kitchen</p><h2>{text(title)}</h2></div><p class="section-note">Fictional dishes for layout testing. Availability and prices are not represented.</p></div>'
+    elif section_id in {"menu", "offerings", "services"}:
+        kicker = "Signature dishes" if section_id == "menu" else "What we offer"
+        heading = f'<div class="section-heading"><div><p class="section-kicker">{kicker}</p><h2>{text(title)}</h2></div></div>'
+    else:
+        heading = f'<h2>{text(title)}</h2>'
+    class_name = "menu-section" if section_id in {"menu", "offerings"} else ""
     return f'<section id="{text(section_id)}" class="{class_name}">{heading}<div class="card-grid">{"".join(cards)}</div></section>'
 
 
@@ -136,9 +144,11 @@ def contact(data: dict) -> str:
     if is_fictional(data):
         return '<section id="contact" class="contact-panel"><p class="section-kicker">Demonstration only</p><h2>A considered journey, safely contained.</h2><p>This fictional concept intentionally has no live phone, WhatsApp, social, booking, or message destination.</p></section>'
     actions = action_links(data)
-    if not actions:
+    email = data.get("email")
+    email_html = f'<p class="contact-detail">Email: {text(email)}</p>' if email and "@" in str(email) else ""
+    if not actions and not email_html:
         return ""
-    return f'<section id="contact"><h2>Get in touch</h2><div class="actions">{actions}</div></section>'
+    return f'<section id="contact"><h2>Get in touch</h2><div class="actions">{actions}</div>{email_html}</section>'
 
 
 def footer(name: str, fictional: bool = False) -> str:

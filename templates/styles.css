@@ -26,11 +26,14 @@ h3 { margin-bottom:.5rem; font-size:1.55rem; }
 .eyebrow,.section-kicker { margin-bottom:.9rem; color:var(--accent); font-size:.72rem; font-weight:800; letter-spacing:.15em; text-transform:uppercase; }
 .hero { margin-top:2rem; padding:clamp(2.5rem,7vw,6rem); background:var(--secondary); border-radius:var(--radius); }
 .hero-restaurant { position:relative; display:grid; grid-template-columns:minmax(0,1fr) minmax(19rem,.86fr); align-items:center; gap:clamp(1.5rem,6vw,6rem); isolation:isolate; background:var(--primary); color:var(--secondary); overflow:hidden; }
+.hero-restaurant.no-art { grid-template-columns:1fr; }
+.hero-restaurant.no-art .hero-copy { max-width:48rem; }
 .hero-restaurant::before { position:absolute; z-index:-1; inset:auto -11rem -11rem auto; width:31rem; height:31rem; content:""; border:1px solid rgba(229,185,95,.26); border-radius:50%; }
 .hero h1 { color:inherit; }
 .hero-intro { max-width:34rem; color:rgba(248,244,234,.84); font-size:clamp(1rem,1.4vw,1.18rem); }
 .hero-restaurant .eyebrow { color:var(--gold); }
 .actions { display:flex; flex-wrap:wrap; align-items:center; gap:.85rem; margin-top:2rem; }
+.contact-detail { margin-top:.75rem; color:var(--muted); font-size:.95rem; }
 .button { display:inline-flex; min-height:3rem; align-items:center; justify-content:center; padding:.75rem 1.08rem; border:1px solid transparent; border-radius:999px; font-size:.83rem; font-weight:800; letter-spacing:.03em; text-decoration:none; transition:background-color .2s ease,color .2s ease,transform .2s ease; }
 .button:hover { transform:translateY(-2px); }
 .button-primary { background:var(--gold); color:var(--primary); }

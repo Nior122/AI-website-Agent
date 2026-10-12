@@ -10,6 +10,37 @@ from urllib.parse import urlparse
 
 
 PLACEHOLDERS = ("lorem ipsum", "demo business", "example company", "your business name", "test restaurant", "test salon")
+FICTIONAL_DEMO_PATTERNS = (
+    "lagos fresh kitchen",
+    "the lagos kitchen",
+    "demo riverside kitchen",
+    "riverside kitchen",
+    "signature rice bowl",
+    "grilled plantain plate",
+    "lagos jollof plate",
+    "golden plantain bites",
+    "jollof rice test bowl",
+    "grilled fish test plate",
+    "plantain chips test snack",
+    "fictional test kitchen street",
+    "from the test kitchen",
+    "fictional dishes for layout testing",
+    "fictional test schedule",
+    "a fictional setting",
+    "find the test kitchen",
+    "this address is fictional",
+    "a considered journey, safely contained",
+    "this fictional concept intentionally has no live phone",
+    "fictional demonstration website",
+    "lagos table · fictional test kitchen",
+    "made for the table",
+    "decorative illustration of a shared meal",
+    "+234 800 000 0099",
+    "+234 800 000 0002",
+    "example.invalid",
+    "demo price",
+    "₦0 demo",
+)
 CLAIM_PATTERNS = (r"\b\d+\+?\s+(?:happy )?customers\b", r"\baward[- ]winning\b", r"\bnumber one\b", r"\bcertified\b", r"\btrusted by thousands\b", r"\bserving customers for \d+ years\b")
 SECRET_PATTERNS = (r"(?:api[_-]?key|secret|token|password)\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{8,}", r"sk-[A-Za-z0-9]{12,}")
 
@@ -73,7 +104,7 @@ def validate_rendered_html(html: str, business_name: str, *, real_build: bool, b
     if not checks["heading"]: findings.append(_finding("ERROR", "content_integrity", "MISSING_PRIMARY_HEADING", "A page needs an H1 heading."))
     if not checks["title"]: findings.append(_finding("WARNING", "seo", "MISSING_TITLE", "Page title is missing.", "Add a concise title using the verified business name."))
     if not checks["meta_description"]: findings.append(_finding("WARNING", "seo", "MISSING_META_DESCRIPTION", "Meta description is missing.", "Add a factual description grounded in verified business data."))
-    _links(tags, ids, findings, checks); _images(tags, findings, checks, real_build); _contact(tags, {} if synthetic_contact else expected_contact or {}, findings, checks); _content_safety(page_text, findings, checks, real_build, raw_html=html); _performance(html, tags, findings, checks)
+    _links(tags, ids, findings, checks); _images(tags, findings, checks, real_build); _contact(tags, {} if synthetic_contact else expected_contact or {}, findings, checks, page_text); _content_safety(page_text, findings, checks, real_build, raw_html=html, synthetic_contact=synthetic_contact); _performance(html, tags, findings, checks)
     return _result(build_id, lead_id, started, checks, findings)
 
 
@@ -105,20 +136,29 @@ def _images(tags, findings, checks, real_build) -> None:
             checks["images"] = False; findings.append(_finding("ERROR", "images", "DEMO_IMAGE_IN_REAL_BUILD", "A demo image URL appears in a real build."))
 
 
-def _contact(tags, expected, findings, checks) -> None:
+def _contact(tags, expected, findings, checks, page_text="") -> None:
     hrefs = {attrs.get("href") for tag, attrs in tags if tag == "a"}
     if expected.get("whatsapp") and not any(href and href.startswith("https://wa.me/") for href in hrefs):
         checks["contact_cta"] = False; findings.append(_finding("WARNING", "contact_cta", "MISSING_WHATSAPP_CTA", "Verified WhatsApp is available but no WhatsApp CTA rendered.", "Render a WhatsApp CTA or document why it is omitted."))
     if expected.get("phone") and not any(href and href.startswith("tel:") for href in hrefs):
         checks["contact_cta"] = False; findings.append(_finding("WARNING", "contact_cta", "MISSING_PHONE_CTA", "Verified phone is available but no call CTA rendered."))
+    if expected.get("email") and expected["email"].lower() not in page_text.lower():
+        checks["contact_cta"] = False; findings.append(_finding("WARNING", "contact_cta", "MISSING_VERIFIED_EMAIL", f"Verified email {expected['email']} is missing from page."))
 
 
-def _content_safety(text, findings, checks, real_build, raw_html="") -> None:
+def _content_safety(text, findings, checks, real_build, raw_html="", synthetic_contact=False) -> None:
     lowered = text.casefold()
+    raw_lower = raw_html.casefold()
     if real_build:
         for pattern in PLACEHOLDERS:
             if pattern in lowered:
                 checks["placeholder_scan"] = False; findings.append(_finding("ERROR", "placeholder", "PLACEHOLDER_CONTENT", f"Suspicious placeholder found: {pattern}."))
+        if not synthetic_contact:
+            for pattern in FICTIONAL_DEMO_PATTERNS:
+                if pattern in lowered or pattern in raw_lower:
+                    checks["placeholder_scan"] = False; findings.append(_finding("ERROR", "content_integrity", "FICTIONAL_DEMO_DATA_IN_REAL_BUILD", f"Fictional demo artifact found in real build: {pattern}."))
+            if re.search(r'<span class="brand-mark"[^>]*>\s*LF\s*</span>', raw_html):
+                checks["content_integrity"] = False; findings.append(_finding("ERROR", "content_integrity", "FICTIONAL_BRAND_MARK_IN_REAL_BUILD", "Fictional brand mark 'LF' found in real build."))
         for spam_word in ("casino", "gambling", "non gamstop", "jackpot", "roulette"):
             if re.search(rf"\b{spam_word}\b", lowered):
                 checks["claim_safety"] = False; findings.append(_finding("ERROR", "content_integrity", "SPAM_CONTENT_DETECTED", f"Suspicious spam keyword detected: {spam_word}."))
