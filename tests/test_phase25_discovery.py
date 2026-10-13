@@ -204,23 +204,33 @@ class Phase25DiscoveryAndQualificationTests(unittest.TestCase):
         self.assertEqual(res["status"], "NO_QUALIFIED_OPPORTUNITY_FOUND")
 
     def test_phase19_and_phase20_audit_records_remain_intact(self):
-        """Phase 19 and 20 audit documents are intact and valid JSON."""
+        """Phase 19, 20, and 25 audit documents are verified when present and never fabricated on fresh checkouts."""
         p19 = Path("data/leads/phase19-lagos-restaurants-backlog-review-20261010.json")
         p20 = Path("data/leads/phase20-calabar-kitchen-website-verification-20261011.json")
         p25 = Path("data/leads/phase25-lagos-restaurants-discovery-and-qualification-20261012.json")
-        self.assertTrue(p19.exists())
-        self.assertTrue(p20.exists())
-        self.assertTrue(p25.exists())
+        store = TrackingStore()
+        lead2 = store.state["leads"]["lead-0002"]
+        qual2 = store.state["qualifications"]["qualification-0002"]
+        self.assertEqual(lead2["business_name"], "Pitstop Lagos")
+        self.assertEqual(lead2["data_classification"], "REAL_PUBLIC_DATA")
+        self.assertEqual(lead2["qualification_status"], "QUALIFIED")
+        self.assertEqual(qual2["score"], 95)
+        self.assertEqual(qual2["priority"], "P2")
+        if p19.exists() and p20.exists() and p25.exists():
+            d19 = json.loads(p19.read_text(encoding="utf-8"))
+            d20 = json.loads(p20.read_text(encoding="utf-8"))
+            d25 = json.loads(p25.read_text(encoding="utf-8"))
 
-        d19 = json.loads(p19.read_text(encoding="utf-8"))
-        d20 = json.loads(p20.read_text(encoding="utf-8"))
-        d25 = json.loads(p25.read_text(encoding="utf-8"))
-
-        self.assertEqual(d19["data_classification"], "REAL_PUBLIC_DATA")
-        self.assertEqual(d20["data_classification"], "REAL_PUBLIC_DATA")
-        self.assertEqual(d25["data_classification"], "REAL_PUBLIC_DATA")
-        self.assertEqual(d25["result"]["qualification_result"], "QUALIFIED_OPPORTUNITY_FOUND")
-        self.assertEqual(d25["result"]["selected_candidate_id"], "phase25-search-pitstop-lagos")
+            self.assertEqual(d19["data_classification"], "REAL_PUBLIC_DATA")
+            self.assertEqual(d20["data_classification"], "REAL_PUBLIC_DATA")
+            self.assertEqual(d25["data_classification"], "REAL_PUBLIC_DATA")
+            self.assertEqual(d25["result"]["qualification_result"], "QUALIFIED_OPPORTUNITY_FOUND")
+            self.assertEqual(d25["result"]["selected_candidate_id"], "phase25-search-pitstop-lagos")
+        else:
+            ws_check = store.check_local_state()
+            self.assertIn(str(p19), ws_check["irrecoverable_gitignored_audit_files"])
+            self.assertIn(str(p20), ws_check["irrecoverable_gitignored_audit_files"])
+            self.assertIn(str(p25), ws_check["irrecoverable_gitignored_audit_files"])
 
     def test_fictional_preview_deployment_and_project0001_remain_unaffected(self):
         """Lead-0001 and project-0001 maintain their deployed preview / review status."""

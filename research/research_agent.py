@@ -12,6 +12,59 @@ import re
 
 RESEARCH_STATES = {"pending", "running", "completed", "partial", "failed"}
 WEBSITE_STATUSES = {"NO_WEBSITE", "WEBSITE_UNAVAILABLE", "WEBSITE_BASIC", "WEBSITE_OUTDATED", "WEBSITE_NEEDS_IMPROVEMENT", "WEBSITE_MODERN", "UNKNOWN"}
+EVIDENCE_TIERS = (
+    "PRESERVED_PUBLIC_OBSERVATION",   # 1. Preserved observations from actual public sources
+    "SOURCE_URL_ONLY",                # 2. Source URLs without preserved supporting observations
+    "GENERATED_CONTENT_COPY",         # 3. Facts copied into generated website content
+    "TEST_FIXTURE_OR_DOCUMENTATION",  # 4. Test fixtures, synthetic records, and documentation
+    "CONFLICTING_OR_UNVERIFIABLE",    # 5. Conflicting, stale, or unverifiable claims
+)
+VERIFICATION_STATUSES = {
+    "VERIFIED",
+    "SUPPORTED_BY_SOURCE_URL",
+    "UNVERIFIED",
+    "CONFLICTING",
+    "WITHHELD",
+    "STALE",
+    "SYNTHETIC_FIXTURE",
+}
+
+
+def is_fixture_or_doc_source(url: Any) -> bool:
+    """Return True if a source reference points to a test fixture, synthetic domain, or documentation."""
+    if not isinstance(url, str) or not url.strip():
+        return False
+    lowered = url.strip().casefold()
+    if "example.invalid" in lowered or lowered.startswith("fixture:") or lowered.startswith("test:"):
+        return True
+    if any(token in lowered for token in ("tests/fixtures", "test_phase", "changelog.md", "tasks.md", "readme.md", "architecture.md")):
+        return True
+    return False
+
+
+def classify_evidence_tier(
+    *,
+    source_urls: list[str],
+    data_classification: str,
+    excerpt: str | None = None,
+    observed_at: str | None = None,
+    has_conflict: bool = False,
+    verification_status: str | None = None,
+    from_generated_content: bool = False,
+) -> str:
+    """Classify an evidence item into the 5-level evidence hierarchy without fabricating provenance."""
+    if from_generated_content:
+        return "GENERATED_CONTENT_COPY"
+    if data_classification == "TEST_FIXTURE" or (source_urls and all(is_fixture_or_doc_source(u) for u in source_urls)):
+        return "TEST_FIXTURE_OR_DOCUMENTATION"
+    if has_conflict or verification_status in {"CONFLICTING", "UNVERIFIED", "STALE", "WITHHELD"}:
+        return "CONFLICTING_OR_UNVERIFIABLE"
+    valid_public_urls = [u for u in source_urls if isinstance(u, str) and u.strip() and not is_fixture_or_doc_source(u)]
+    if not valid_public_urls:
+        return "CONFLICTING_OR_UNVERIFIABLE"
+    if _text(excerpt):
+        return "PRESERVED_PUBLIC_OBSERVATION"
+    return "SOURCE_URL_ONLY"
 
 
 def _text(value: Any) -> str | None:
@@ -91,24 +144,47 @@ class ResearchAgent:
 
 
 def _build_record(candidate: dict[str, Any], evidence: list[dict[str, Any]], checked_at: str, errors: list[str]) -> dict[str, Any]:
+    data_classification = candidate.get("dataClassification") or "TEST_FIXTURE"
     facts, uncertainties = _facts_from_candidate(candidate)
-    identity = _verify_identity(candidate, evidence)
-    matching = [item for item in evidence if item["identityStatus"] == "verified"]
+    filtered_evidence: list[dict[str, Any]] = []
+    for item in evidence:
+        item_class = item.get("data_classification") or item.get("dataClassification")
+        if data_classification == "REAL_PUBLIC_DATA" and (
+            item_class == "TEST_FIXTURE"
+            or item.get("demo") is True
+            or is_fixture_or_doc_source(item.get("source_url"))
+        ):
+            uncertainties.append({
+                "field": "evidence_source",
+                "reason": f"Rejected synthetic/fixture/documentation source '{item.get('source_url')}' for REAL_PUBLIC_DATA candidate.",
+            })
+            continue
+        filtered_evidence.append(item)
+    identity = _verify_identity(candidate, filtered_evidence)
+    matching = [item for item in filtered_evidence if item["identityStatus"] == "verified"]
     if identity["status"] == "mismatch":
         matching = []
     facts.extend(_facts_from_evidence(matching))
+    reconciled_facts, conflicting_facts, evidence_records = _reconcile_facts_and_conflicts(
+        facts,
+        data_classification=data_classification,
+        uncertainties=uncertainties,
+    )
     website = _evaluate_website(candidate, matching)
     activity = _evaluate_activity(candidate, matching)
-    qualification = _qualify(candidate, identity, facts, website, activity, uncertainties, errors)
+    qualification = _qualify(candidate, identity, reconciled_facts, website, activity, uncertainties, errors)
     sources = _unique([url for item in matching for url in [item.get("source_url")] if _text(url)])
     return {
+        "data_classification": data_classification,
         "candidate": candidate,
         "research": {
             "status": "running",
             "startedAt": checked_at,
             "completedAt": None,
             "researchSources": sources,
-            "verifiedFacts": facts,
+            "verifiedFacts": reconciled_facts,
+            "conflictingFacts": conflicting_facts,
+            "evidenceRecords": evidence_records,
             "inferences": qualification.pop("inferences"),
             "uncertainties": uncertainties,
             "identity": identity,
@@ -123,12 +199,22 @@ def _build_record(candidate: dict[str, Any], evidence: list[dict[str, Any]], che
     }
 
 
+def _has_meaningful_value(value: Any) -> bool:
+    if value is None or value == "" or value == [] or value == {}:
+        return False
+    if isinstance(value, dict):
+        return any(_has_meaningful_value(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_has_meaningful_value(v) for v in value)
+    return True
+
+
 def _facts_from_candidate(candidate: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     facts, uncertainties = [], []
     sources = candidate.get("fieldSources", {})
     fields = {"businessName": candidate.get("businessName"), "niche": candidate.get("niche"), "location": candidate.get("location"), "contact": candidate.get("contact"), "originalWebsite": candidate.get("originalWebsite"), "social": candidate.get("social"), "services": candidate.get("publicBusinessInformation", {}).get("servicesOrProducts"), "description": candidate.get("publicBusinessInformation", {}).get("description"), "openingHours": candidate.get("publicBusinessInformation", {}).get("openingHours")}
     for field, value in fields.items():
-        if value not in (None, [], {}):
+        if _has_meaningful_value(value):
             facts.append({"field": field, "value": value, "sourceUrls": sources.get(field, candidate.get("sourceUrls", []))})
         else:
             uncertainties.append({"field": field, "reason": "No source-backed value was available."})
@@ -160,13 +246,206 @@ def _verify_identity(candidate: dict[str, Any], evidence: list[dict[str, Any]]) 
 
 def _facts_from_evidence(evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
     facts = []
-    fields = {"address": "address", "phone": "phone", "email": "email", "whatsapp": "whatsapp", "services": "services", "description": "description", "openingHours": "opening_hours", "publicPricing": "public_pricing", "assetUrls": "asset_urls"}
+    fields = {
+        "address": "address",
+        "phone": "phone",
+        "email": "email",
+        "whatsapp": "whatsapp",
+        "instagram_url": "instagram_url",
+        "facebook_url": "facebook_url",
+        "services": "services",
+        "description": "description",
+        "openingHours": "opening_hours",
+        "publicPricing": "public_pricing",
+        "assetUrls": "asset_urls",
+    }
     for item in evidence:
         for field, key in fields.items():
             value = item.get(key)
             if value not in (None, [], ""):
-                facts.append({"field": field, "value": value, "sourceUrls": [item["source_url"]]})
+                entry: dict[str, Any] = {"field": field, "value": value, "sourceUrls": [item["source_url"]]}
+                if item.get("observed_at"):
+                    entry["observed_at"] = item["observed_at"]
+                if item.get("excerpt"):
+                    entry["excerpt"] = item["excerpt"]
+                facts.append(entry)
     return facts
+
+
+def _scalar_entries_from_facts(facts: list[dict[str, Any]]) -> dict[str, list[tuple[Any, list[str], str | None, str | None]]]:
+    """Extract scalar field values (including nested location/contact/social) to detect conflicts."""
+    observed: dict[str, list[tuple[Any, list[str], str | None, str | None]]] = {}
+
+    def _add(field_name: str, val: Any, urls: list[str], obs_at: str | None, exc: str | None) -> None:
+        if not _has_meaningful_value(val) or isinstance(val, (dict, list)):
+            return
+        observed.setdefault(field_name, []).append((val, list(urls or []), obs_at, exc))
+
+    for item in facts:
+        f_name = item.get("field")
+        f_val = item.get("value")
+        urls = list(item.get("sourceUrls") or [])
+        obs_at = item.get("observed_at") or item.get("observedAt")
+        exc = item.get("excerpt")
+        if f_name == "location" and isinstance(f_val, dict):
+            _add("address", f_val.get("address"), urls, obs_at, exc)
+            _add("city", f_val.get("city"), urls, obs_at, exc)
+            _add("country", f_val.get("country"), urls, obs_at, exc)
+        elif f_name == "contact" and isinstance(f_val, dict):
+            _add("phone", f_val.get("phone"), urls, obs_at, exc)
+            _add("email", f_val.get("email"), urls, obs_at, exc)
+            _add("whatsapp", f_val.get("whatsapp"), urls, obs_at, exc)
+        elif f_name == "social" and isinstance(f_val, dict):
+            _add("instagram_url", f_val.get("instagramUrl") or f_val.get("instagram_url"), urls, obs_at, exc)
+            _add("facebook_url", f_val.get("facebookUrl") or f_val.get("facebook_url"), urls, obs_at, exc)
+        elif isinstance(f_name, str):
+            _add(f_name, f_val, urls, obs_at, exc)
+    return observed
+
+
+def _reconcile_facts_and_conflicts(
+    facts: list[dict[str, Any]],
+    *,
+    data_classification: str,
+    uncertainties: list[dict[str, str]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Detect conflicting scalar facts, withhold disputed values, and build structured evidence records."""
+    scalar_map = _scalar_entries_from_facts(facts)
+    conflicting_fields: dict[str, dict[str, Any]] = {}
+    for field_name, entries in scalar_map.items():
+        distinct_values: list[Any] = []
+        all_urls: list[str] = []
+        for val, urls, _, _ in entries:
+            norm_val = _text(val) if isinstance(val, str) else val
+            if norm_val and norm_val not in distinct_values:
+                distinct_values.append(norm_val)
+            all_urls.extend(urls)
+        if len(distinct_values) > 1:
+            reason = f"Conflicting values observed for '{field_name}': {distinct_values}; withheld until verified by a current primary source."
+            conflicting_fields[field_name] = {
+                "field": field_name,
+                "values": distinct_values,
+                "sourceUrls": _unique(all_urls),
+                "observed_at": None,
+                "excerpt": None,
+                "verification_status": "CONFLICTING",
+                "evidence_tier": "CONFLICTING_OR_UNVERIFIABLE",
+                "reason": reason,
+                "data_classification": data_classification,
+            }
+            uncertainties.append({"field": field_name, "reason": reason})
+
+    reconciled: list[dict[str, Any]] = []
+    evidence_records: list[dict[str, Any]] = []
+    for item in facts:
+        f_name = item.get("field")
+        f_val = item.get("value")
+        urls = [u for u in (item.get("sourceUrls") or []) if isinstance(u, str) and u.strip()]
+        obs_at = item.get("observed_at") or item.get("observedAt")
+        exc = item.get("excerpt")
+        if data_classification == "REAL_PUBLIC_DATA":
+            urls = [u for u in urls if not is_fixture_or_doc_source(u)]
+            if not urls:
+                uncertainties.append({
+                    "field": str(f_name),
+                    "reason": "Withheld fact lacking non-fixture public source URL.",
+                })
+                evidence_records.append({
+                    "field": f_name,
+                    "value": f_val,
+                    "sourceUrls": list(item.get("sourceUrls") or []),
+                    "observed_at": obs_at,
+                    "excerpt": exc,
+                    "evidence_tier": "TEST_FIXTURE_OR_DOCUMENTATION" if item.get("sourceUrls") else "CONFLICTING_OR_UNVERIFIABLE",
+                    "verification_status": "UNVERIFIED",
+                    "conflicts": [],
+                    "uncertainty": "No non-fixture public source URL supports this fact.",
+                    "data_classification": data_classification,
+                })
+                continue
+
+        if f_name in conflicting_fields:
+            continue
+
+        if f_name == "location" and isinstance(f_val, dict):
+            cleaned_loc = dict(f_val)
+            if "address" in conflicting_fields:
+                cleaned_loc.pop("address", None)
+            if not _has_meaningful_value(cleaned_loc):
+                continue
+            f_val = cleaned_loc
+        elif f_name == "contact" and isinstance(f_val, dict):
+            cleaned_contact = dict(f_val)
+            for sub in ("phone", "email", "whatsapp"):
+                if sub in conflicting_fields:
+                    cleaned_contact.pop(sub, None)
+            if not _has_meaningful_value(cleaned_contact):
+                continue
+            f_val = cleaned_contact
+        elif f_name == "social" and isinstance(f_val, dict):
+            cleaned_social = dict(f_val)
+            if "instagram_url" in conflicting_fields:
+                cleaned_social.pop("instagramUrl", None)
+                cleaned_social.pop("instagram_url", None)
+            if "facebook_url" in conflicting_fields:
+                cleaned_social.pop("facebookUrl", None)
+                cleaned_social.pop("facebook_url", None)
+            if not _has_meaningful_value(cleaned_social):
+                continue
+            f_val = cleaned_social
+
+        tier = classify_evidence_tier(
+            source_urls=urls,
+            data_classification=data_classification,
+            excerpt=exc,
+            observed_at=obs_at,
+            has_conflict=False,
+        )
+        ver_status = (
+            "SYNTHETIC_FIXTURE"
+            if data_classification == "TEST_FIXTURE"
+            else "VERIFIED"
+            if tier == "PRESERVED_PUBLIC_OBSERVATION"
+            else "SUPPORTED_BY_SOURCE_URL"
+        )
+        fact_entry: dict[str, Any] = {
+            "field": f_name,
+            "value": f_val,
+            "sourceUrls": urls,
+        }
+        if obs_at:
+            fact_entry["observed_at"] = obs_at
+        if exc:
+            fact_entry["excerpt"] = exc
+        reconciled.append(fact_entry)
+        evidence_records.append({
+            "field": f_name,
+            "value": f_val,
+            "sourceUrls": urls,
+            "observed_at": obs_at,
+            "excerpt": exc,
+            "evidence_tier": tier,
+            "verification_status": ver_status,
+            "conflicts": [],
+            "uncertainty": None,
+            "data_classification": data_classification,
+        })
+
+    for conflict in conflicting_fields.values():
+        evidence_records.append({
+            "field": conflict["field"],
+            "value": None,
+            "sourceUrls": conflict["sourceUrls"],
+            "observed_at": None,
+            "excerpt": None,
+            "evidence_tier": "CONFLICTING_OR_UNVERIFIABLE",
+            "verification_status": "CONFLICTING",
+            "conflicts": conflict["values"],
+            "uncertainty": conflict["reason"],
+            "data_classification": data_classification,
+        })
+
+    return reconciled, list(conflicting_fields.values()), evidence_records
 
 
 def _evaluate_website(candidate: dict[str, Any], evidence: list[dict[str, Any]]) -> dict[str, Any]:

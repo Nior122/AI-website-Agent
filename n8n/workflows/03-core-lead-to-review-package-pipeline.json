@@ -1,0 +1,1288 @@
+{
+  "name": "AI Website Agent - Core Discovery to Review Package Pipeline",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [180, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "run_id",
+              "value": "={{ $json.run_id || ('n8n-run-' + $execution.id) }}"
+            },
+            {
+              "name": "source_file",
+              "value": "={{ $json.source_file || 'tests/fixtures/scout_candidates.json' }}"
+            },
+            {
+              "name": "evidence_file",
+              "value": "={{ $json.evidence_file || 'tests/fixtures/research_evidence.json' }}"
+            },
+            {
+              "name": "country",
+              "value": "={{ $json.country || 'Nigeria' }}"
+            },
+            {
+              "name": "city",
+              "value": "={{ $json.city || 'Lagos' }}"
+            },
+            {
+              "name": "niche",
+              "value": "={{ $json.niche || 'Restaurants' }}"
+            },
+            {
+              "name": "export_dir",
+              "value": "={{ $json.export_dir || '' }}"
+            }
+          ],
+          "number": [
+            {
+              "name": "lead_limit",
+              "value": "={{ $json.lead_limit || 5 }}"
+            }
+          ],
+          "boolean": [
+            {
+              "name": "skip_existing_duplicates",
+              "value": "={{ $json.skip_existing_duplicates || false }}"
+            }
+          ]
+        }
+      },
+      "id": "init-input",
+      "name": "Initialize Pipeline Input",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [400, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL }}/jobs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AI_WEBSITE_AGENT_API_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={\"job_type\":\"SCOUT\",\"job_id\":\"{{ $node['Initialize Pipeline Input'].json.run_id }}-scout\",\"dry_run\":true,\"input\":{\"source_file\":\"{{ $node['Initialize Pipeline Input'].json.source_file }}\",\"country\":\"{{ $node['Initialize Pipeline Input'].json.country }}\",\"city\":\"{{ $node['Initialize Pipeline Input'].json.city }}\",\"niche\":\"{{ $node['Initialize Pipeline Input'].json.niche }}\",\"lead_limit\":{{ $node['Initialize Pipeline Input'].json.lead_limit }},\"skip_existing_duplicates\":{{ $node['Initialize Pipeline Input'].json.skip_existing_duplicates }}}}"
+      },
+      "id": "create-scout",
+      "name": "Create SCOUT Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL }}/jobs/{{ $json.job_id }}/run",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AI_WEBSITE_AGENT_API_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "{}"
+      },
+      "id": "run-scout",
+      "name": "Run Business Discovery & Deduplication",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.status }}",
+              "operation": "equal",
+              "value2": "COMPLETED"
+            },
+            {
+              "value1": "={{ $json.output.lead_id }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        },
+        "combineOperation": "all"
+      },
+      "id": "if-scout-ok",
+      "name": "IF Discovery Succeeded",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "pipeline_status",
+              "value": "FAILED"
+            },
+            {
+              "name": "stage",
+              "value": "BUSINESS_DISCOVERY"
+            },
+            {
+              "name": "outcome",
+              "value": "DISCOVERY_FAILED"
+            },
+            {
+              "name": "job_id",
+              "value": "={{ $json.job_id }}"
+            },
+            {
+              "name": "error",
+              "value": "={{ $json.error }}"
+            }
+          ]
+        }
+      },
+      "id": "outcome-scout-failed",
+      "name": "Outcome - Discovery Failed",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [1360, 520]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.output.outcome }}",
+              "operation": "equal",
+              "value2": "DUPLICATE_ALREADY_READY_FOR_REVIEW"
+            },
+            {
+              "value1": "={{ $json.output.outcome }}",
+              "operation": "equal",
+              "value2": "DUPLICATE_BUSINESS"
+            }
+          ]
+        },
+        "combineOperation": "any"
+      },
+      "id": "if-duplicate",
+      "name": "IF Duplicate Business",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1360, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "pipeline_status",
+              "value": "SKIPPED_DUPLICATE"
+            },
+            {
+              "name": "stage",
+              "value": "DEDUPLICATION"
+            },
+            {
+              "name": "outcome",
+              "value": "={{ $json.output.outcome }}"
+            },
+            {
+              "name": "lead_id",
+              "value": "={{ $json.output.lead_id }}"
+            },
+            {
+              "name": "project_id",
+              "value": "={{ $json.output.existing_project_id }}"
+            }
+          ],
+          "number": [
+            {
+              "name": "duplicate_count",
+              "value": "={{ $json.output.duplicate_count }}"
+            }
+          ]
+        }
+      },
+      "id": "outcome-duplicate",
+      "name": "Outcome - Duplicate Business",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [1600, 140]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL }}/jobs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AI_WEBSITE_AGENT_API_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={\"job_type\":\"RESEARCH\",\"job_id\":\"{{ $node['Initialize Pipeline Input'].json.run_id }}-research\",\"lead_id\":\"{{ $node['Run Business Discovery & Deduplication'].json.output.lead_id }}\",\"parent_job_id\":\"{{ $node['Run Business Discovery & Deduplication'].json.job_id }}\",\"dry_run\":true,\"input\":{\"evidence_file\":\"{{ $node['Initialize Pipeline Input'].json.evidence_file }}\"}}"
+      },
+      "id": "create-research",
+      "name": "Create RESEARCH Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1600, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL }}/jobs/{{ $json.job_id }}/run",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AI_WEBSITE_AGENT_API_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "{}"
+      },
+      "id": "run-research",
+      "name": "Run Research & Lead Update",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1840, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.status }}",
+              "operation": "equal",
+              "value2": "COMPLETED"
+            }
+          ]
+        },
+        "combineOperation": "all"
+      },
+      "id": "if-research-ok",
+      "name": "IF Research Succeeded",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [2080, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "pipeline_status",
+              "value": "FAILED"
+            },
+            {
+              "name": "stage",
+              "value": "RESEARCH"
+            },
+            {
+              "name": "outcome",
+              "value": "RESEARCH_FAILED"
+            },
+            {
+              "name": "job_id",
+              "value": "={{ $json.job_id }}"
+            },
+            {
+              "name": "lead_id",
+              "value": "={{ $json.lead_id }}"
+            },
+            {
+              "name": "error",
+              "value": "={{ $json.error }}"
+            }
+          ]
+        }
+      },
+      "id": "outcome-research-failed",
+      "name": "Outcome - Research Failed",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [2320, 520]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL }}/jobs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AI_WEBSITE_AGENT_API_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={\"job_type\":\"QUALIFY\",\"job_id\":\"{{ $node['Initialize Pipeline Input'].json.run_id }}-qualify\",\"lead_id\":\"{{ $node['Run Research & Lead Update'].json.output.lead_id }}\",\"parent_job_id\":\"{{ $node['Run Research & Lead Update'].json.job_id }}\",\"dry_run\":true,\"input\":{\"create_project\":true}}"
+      },
+      "id": "create-qualify",
+      "name": "Create QUALIFY Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2320, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL }}/jobs/{{ $json.job_id }}/run",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AI_WEBSITE_AGENT_API_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "{}"
+      },
+      "id": "run-qualify",
+      "name": "Run Qualification & Project Creation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2560, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.status }}",
+              "operation": "equal",
+              "value2": "COMPLETED"
+            },
+            {
+              "value1": "={{ $json.output.qualification_status }}",
+              "operation": "equal",
+              "value2": "QUALIFIED"
+            },
+            {
+              "value1": "={{ $json.output.project_id }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        },
+        "combineOperation": "all"
+      },
+      "id": "if-qualified",
+      "name": "IF Opportunity Qualified",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [2800, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "pipeline_status",
+              "value": "HALTED_BEFORE_BUILD"
+            },
+            {
+              "name": "stage",
+              "value": "QUALIFICATION"
+            },
+            {
+              "name": "outcome",
+              "value": "={{ $json.output.outcome }}"
+            },
+            {
+              "name": "qualification_status",
+              "value": "={{ $json.output.qualification_status }}"
+            },
+            {
+              "name": "lead_id",
+              "value": "={{ $json.output.lead_id }}"
+            },
+            {
+              "name": "project_id",
+              "value": "={{ $json.output.project_id }}"
+            }
+          ]
+        }
+      },
+      "id": "outcome-unqualified",
+      "name": "Outcome - Unqualified Opportunity",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [3520, 440]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.output.outcome }}",
+              "operation": "equal",
+              "value2": "INSUFFICIENT_RESEARCH_EVIDENCE"
+            }
+          ]
+        },
+        "combineOperation": "all"
+      },
+      "id": "if-insufficient-evidence",
+      "name": "IF Insufficient Research Evidence",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [3280, 520]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "pipeline_status",
+              "value": "HALTED_BEFORE_BUILD"
+            },
+            {
+              "name": "stage",
+              "value": "RESEARCH"
+            },
+            {
+              "name": "outcome",
+              "value": "={{ $json.output.outcome }}"
+            },
+            {
+              "name": "qualification_status",
+              "value": "={{ $json.output.qualification_status }}"
+            },
+            {
+              "name": "lead_id",
+              "value": "={{ $json.output.lead_id }}"
+            },
+            {
+              "name": "project_id",
+              "value": "={{ $json.output.project_id }}"
+            }
+          ]
+        }
+      },
+      "id": "outcome-insufficient-evidence",
+      "name": "Outcome - Insufficient Research Evidence",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [3520, 600]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.output.outcome }}",
+              "operation": "equal",
+              "value2": "RESEARCH_REQUIRES_ADDITIONAL_WORK"
+            }
+          ]
+        },
+        "combineOperation": "all"
+      },
+      "id": "if-research-needs-work",
+      "name": "IF Research Requires Additional Work",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [3040, 520]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "pipeline_status",
+              "value": "HALTED_BEFORE_BUILD"
+            },
+            {
+              "name": "stage",
+              "value": "RESEARCH_REQUIRES_ADDITIONAL_WORK"
+            },
+            {
+              "name": "outcome",
+              "value": "={{ $json.output.outcome }}"
+            },
+            {
+              "name": "qualification_status",
+              "value": "={{ $json.output.qualification_status }}"
+            },
+            {
+              "name": "lead_id",
+              "value": "={{ $json.output.lead_id }}"
+            },
+            {
+              "name": "project_id",
+              "value": "={{ $json.output.project_id }}"
+            }
+          ]
+        }
+      },
+      "id": "outcome-research-needs-work",
+      "name": "Outcome - Research Requires Additional Work",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [3280, 680]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL }}/jobs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AI_WEBSITE_AGENT_API_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={\"job_type\":\"BUILD\",\"job_id\":\"{{ $node['Initialize Pipeline Input'].json.run_id }}-build\",\"lead_id\":\"{{ $node['Run Qualification & Project Creation'].json.output.lead_id }}\",\"project_id\":\"{{ $node['Run Qualification & Project Creation'].json.output.project_id }}\",\"parent_job_id\":\"{{ $node['Run Qualification & Project Creation'].json.job_id }}\",\"dry_run\":true}"
+      },
+      "id": "create-build",
+      "name": "Create BUILD Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3040, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL }}/jobs/{{ $json.job_id }}/run",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AI_WEBSITE_AGENT_API_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "{}"
+      },
+      "id": "run-build",
+      "name": "Run Website Build",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3280, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.status }}",
+              "operation": "equal",
+              "value2": "COMPLETED"
+            },
+            {
+              "value1": "={{ $json.output.build_id }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        },
+        "combineOperation": "all"
+      },
+      "id": "if-build-ok",
+      "name": "IF Website Build Succeeded",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [3520, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "pipeline_status",
+              "value": "FAILED"
+            },
+            {
+              "name": "stage",
+              "value": "WEBSITE_BUILD"
+            },
+            {
+              "name": "outcome",
+              "value": "BUILD_FAILURE"
+            },
+            {
+              "name": "job_id",
+              "value": "={{ $json.job_id }}"
+            },
+            {
+              "name": "project_id",
+              "value": "={{ $json.project_id }}"
+            },
+            {
+              "name": "build_id",
+              "value": "={{ $json.build_id }}"
+            },
+            {
+              "name": "error",
+              "value": "={{ $json.error }}"
+            }
+          ]
+        }
+      },
+      "id": "outcome-build-failed",
+      "name": "Outcome - Build Failure",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [3760, 520]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL }}/jobs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AI_WEBSITE_AGENT_API_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={\"job_type\":\"VALIDATE\",\"job_id\":\"{{ $node['Initialize Pipeline Input'].json.run_id }}-validate\",\"lead_id\":\"{{ $node['Run Website Build'].json.output.lead_id }}\",\"project_id\":\"{{ $node['Run Website Build'].json.output.project_id }}\",\"build_id\":\"{{ $node['Run Website Build'].json.output.build_id }}\",\"parent_job_id\":\"{{ $node['Run Website Build'].json.job_id }}\",\"dry_run\":true}"
+      },
+      "id": "create-validate",
+      "name": "Create VALIDATE Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3760, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL }}/jobs/{{ $json.job_id }}/run",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AI_WEBSITE_AGENT_API_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "{}"
+      },
+      "id": "run-validate",
+      "name": "Run Automated Validation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [4000, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.status }}",
+              "operation": "equal",
+              "value2": "COMPLETED"
+            },
+            {
+              "value1": "={{ $json.output.validation_status }}",
+              "operation": "equal",
+              "value2": "PASS"
+            }
+          ]
+        },
+        "combineOperation": "all"
+      },
+      "id": "if-validate-ok",
+      "name": "IF Validation Passed",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [4240, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "pipeline_status",
+              "value": "FAILED"
+            },
+            {
+              "name": "stage",
+              "value": "AUTOMATED_VALIDATION"
+            },
+            {
+              "name": "outcome",
+              "value": "VALIDATION_FAILURE"
+            },
+            {
+              "name": "job_id",
+              "value": "={{ $json.job_id }}"
+            },
+            {
+              "name": "project_id",
+              "value": "={{ $json.project_id }}"
+            },
+            {
+              "name": "build_id",
+              "value": "={{ $json.build_id }}"
+            },
+            {
+              "name": "validation_id",
+              "value": "={{ $json.output.validation_id }}"
+            },
+            {
+              "name": "error",
+              "value": "={{ $json.error }}"
+            }
+          ]
+        }
+      },
+      "id": "outcome-validate-failed",
+      "name": "Outcome - Validation Failure",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [4480, 520]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL }}/projects/{{ $node['Run Automated Validation'].json.output.project_id }}/review-package",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AI_WEBSITE_AGENT_API_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={\"export_dir\":\"{{ $node['Initialize Pipeline Input'].json.export_dir }}\"}"
+      },
+      "id": "generate-review-package",
+      "name": "Generate & Verify Review Package",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [4480, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.verification.status }}",
+              "operation": "equal",
+              "value2": "VALID"
+            },
+            {
+              "value1": "={{ $json.review_status }}",
+              "operation": "equal",
+              "value2": "PENDING"
+            }
+          ]
+        },
+        "combineOperation": "all"
+      },
+      "id": "if-package-valid",
+      "name": "IF Review Package Valid",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [4720, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "pipeline_status",
+              "value": "FAILED"
+            },
+            {
+              "name": "stage",
+              "value": "REVIEW_PACKAGE_GENERATION"
+            },
+            {
+              "name": "outcome",
+              "value": "REVIEW_PACKAGE_INVALID"
+            },
+            {
+              "name": "project_id",
+              "value": "={{ $json.project_id }}"
+            }
+          ]
+        }
+      },
+      "id": "outcome-package-invalid",
+      "name": "Outcome - Review Package Invalid",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [4960, 520]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "pipeline_status",
+              "value": "COMPLETED_AWAITING_HUMAN_REVIEW"
+            },
+            {
+              "name": "stage",
+              "value": "HUMAN_REVIEW_PENDING"
+            },
+            {
+              "name": "outcome",
+              "value": "SUCCESSFUL_BUILD_READY_FOR_REVIEW"
+            },
+            {
+              "name": "lead_id",
+              "value": "={{ $json.lead_id }}"
+            },
+            {
+              "name": "project_id",
+              "value": "={{ $json.project_id }}"
+            },
+            {
+              "name": "build_id",
+              "value": "={{ $json.build_id }}"
+            },
+            {
+              "name": "validation_id",
+              "value": "={{ $json.validation_id }}"
+            },
+            {
+              "name": "current_stage",
+              "value": "={{ $json.current_stage }}"
+            },
+            {
+              "name": "workflow_state",
+              "value": "={{ $json.workflow_state }}"
+            },
+            {
+              "name": "review_status",
+              "value": "={{ $json.review_status }}"
+            },
+            {
+              "name": "review_package_status",
+              "value": "={{ $json.verification.status }}"
+            },
+            {
+              "name": "canonical_sha256",
+              "value": "={{ $json.verification.canonical_sha256 }}"
+            },
+            {
+              "name": "exported_html_path",
+              "value": "={{ $json.verification.exported_html_path }}"
+            }
+          ],
+          "boolean": [
+            {
+              "name": "human_review_pending",
+              "value": "={{ $json.human_review_pending }}"
+            },
+            {
+              "name": "hash_matches",
+              "value": "={{ $json.verification.hash_matches }}"
+            }
+          ]
+        }
+      },
+      "id": "outcome-ready-for-review",
+      "name": "Outcome - Successful Build Ready For Human Review",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [4960, 300]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Initialize Pipeline Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Initialize Pipeline Input": {
+      "main": [
+        [
+          {
+            "node": "Create SCOUT Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create SCOUT Job": {
+      "main": [
+        [
+          {
+            "node": "Run Business Discovery & Deduplication",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Business Discovery & Deduplication": {
+      "main": [
+        [
+          {
+            "node": "IF Discovery Succeeded",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Discovery Succeeded": {
+      "main": [
+        [
+          {
+            "node": "IF Duplicate Business",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Outcome - Discovery Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Duplicate Business": {
+      "main": [
+        [
+          {
+            "node": "Outcome - Duplicate Business",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create RESEARCH Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create RESEARCH Job": {
+      "main": [
+        [
+          {
+            "node": "Run Research & Lead Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Research & Lead Update": {
+      "main": [
+        [
+          {
+            "node": "IF Research Succeeded",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Research Succeeded": {
+      "main": [
+        [
+          {
+            "node": "Create QUALIFY Job",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Outcome - Research Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create QUALIFY Job": {
+      "main": [
+        [
+          {
+            "node": "Run Qualification & Project Creation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Qualification & Project Creation": {
+      "main": [
+        [
+          {
+            "node": "IF Opportunity Qualified",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Opportunity Qualified": {
+      "main": [
+        [
+          {
+            "node": "Create BUILD Job",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF Research Requires Additional Work",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Research Requires Additional Work": {
+      "main": [
+        [
+          {
+            "node": "Outcome - Research Requires Additional Work",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF Insufficient Research Evidence",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Insufficient Research Evidence": {
+      "main": [
+        [
+          {
+            "node": "Outcome - Insufficient Research Evidence",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Outcome - Unqualified Opportunity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create BUILD Job": {
+      "main": [
+        [
+          {
+            "node": "Run Website Build",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Website Build": {
+      "main": [
+        [
+          {
+            "node": "IF Website Build Succeeded",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Website Build Succeeded": {
+      "main": [
+        [
+          {
+            "node": "Create VALIDATE Job",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Outcome - Build Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create VALIDATE Job": {
+      "main": [
+        [
+          {
+            "node": "Run Automated Validation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Automated Validation": {
+      "main": [
+        [
+          {
+            "node": "IF Validation Passed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Validation Passed": {
+      "main": [
+        [
+          {
+            "node": "Generate & Verify Review Package",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Outcome - Validation Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate & Verify Review Package": {
+      "main": [
+        [
+          {
+            "node": "IF Review Package Valid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Review Package Valid": {
+      "main": [
+        [
+          {
+            "node": "Outcome - Successful Build Ready For Human Review",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Outcome - Review Package Invalid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "core-pipeline-v1-no-secrets"
+}

@@ -9,20 +9,21 @@ def now(): return datetime.now(timezone.utc).replace(microsecond=0).isoformat().
 class OutreachService:
  def __init__(self,store): self.store=store; self.store.state.setdefault("outreach",{})
  def readiness(self,project_id):
-  s=self.store.snapshot(project_id); p=s["project"]
+  s=self.store.snapshot(project_id); p=s["project"]; assigned=p.get("assigned_build_id")
   if s["lead"].get("qualification_status")!="QUALIFIED": return "NOT_QUALIFIED"
-  if not s["latestBuild"]: return "NO_BUILD"
-  if not s["latestValidation"] or s["latestValidation"].get("status")!="PASS": return "VALIDATION_FAILED"
-  if not s["latestDeployment"] or not s["latestDeployment"].get("deployment_url"): return "NO_PREVIEW"
-  if p.get("review_status")!="APPROVED" or p["current_stage"]!="READY_FOR_OUTREACH": return "AWAITING_HUMAN_REVIEW"
+  if not s["latestBuild"] or s["latestBuild"].get("status")=="FAILED": return "NO_BUILD"
+  if not s["latestValidation"] or s["latestValidation"].get("build_id")!=assigned or s["latestValidation"].get("status")!="PASS": return "VALIDATION_FAILED"
+  if not s["latestDeployment"] or s["latestDeployment"].get("build_id")!=assigned or s["latestDeployment"].get("deployment_status")!="DEPLOYED" or not s["latestDeployment"].get("deployment_url"): return "NO_PREVIEW"
+  if p.get("review_status")!="APPROVED" or p["current_stage"]!="READY_FOR_OUTREACH" or (p.get("approved_build_id") and p.get("approved_build_id")!=assigned) or (p.get("approved_action") and p.get("approved_action")!="OUTREACH_PREPARATION"): return "AWAITING_HUMAN_REVIEW"
   return "READY"
  def create(self,project_id,channel="EMAIL",tone="professional",regenerate=False):
   if channel not in CHANNELS: raise ValueError("Unsupported outreach channel.")
   ready=self.readiness(project_id)
   if ready!="READY": raise ValueError(f"Outreach preparation blocked: {ready}")
-  existing=[x for x in self.store.state["outreach"].values() if x["project_id"]==project_id and x["channel"]==channel]
+  s=self.store.snapshot(project_id); lead=s["lead"]; dep=s["latestDeployment"]
+  existing=[x for x in self.store.state["outreach"].values() if x["project_id"]==project_id and x["channel"]==channel and x.get("build_id")==dep["build_id"] and x.get("deployment_id")==dep["deployment_id"]]
   if existing and not regenerate: return existing[-1]
-  s=self.store.snapshot(project_id); lead=s["lead"]; dep=s["latestDeployment"]; evidence=self._evidence(lead)
+  evidence=self._evidence(lead)
   if not evidence: raise ValueError("INSUFFICIENT_RESEARCH")
   i=len(self.store.state["outreach"])+1; ident=f"outreach-{i:04d}"; body=self._draft(lead,dep["deployment_url"],channel,tone,evidence)
   self._safe(body,lead["business_name"],dep["deployment_url"])
@@ -35,7 +36,7 @@ class OutreachService:
   x.update({"status":"READY_TO_SEND" if status=="APPROVED" else status,"review_notes":notes,"reviewed_at":now()}); self.store._save(); return x
  def _evidence(self,l):
   e=[]
-  if l.get("website_status") in {"NO_WEBSITE","WEBSITE_OUTDATED","WEBSITE_NEEDS_IMPROVEMENT"}: e.append({"claim":"Public research identified a website opportunity.","source_urls":l.get("research_source_urls",[]),"confidence":"high"})
+  if l.get("website_status") in {"NO_WEBSITE","WEBSITE_POOR","WEBSITE_OUTDATED","WEBSITE_NEEDS_IMPROVEMENT","WEBSITE_BASIC"}: e.append({"claim":"Public research identified a website opportunity.","source_urls":l.get("research_source_urls") or l.get("source_urls",[]),"confidence":"high"})
   if l.get("business_type"): e.append({"claim":f"Business category: {l['business_type']}.","source_urls":l.get("source_urls",[]),"confidence":"medium"})
   return e
  def _draft(self,l,url,channel,tone,evidence):

@@ -4,23 +4,49 @@ from __future__ import annotations
 
 import argparse
 import functools
+import hashlib
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 
 from .website_builder import WebsiteBuilder
 
+ALLOWED_LOCAL_HOSTS = {"127.0.0.1", "localhost"}
+
+
+def validate_serve_target(directory: Path, host: str = "127.0.0.1") -> Path:
+    cleaned_host = str(host or "").strip()
+    if cleaned_host not in ALLOWED_LOCAL_HOSTS:
+        raise ValueError(
+            f"Refusing to bind local preview server to '{cleaned_host}': only loopback '127.0.0.1' (or 'localhost') is permitted; '0.0.0.0' and public interfaces are forbidden."
+        )
+    resolved = Path(directory).resolve()
+    index_path = resolved / "index.html"
+    if not resolved.is_dir() or not index_path.is_file():
+        raise ValueError(f"Directory {resolved} does not contain an index.html file.")
+    pkg_path = resolved / "review-package.json"
+    if pkg_path.is_file():
+        pkg = json.loads(pkg_path.read_text(encoding="utf-8"))
+        actual_sha = hashlib.sha256(index_path.read_bytes()).hexdigest()
+        expected_sha = pkg.get("artifact_sha256")
+        if expected_sha and actual_sha != expected_sha:
+            raise ValueError(
+                f"Review package integrity error in {resolved}: index.html SHA-256 ({actual_sha}) does not match review-package.json ({expected_sha})."
+            )
+    return resolved
+
 
 def serve_build(directory: Path, host: str = "127.0.0.1", port: int = 8080) -> None:
-    directory = directory.resolve()
-    if not directory.is_dir() or not (directory / "index.html").is_file():
-        raise ValueError(f"Directory {directory} does not contain an index.html file.")
-    handler = functools.partial(SimpleHTTPRequestHandler, directory=str(directory))
+    resolved = validate_serve_target(directory, host=host)
+    handler = functools.partial(SimpleHTTPRequestHandler, directory=str(resolved))
     server = ThreadingHTTPServer((host, port), handler)
-    print(f"Serving preview at http://{host}:{port}/ (bound to {host})")
+    print(f"Serving local review preview from {resolved} at http://{host}:{port}/ (bound to {host} only).")
+    print("Press Ctrl+C to stop the local server.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
+        pass
+    finally:
         server.server_close()
 
 

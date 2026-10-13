@@ -75,7 +75,15 @@ class VercelDeploymentProvider:
     def __init__(self, repository_root: Path, runner: Callable[..., subprocess.CompletedProcess] = subprocess.run, *, expected_project_name: str = EXPECTED_PREVIEW_PROJECT) -> None:
         self.repository_root, self.runner, self.expected_project_name = repository_root, runner, expected_project_name
 
-    def deploy(self, build_path: Path, *, dry_run: bool = True, approve_needs_review: bool = False) -> DeploymentResult:
+    def deploy(
+        self,
+        build_path: Path,
+        *,
+        dry_run: bool = True,
+        approve_needs_review: bool = False,
+        approve_real_preview: bool = False,
+        project_name: str | None = None,
+    ) -> DeploymentResult:
         created_at, build_path = _now(), build_path.resolve()
         manifest = _load_build_manifest(build_path); build_id = str(manifest.get("build_id") or "unknown-build")
         suffix = build_id.removeprefix("build-") if manifest.get("build_id") else created_at.replace(":", "").replace("Z", "z")
@@ -84,7 +92,25 @@ class VercelDeploymentProvider:
             "PREPARING", None, None, _vercel_project_id(self.repository_root), _git_sha(self.repository_root), str(build_path), created_at)
         try:
             _assert_safe_build(build_path, manifest, approve_needs_review)
-            project = _assert_project_linked(self.repository_root, self.expected_project_name)
+            data_class = manifest.get("data_classification") or (manifest.get("metadata") or {}).get("data_classification")
+            is_real = data_class == "REAL_PUBLIC_DATA"
+            configured_isolated = manifest.get("isolated_preview_project") or (manifest.get("metadata") or {}).get("isolated_preview_project")
+            if project_name is not None:
+                target_project_name = project_name.strip()
+            elif configured_isolated:
+                target_project_name = str(configured_isolated).strip()
+            elif is_real and self.expected_project_name == EXPECTED_PREVIEW_PROJECT:
+                target_project_name = ""
+            else:
+                target_project_name = self.expected_project_name
+            if is_real and not approve_real_preview:
+                raise NeedsReview("Real-business preview deployment is disabled by default and requires explicit operator authorization (--approve-real-preview).")
+            if is_real and (not target_project_name or target_project_name == EXPECTED_PREVIEW_PROJECT):
+                raise ValueError(
+                    f"Refusing deployment: real-business drafts cannot use or fall back to the shared fictional preview project '{EXPECTED_PREVIEW_PROJECT}'; specify an isolated preview project via --project-name."
+                )
+            _assert_valid_preview_target(target_project_name, configured_isolated=configured_isolated)
+            project = _assert_project_linked(self.repository_root, target_project_name)
             result.vercel_project_id = project["projectId"]
             result.metadata.update({"target": "preview", "dry_run": dry_run, "project_name": project["projectName"]})
             with TemporaryDirectory(prefix="ai-website-agent-preview-") as temporary:
@@ -173,11 +199,38 @@ def _load_build_manifest(build_path: Path) -> dict:
 
 def _assert_safe_build(build_path: Path, manifest: dict, approve_needs_review: bool) -> None:
     if Path(manifest.get("output_location") or "").resolve() != (build_path / "index.html").resolve(): raise ValueError("Build manifest output location does not match the requested deployment directory.")
-    status = (manifest.get("validation") or {}).get("status")
+    if (manifest.get("metadata") or {}).get("target") in {"prod", "production"}:
+        raise ValueError("Refusing deployment: production target is forbidden; only preview deployments are supported.")
+    review_status = manifest.get("review_status") or (manifest.get("metadata") or {}).get("review_status")
+    if review_status in {"REJECTED", "CHANGES_REQUESTED"}:
+        raise ValueError(f"Deployment is blocked because build review_status is {review_status}.")
+    build_status = manifest.get("status")
+    if build_status is not None and build_status != "COMPLETED": raise ValueError(f"Deployment is blocked because build status is {build_status}, not COMPLETED.")
+    validation = manifest.get("validation") or {}
+    if validation.get("build_id") and manifest.get("build_id") and validation.get("build_id") != manifest.get("build_id"):
+        raise ValueError("Build manifest validation build_id does not match build_id.")
+    if validation.get("lead_id") and manifest.get("lead_id") and validation.get("lead_id") != manifest.get("lead_id"):
+        raise ValueError("Build manifest validation lead_id does not match lead_id.")
+    status = validation.get("status")
     if status == "PASS": return
     if status == "NEEDS_REVIEW" and approve_needs_review: return
     if status == "NEEDS_REVIEW": raise NeedsReview("Validation requires explicit review approval before preview deployment.")
     raise ValueError(f"Deployment is blocked because validation status is {status or 'missing'}, not PASS.")
+
+def _assert_valid_preview_target(target_project_name: str, *, configured_isolated: str | None = None) -> None:
+    cleaned = str(target_project_name or "").strip()
+    if not cleaned or not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,62}", cleaned):
+        raise ValueError("Refusing deployment: preview project name must be a valid lowercase slug.")
+    if cleaned == "grace-light-community-church":
+        raise ValueError(f"Refusing deployment: linked Vercel project is not the dedicated preview project '{cleaned}'.")
+    if re.search(r"(?:^|-)prod(?:uction)?(?:$|-)|(?:^|-)live(?:$|-)", cleaned):
+        raise ValueError(f"Refusing deployment: '{cleaned}' is a production target; only preview projects are permitted.")
+    if "preview" not in cleaned:
+        raise ValueError(f"Refusing deployment: target project '{cleaned}' must be a dedicated preview project (name must include 'preview').")
+    if configured_isolated and cleaned != str(configured_isolated).strip():
+        raise ValueError(
+            f"Refusing deployment: requested project '{cleaned}' does not match configured isolated preview project '{configured_isolated}'."
+        )
 
 def _assert_project_linked(root: Path, expected_project_name: str) -> dict:
     project = root / ".vercel" / "project.json"
@@ -186,6 +239,7 @@ def _assert_project_linked(root: Path, expected_project_name: str) -> dict:
     except json.JSONDecodeError as error: raise ValueError("Linked Vercel project configuration is not valid JSON.") from error
     if not isinstance(record.get("projectId"), str) or not record["projectId"].strip(): raise ValueError("Linked Vercel project configuration has no projectId.")
     if record.get("projectName") != expected_project_name: raise ValueError(f"Refusing deployment: linked Vercel project is not the dedicated preview project '{expected_project_name}'.")
+    _assert_valid_preview_target(record["projectName"])
     return record
 
 def _vercel_project_id(root: Path) -> str | None:

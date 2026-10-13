@@ -4,16 +4,18 @@ AI Website Agent is a future, provider-neutral system for finding and qualifying
 
 ## Current state
 
-**Phase:** 24 — Isolated Vercel preview, safe artifact packaging, and deployment completion
-**Status:** Dedicated project `ai-website-agent-preview` linked and verified; build `build-2026-10-12T024113z` validated at 100/100 PASS; staged payload deployed without `--prod` to `https://ai-website-agent-preview.vercel.app`; hosted page verified anonymously accessible.
-**Implemented:** Phase 1–24 foundations, safe preview deployment, and bounded public-data re-verification record format.
-**Not implemented:** automated lead/project creation from real data, n8n activation, real worker/provider integration, production deployment, external AI providers, outreach delivery, or automated messaging.
+**Phase:** 33 — Full-System Product Audit, LocalPipelineWorker Execution, 7-State Review Machine, & Operator Workflow CLI
+**Status:** Fictional demonstration (`lead-0001` / `project-0001`) remains live at `https://ai-website-agent-preview.vercel.app` (`READY_FOR_REVIEW`, `PENDING` approval). First qualified real business Pitstop Lagos (`lead-0002` / `project-0002`) has its updated, conflict-free local website draft at `output/lead-0002/build-2026-10-13T012227z/index.html` (and verified exported review package at `preview-export/lead-0002-pitstop-lagos/`) validated at 100/100 PASS (`validation-2026-10-13T012227z`, `READY_FOR_REVIEW`, `workflow_state: "VALIDATION_PASSED_READY_FOR_REVIEW"`, `PENDING` human review; not deployed), with the unresolved street address (`92A` vs `92b`) and telephone (`+234 807 749 8324` vs `+234 817 999 9005`) conflicts explicitly recorded and withheld until primary-source verification.
+**Implemented:** Phase 1–33 foundations, safe preview deployment, bounded public-data qualification, 5-tier evidence hierarchy and automatic conflict withholding, strict verified-fact template mapping, real-business draft validation, `LocalPipelineWorker` end-to-end job execution (`SCOUT` → `PREPARE_OUTREACH`), 7-state human review state machine (`APPROVED_FOR_PREVIEW` for `PREVIEW_DEPLOYMENT` vs `APPROVED` for `OUTREACH_PREPARATION`), operator workflow CLI (`ingest-lead`, `build`, `review`, `review-package`, `configure-preview`, `prepare-preview`, `outreach`, `check-workspace`), and integrated cross-module handoffs across 146 passing unit tests.
+**Not implemented:** automated lead/project creation from real data, n8n activation, real external worker/provider integration, production deployment, external AI providers, outreach delivery, or automated messaging.
 
 Phase 20 verified Calabar Kitchen's Ikeja main branch against public independent listings and its accessible website. The domain is `LIKELY_OFFICIAL` with high confidence for that branch, but no material, source-backed website defect was established. Calabar Kitchen remains `NOT_YET_QUALIFIED`; no lead, project, build, deployment, contact, or outreach record was created.
 
 Phase 22B redesigned the reusable `restaurant-menu-v1` experience using the explicitly fictional Lagos Fresh Kitchen fixture only. The renderer now produces an editorial green/ivory/terracotta restaurant concept with an original inline SVG meal illustration, responsive menu composition, visible fictional disclosure, and non-actionable fixture contacts. A fresh local build passed static QA (100/100) and browser checks at 1440, 1024, 768, 390, and 360px.
 
 Phase 24 produced `build-2026-10-12T024113z` from the same fictional fixture. It passed static QA (100/100). Deployment payload packaging staged only `index.html` (zero manifests, secrets, or internal tracking files). The deployment adapter verified linkage to `ai-website-agent-preview` (`prj_KXSX2XqjBsbsjSXKKAXXbDrnYJRd`) and deployed without `--prod` to `https://ai-website-agent-preview.vercel.app`. Anonymous public inspection confirmed HTTP 200 OK and full rendering of the responsive demonstration site. TrackingStore review remains pending operator approval.
+
+Phase 25 identified Pitstop Lagos (`lead-0002`) as the first qualified real business (`QUALIFIED`, score 95, P2) based on verified production defects on `https://pitstoplagos.com/` (unparsed Visual Composer shortcodes and hidden off-screen casino spam backlinks). Phase 26 and its recovery hardened the `WebsiteBuilder`, `restaurant-menu-v1` template components, CSS contrast, and `quality_validator` so real-business builds strictly use `research.verifiedFacts` without silent fallback to unverified candidate fields or fictional fixture remnants, generating `output/lead-0002/build-2026-10-12T193556z/index.html` (100/100 PASS) while keeping `project-0002` local-only at `READY_FOR_REVIEW` (`PENDING` human review).
 
 ## Repository map
 
@@ -70,7 +72,45 @@ python -m deployment.cli --build output/<lead-id>/<build-id> --execute
 
 The adapter calls Vercel without `--prod`, explicitly targets the dedicated linked project ID, deploys a temporary sanitized payload rather than the internal build directory, accepts only an HTTPS `*.vercel.app` host, and records a real result in the artifact-local `deployment.json`. It never creates a fake URL.
 
+### Establishing and verifying an isolated preview target for a real-business draft
+
+Real-business (`REAL_PUBLIC_DATA`) builds are **disabled by default** (`NEEDS_REVIEW`) and can **never** use or fall back to the shared fictional demonstration project (`ai-website-agent-preview`) or any production target (`*prod*`, `*production*`, `*live*`, or a slug without `preview`). When an operator later decides to publish an isolated preview for a real-business draft:
+
+1. Create and link a dedicated Vercel preview project whose slug includes `preview` (for example, `pitstop-lagos-preview`) so `.vercel/project.json` points to that isolated project.
+2. Optionally record the expected isolated target on the tracked project:
+   ```bash
+   python3 -m tracking.cli configure-preview project-0002 --project-name pitstop-lagos-preview
+   ```
+3. Verify the dry-run deployment gate before executing:
+   ```bash
+   python3 -m deployment.cli --build output/lead-0002/build-2026-10-13T012227z --project-name pitstop-lagos-preview --approve-real-preview
+   ```
+4. Export, verify, or locally serve (`127.0.0.1` only) the human-review package, inspect project status/history, or record an explicit human review decision with operator confirmation (`<project_id>:<build_id>:<DECISION>[:<ACTION>]`):
+   ```bash
+   python3 -m tracking.cli review-package project-0002 --export-dir preview-export/lead-0002-pitstop-lagos
+   python3 -m tracking.cli review-package project-0002 --verify-dir preview-export/lead-0002-pitstop-lagos
+   python3 -m tracking.cli review-package project-0002 --export-dir preview-export/lead-0002-pitstop-lagos --serve --port 8080
+   python3 -m tracking.cli status
+   python3 -m tracking.cli snapshot project-0002
+   python3 -m tracking.cli history project-0002
+   python3 -m tracking.cli review project-0002 --decision CHANGES_REQUESTED --build-id build-2026-10-13T012227z --notes "Explain requested changes"
+   python3 -m tracking.cli review project-0002 --decision APPROVED_FOR_PREVIEW --action PREVIEW_DEPLOYMENT --build-id build-2026-10-13T012227z --notes "Approved local draft for isolated preview deployment"
+   python3 -m tracking.cli check-workspace
+   ```
+
 `orchestration.system_health(store, registry)` reports local subsystem state without contacting services. `readiness_for(store, jobs, job_id, registry)` checks whether a specific job has valid prerequisites and an available capable worker. Both are safe for local diagnostics and do not expose secrets.
+
+### Running the n8n HTTP orchestration bridge
+
+To connect a self-hosted n8n instance to the Python application over loopback (`127.0.0.1:8787`):
+
+```bash
+export AI_WEBSITE_AGENT_API_TOKEN="local-secret-not-committed"
+export AI_WEBSITE_AGENT_API_URL="http://127.0.0.1:8787"
+python3 -m orchestration.cli serve --host 127.0.0.1 --port 8787
+```
+
+Import the workflows under `n8n/workflows/` (`01-create-job.json`, `02-inspect-job.json`, `03-core-lead-to-review-package-pipeline.json`, `04-recover-and-retry-jobs.json`) into n8n, or verify them locally against the loopback HTTP API via `python3 -m unittest discover -s tests -p "test_n8n_integration.py" -v`. See `n8n/README.md` and `orchestration/README.md` for endpoint and workflow details.
 
 ## Safe change workflow
 

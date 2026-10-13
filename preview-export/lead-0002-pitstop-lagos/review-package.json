@@ -1,0 +1,302 @@
+{
+  "project_id": "project-0002",
+  "lead_id": "lead-0002",
+  "business_name": "Pitstop Lagos",
+  "data_classification": "REAL_PUBLIC_DATA",
+  "current_stage": "READY_FOR_REVIEW",
+  "review_status": "PENDING",
+  "build_id": "build-2026-10-13T012227z",
+  "template_id": "restaurant-menu-v1",
+  "artifact_path": "output/lead-0002/build-2026-10-13T012227z/index.html",
+  "artifact_exists": true,
+  "artifact_bytes": 11242,
+  "artifact_sha256": "6d58ba2594fb3f92713aef3671646c65c015d2041f93dc4e6bd5282f5753e99b",
+  "uncommissioned_disclosure": "Uncommissioned preview draft prepared for internal evaluation \u00b7 Not an authorized or official website of Pitstop Lagos.",
+  "disclosure_present_in_html": true,
+  "omitted_disputed_fields": [
+    "address",
+    "phone"
+  ],
+  "supported_facts": [
+    {
+      "field": "business_name",
+      "value": "Pitstop Lagos",
+      "source_urls": [
+        "https://pitstoplagos.com/",
+        "https://www.instagram.com/pitstoplagos/"
+      ],
+      "evidence_tier": "SOURCE_URL_ONLY",
+      "verification_status": "SUPPORTED_BY_SOURCE_URL"
+    },
+    {
+      "field": "category",
+      "value": "restaurant",
+      "source_urls": [
+        "https://pitstoplagos.com/",
+        "https://www.instagram.com/pitstoplagos/"
+      ],
+      "evidence_tier": "SOURCE_URL_ONLY",
+      "verification_status": "SUPPORTED_BY_SOURCE_URL"
+    },
+    {
+      "field": "city",
+      "value": "Lagos",
+      "source_urls": [
+        "https://pitstoplagos.com/",
+        "https://www.instagram.com/pitstoplagos/"
+      ],
+      "evidence_tier": "SOURCE_URL_ONLY",
+      "verification_status": "SUPPORTED_BY_SOURCE_URL"
+    },
+    {
+      "field": "description",
+      "value": "A wellness and cycling-inspired cafe and restaurant in Victoria Island, Lagos.",
+      "source_urls": [
+        "https://pitstoplagos.com/",
+        "https://www.instagram.com/pitstoplagos/"
+      ],
+      "evidence_tier": "SOURCE_URL_ONLY",
+      "verification_status": "SUPPORTED_BY_SOURCE_URL"
+    },
+    {
+      "field": "email",
+      "value": "info@pitstoplagos.com",
+      "source_urls": [
+        "https://pitstoplagos.com/",
+        "https://www.instagram.com/pitstoplagos/"
+      ],
+      "evidence_tier": "SOURCE_URL_ONLY",
+      "verification_status": "SUPPORTED_BY_SOURCE_URL"
+    },
+    {
+      "field": "instagram_url",
+      "value": "https://www.instagram.com/pitstoplagos/",
+      "source_urls": [
+        "https://pitstoplagos.com/",
+        "https://www.instagram.com/pitstoplagos/"
+      ],
+      "evidence_tier": "SOURCE_URL_ONLY",
+      "verification_status": "SUPPORTED_BY_SOURCE_URL"
+    },
+    {
+      "field": "services",
+      "value": [
+        {
+          "name": "Healthy-Inspired Cafe & Dining",
+          "description": "Fresh meals and recovery snacks."
+        },
+        {
+          "name": "Cycling Community Rides",
+          "description": "Weekend group rides."
+        },
+        {
+          "name": "Wattbike Training Studio",
+          "description": "Dedicated indoor cycling training."
+        },
+        {
+          "name": "Bicycle Service & Repair",
+          "description": "Maintenance and accessories."
+        }
+      ],
+      "source_urls": [
+        "https://pitstoplagos.com/",
+        "https://www.instagram.com/pitstoplagos/"
+      ],
+      "evidence_tier": "SOURCE_URL_ONLY",
+      "verification_status": "SUPPORTED_BY_SOURCE_URL"
+    }
+  ],
+  "claims_lacking_primary_observation": [
+    {
+      "field": "business_name",
+      "value": "Pitstop Lagos",
+      "source_urls": [
+        "https://pitstoplagos.com/",
+        "https://www.instagram.com/pitstoplagos/"
+      ],
+      "evidence_tier": "SOURCE_URL_ONLY",
+      "note": "Supported by consistent source URL references across project records, but no raw primary-source HTML excerpt or timestamp is preserved in Git (data/leads/* is git-ignored); confirm visually during human review."
+    },
+    {
+      "field": "category",
+      "value": "restaurant",
+      "source_urls": [
+        "https://pitstoplagos.com/",
+        "https://www.instagram.com/pitstoplagos/"
+      ],
+      "evidence_tier": "SOURCE_URL_ONLY",
+      "note": "Supported by consistent source URL references across project records, but no raw primary-source HTML excerpt or timestamp is preserved in Git (data/leads/* is git-ignored); confirm visually during human review."
+    },
+    {
+      "field": "city",
+      "value": "Lagos",
+      "source_urls": [
+        "https://pitstoplagos.com/",
+        "https://www.instagram.com/pitstoplagos/"
+      ],
+      "evidence_tier": "SOURCE_URL_ONLY",
+      "note": "Supported by consistent source URL references across project records, but no raw primary-source HTML excerpt or timestamp is preserved in Git (data/leads/* is git-ignored); confirm visually during human review."
+    },
+    {
+      "field": "description",
+      "value": "A wellness and cycling-inspired cafe and restaurant in Victoria Island, Lagos.",
+      "source_urls": [
+        "https://pitstoplagos.com/",
+        "https://www.instagram.com/pitstoplagos/"
+      ],
+      "evidence_tier": "SOURCE_URL_ONLY",
+      "note": "Supported by consistent source URL references across project records, but no raw primary-source HTML excerpt or timestamp is preserved in Git (data/leads/* is git-ignored); confirm visually during human review."
+    },
+    {
+      "field": "email",
+      "value": "info@pitstoplagos.com",
+      "source_urls": [
+        "https://pitstoplagos.com/",
+        "https://www.instagram.com/pitstoplagos/"
+      ],
+      "evidence_tier": "SOURCE_URL_ONLY",
+      "note": "Supported by consistent source URL references across project records, but no raw primary-source HTML excerpt or timestamp is preserved in Git (data/leads/* is git-ignored); confirm visually during human review."
+    },
+    {
+      "field": "instagram_url",
+      "value": "https://www.instagram.com/pitstoplagos/",
+      "source_urls": [
+        "https://pitstoplagos.com/",
+        "https://www.instagram.com/pitstoplagos/"
+      ],
+      "evidence_tier": "SOURCE_URL_ONLY",
+      "note": "Supported by consistent source URL references across project records, but no raw primary-source HTML excerpt or timestamp is preserved in Git (data/leads/* is git-ignored); confirm visually during human review."
+    },
+    {
+      "field": "services",
+      "value": [
+        {
+          "name": "Healthy-Inspired Cafe & Dining",
+          "description": "Fresh meals and recovery snacks."
+        },
+        {
+          "name": "Cycling Community Rides",
+          "description": "Weekend group rides."
+        },
+        {
+          "name": "Wattbike Training Studio",
+          "description": "Dedicated indoor cycling training."
+        },
+        {
+          "name": "Bicycle Service & Repair",
+          "description": "Maintenance and accessories."
+        }
+      ],
+      "source_urls": [
+        "https://pitstoplagos.com/",
+        "https://www.instagram.com/pitstoplagos/"
+      ],
+      "evidence_tier": "SOURCE_URL_ONLY",
+      "note": "Supported by consistent source URL references across project records, but no raw primary-source HTML excerpt or timestamp is preserved in Git (data/leads/* is git-ignored); confirm visually during human review."
+    }
+  ],
+  "unresolved_or_conflicting_facts": [
+    {
+      "field": "address",
+      "status": "CONFLICTING_WITHHELD",
+      "conflicting_values": [
+        "92A Younis Bashorun Street, Victoria Island, Lagos, Nigeria",
+        "92b Younis Bashorun Street, Victoria Island, Lagos"
+      ],
+      "source_urls": [
+        "https://pitstoplagos.com/",
+        "https://www.instagram.com/pitstoplagos/"
+      ],
+      "evidence_tier": "CONFLICTING_OR_UNVERIFIABLE",
+      "reason": "Phase 25 and Phase 26 records contain two street plot variants ('92A Younis Bashorun Street' vs '92b Younis Bashorun Street') without a preserved primary-source excerpt establishing which plot suffix is current; withheld from website rendering until verified."
+    },
+    {
+      "field": "phone",
+      "status": "CONFLICTING_WITHHELD",
+      "conflicting_values": [
+        "+234 807 749 8324",
+        "+234 817 999 9005"
+      ],
+      "source_urls": [
+        "https://pitstoplagos.com/",
+        "https://www.instagram.com/pitstoplagos/"
+      ],
+      "evidence_tier": "CONFLICTING_OR_UNVERIFIABLE",
+      "reason": "Phase 25 and Phase 26 records contain two telephone numbers ('+234 807 749 8324' vs '+234 817 999 9005') without a preserved primary-source excerpt establishing which number is current; withheld from website rendering until verified."
+    },
+    {
+      "field": "opening_hours",
+      "status": "OMITTED_UNVERIFIED",
+      "conflicting_values": [],
+      "source_urls": [],
+      "evidence_tier": "CONFLICTING_OR_UNVERIFIABLE",
+      "reason": "No verified operating hours in public research records; omitted from website."
+    },
+    {
+      "field": "whatsapp",
+      "status": "OMITTED_UNVERIFIED",
+      "conflicting_values": [],
+      "source_urls": [],
+      "evidence_tier": "CONFLICTING_OR_UNVERIFIABLE",
+      "reason": "No verified WhatsApp number in public research records; omitted from website."
+    },
+    {
+      "field": "menu_items",
+      "status": "OMITTED_UNVERIFIED",
+      "conflicting_values": [],
+      "source_urls": [],
+      "evidence_tier": "CONFLICTING_OR_UNVERIFIABLE",
+      "reason": "No verified food menu items or dish prices in public research records; omitted from website."
+    }
+  ],
+  "external_links": [
+    "https://www.instagram.com/pitstoplagos/"
+  ],
+  "internal_anchors": [
+    "#top",
+    "#about",
+    "#offerings",
+    "#contact"
+  ],
+  "local_preview_instructions": {
+    "direct_file_path": "preview-export/lead-0002-pitstop-lagos/index.html",
+    "local_server_command": "python3 -m builder.cli --serve preview-export/lead-0002-pitstop-lagos --host 127.0.0.1 --port 8080",
+    "tracking_cli_serve_command": "python3 -m tracking.cli review-package project-0002 --export-dir preview-export/lead-0002-pitstop-lagos --serve --port 8080",
+    "local_url": "http://127.0.0.1:8080/",
+    "bind_host": "127.0.0.1",
+    "stop_instructions": "Press Ctrl+C in the terminal running the server to stop the local preview server.",
+    "note": "Starting the local HTTP server does not constitute automated browser visual testing; open http://127.0.0.1:8080/ in a real desktop/mobile browser to complete visual review."
+  },
+  "validation": {
+    "validation_id": "validation-2026-10-13T012227z",
+    "build_id": "build-2026-10-13T012227z",
+    "status": "PASS",
+    "score": 100,
+    "checks": {
+      "build_integrity": true,
+      "business_name": true,
+      "semantic_landmarks": true,
+      "mobile_support": true,
+      "title": true,
+      "meta_description": true,
+      "heading": true,
+      "links": true,
+      "images": true,
+      "contact_cta": true,
+      "placeholder_scan": true,
+      "claim_safety": true,
+      "secret_scan": true,
+      "performance": true
+    },
+    "findings": [],
+    "limitations": [
+      "Static HTML/CSS/content validation only; does not execute a real browser layout engine.",
+      "Browser-based visual inspection at desktop and mobile viewports was not performed in the sandbox because no browser binary or Playwright package is installed.",
+      "External URLs are checked for syntax and scheme safety offline; live HTTP reachability and current live contact/address resolution require human operator verification."
+    ]
+  },
+  "isolated_preview_project": null,
+  "deployment_id": null,
+  "deployment_url": null,
+  "exported_to": "preview-export/lead-0002-pitstop-lagos"
+}
