@@ -1,0 +1,345 @@
+{
+  "name": "AI Website Agent - Recover Stale & Retry Eligible Jobs",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [180, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "job_id",
+              "value": "={{ $json.job_id || '' }}"
+            },
+            {
+              "name": "retry_input_json",
+              "value": "={{ $json.retry_input_json || '{}' }}"
+            }
+          ],
+          "number": [
+            {
+              "name": "older_than_seconds",
+              "value": "={{ $json.older_than_seconds || 900 }}"
+            }
+          ]
+        }
+      },
+      "id": "init-recovery",
+      "name": "Initialize Recovery Input",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [400, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL }}/jobs/recover-stale",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AI_WEBSITE_AGENT_API_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={\"older_than_seconds\":{{ $node['Initialize Recovery Input'].json.older_than_seconds }}}"
+      },
+      "id": "recover-stale",
+      "name": "Recover Stale Running Jobs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL }}/jobs/{{ $node['Initialize Recovery Input'].json.job_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AI_WEBSITE_AGENT_API_TOKEN }}"
+            }
+          ]
+        }
+      },
+      "id": "inspect-job",
+      "name": "Inspect Target Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.status }}",
+              "operation": "equal",
+              "value2": "FAILED"
+            },
+            {
+              "value1": "={{ $json.status }}",
+              "operation": "equal",
+              "value2": "QUEUED"
+            },
+            {
+              "value1": "={{ $json.status }}",
+              "operation": "equal",
+              "value2": "NEEDS_REVIEW"
+            }
+          ]
+        },
+        "combineOperation": "any"
+      },
+      "id": "if-retryable",
+      "name": "IF Job Eligible For Retry",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "recovery_status",
+              "value": "NO_RETRY_NEEDED"
+            },
+            {
+              "name": "job_id",
+              "value": "={{ $json.job_id }}"
+            },
+            {
+              "name": "job_status",
+              "value": "={{ $json.status }}"
+            }
+          ]
+        }
+      },
+      "id": "outcome-no-retry",
+      "name": "Outcome - Job Not Retried",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [1360, 500]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL }}/jobs/{{ $json.job_id }}/retry",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AI_WEBSITE_AGENT_API_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={\"run\":true,\"input\":{{ $node['Initialize Recovery Input'].json.retry_input_json }}}"
+      },
+      "id": "retry-job",
+      "name": "Retry & Run Eligible Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1360, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.status }}",
+              "operation": "equal",
+              "value2": "COMPLETED"
+            }
+          ]
+        },
+        "combineOperation": "all"
+      },
+      "id": "if-retry-ok",
+      "name": "IF Retry Succeeded",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1600, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "recovery_status",
+              "value": "RECOVERED_AND_COMPLETED"
+            },
+            {
+              "name": "job_id",
+              "value": "={{ $json.job_id }}"
+            },
+            {
+              "name": "job_status",
+              "value": "={{ $json.status }}"
+            }
+          ],
+          "number": [
+            {
+              "name": "attempts",
+              "value": "={{ $json.attempts }}"
+            }
+          ]
+        }
+      },
+      "id": "outcome-recovered",
+      "name": "Outcome - Job Recovered & Completed",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [1840, 220]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "recovery_status",
+              "value": "RETRY_FAILED_OR_NEEDS_REVIEW"
+            },
+            {
+              "name": "job_id",
+              "value": "={{ $json.job_id }}"
+            },
+            {
+              "name": "job_status",
+              "value": "={{ $json.status }}"
+            },
+            {
+              "name": "error",
+              "value": "={{ $json.error }}"
+            }
+          ]
+        }
+      },
+      "id": "outcome-retry-failed",
+      "name": "Outcome - Retry Failed Or Needs Review",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [1840, 440]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Initialize Recovery Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Initialize Recovery Input": {
+      "main": [
+        [
+          {
+            "node": "Recover Stale Running Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recover Stale Running Jobs": {
+      "main": [
+        [
+          {
+            "node": "Inspect Target Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Inspect Target Job": {
+      "main": [
+        [
+          {
+            "node": "IF Job Eligible For Retry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Job Eligible For Retry": {
+      "main": [
+        [
+          {
+            "node": "Retry & Run Eligible Job",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Outcome - Job Not Retried",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retry & Run Eligible Job": {
+      "main": [
+        [
+          {
+            "node": "IF Retry Succeeded",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Retry Succeeded": {
+      "main": [
+        [
+          {
+            "node": "Outcome - Job Recovered & Completed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Outcome - Retry Failed Or Needs Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "recover-retry-v1-no-secrets"
+}

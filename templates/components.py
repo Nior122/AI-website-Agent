@@ -13,7 +13,11 @@ def text(value: object) -> str:
 
 def is_fictional(data: dict) -> bool:
     """Keep fixture demonstrations visually complete without actionable contacts."""
-    return bool(data.get("demo")) or data.get("data_classification") == "TEST_FIXTURE"
+    return (
+        bool(data.get("demo"))
+        or data.get("data_classification") == "TEST_FIXTURE"
+        or "FICTIONAL" in str(data.get("business_name", "")).upper()
+    )
 
 
 def safe_url(value: object) -> str | None:
@@ -27,8 +31,9 @@ def action_links(data: dict) -> str:
     if is_fictional(data):
         primary_target = "#menu" if data.get("category") in {"restaurant", "food_business"} else "#services"
         primary_label = "Explore the menu" if primary_target == "#menu" else "Explore services"
-        secondary_target = "#location" if data.get("address") else "#about"
-        secondary_label = "Visit the test location" if secondary_target == "#location" else "Read the test story"
+        has_about = bool(data.get("description") or data.get("content", {}).get("about_text"))
+        secondary_target = "#location" if data.get("address") else "#about" if has_about else "#contact"
+        secondary_label = "Visit the test location" if secondary_target == "#location" else "Read the test story" if secondary_target == "#about" else "View test notice"
         return f'<a class="button button-primary" href="{primary_target}">{primary_label}</a><a class="button button-secondary" href="{secondary_target}">{secondary_label}</a>'
     links = []
     labels = data.get("content", {}).get("cta", {})
@@ -47,10 +52,10 @@ def action_links(data: dict) -> str:
     return "".join(links)
 
 
-def navigation(name: str, section_ids: list[str], restaurant: bool = False, fictional: bool = True) -> str:
+def navigation(name: str, section_ids: list[str], restaurant: bool = False, fictional: bool = False) -> str:
     links = "".join(f'<a href="#{text(section)}">{text(section.title())}</a>' for section in section_ids)
     if restaurant:
-        mark_text = "LF" if fictional else "".join(w[0].upper() for w in name.split() if w)[:2] or "PL"
+        mark_text = "LF" if fictional else "".join(w[0].upper() for w in re.findall(r"[A-Za-z0-9]+", name))[:2] or "B"
         mark = f'<span class="brand-mark" aria-hidden="true">{text(mark_text)}</span>'
     else:
         mark = ""
@@ -102,7 +107,7 @@ def card_list(section_id: str, title: str, entries: list[dict], price: bool = Fa
         heading = text(entry.get("name"))
         detail = text(entry.get("description"))
         amount = f'<p class="price">{text(entry.get("price"))}</p>' if price and entry.get("price") and not fictional else ""
-        number = f'<span class="menu-index" aria-hidden="true">0{index}</span>' if section_id in {"menu", "offerings", "services"} else ""
+        number = f'<span class="menu-index" aria-hidden="true">{index:02d}</span>' if section_id in {"menu", "offerings", "services"} else ""
         cards.append(f'<article class="card">{number}<div><h3>{heading}</h3><p>{detail}</p>{amount}</div></article>')
     if section_id == "menu" and fictional:
         heading = f'<div class="section-heading"><div><p class="section-kicker">From the test kitchen</p><h2>{text(title)}</h2></div><p class="section-note">Fictional dishes for layout testing. Availability and prices are not represented.</p></div>'
@@ -137,18 +142,24 @@ def location(data: dict) -> str:
     if is_fictional(data):
         return f'<section id="location" class="location-panel"><p class="section-kicker">A fictional setting</p><h2>Find the test kitchen</h2><p>{text(address)}</p><p class="demo-note">This address is fictional. No map or directions link is provided.</p></section>'
     map_url = f"https://www.google.com/maps/search/?api=1&query={quote(str(address))}"
-    return f'<section id="location"><h2>Find us</h2><p>{text(address)}</p><a class="text-link" href="{text(map_url)}">Open map</a></section>'
+    return f'<section id="location" class="location-panel"><p class="section-kicker">Location</p><h2>Find us</h2><p>{text(address)}</p><a class="text-link" href="{text(map_url)}">Open map</a></section>'
 
 
 def contact(data: dict) -> str:
     if is_fictional(data):
         return '<section id="contact" class="contact-panel"><p class="section-kicker">Demonstration only</p><h2>A considered journey, safely contained.</h2><p>This fictional concept intentionally has no live phone, WhatsApp, social, booking, or message destination.</p></section>'
     actions = action_links(data)
+    phone = data.get("phone")
     email = data.get("email")
-    email_html = f'<p class="contact-detail">Email: {text(email)}</p>' if email and "@" in str(email) else ""
-    if not actions and not email_html:
+    details = []
+    if phone:
+        details.append(f'<p class="contact-detail">Telephone: <a class="text-link" href="tel:{text(phone)}">{text(phone)}</a></p>')
+    if email and "@" in str(email):
+        details.append(f'<p class="contact-detail">Email: {text(email)}</p>')
+    details_html = "".join(details)
+    if not actions and not details_html:
         return ""
-    return f'<section id="contact"><h2>Get in touch</h2><div class="actions">{actions}</div>{email_html}</section>'
+    return f'<section id="contact" class="contact-panel"><p class="section-kicker">Contact</p><h2>Get in touch</h2><div class="actions">{actions}</div>{details_html}</section>'
 
 
 def footer(name: str, fictional: bool = False) -> str:
