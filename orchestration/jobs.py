@@ -53,10 +53,19 @@ class JobService:
     def create(self, job_type: str, *, job_id: str, lead_id: str | None = None,
                project_id: str | None = None, build_id: str | None = None,
                parent_job_id: str | None = None, priority: str = "NORMAL",
-               input: dict[str, Any] | None = None, dry_run: bool = True) -> dict[str, Any]:
+               input: dict[str, Any] | None = None, dry_run: bool = True,
+               idempotency_key: str | None = None) -> dict[str, Any]:
         if job_type not in JOB_TYPES or priority not in PRIORITIES:
             raise ValueError("Unsupported job type or priority.")
+        if getattr(self.store, "db_backend", None) is not None and hasattr(self.store, "refresh"):
+            self.store.refresh()
+        effective_key = str(idempotency_key or job_id).strip()
         old = self.store.state["jobs"].get(job_id)
+        if not old:
+            old = next(
+                (j for j in self.store.state["jobs"].values() if j.get("idempotency_key") == effective_key),
+                None,
+            )
         if old:
             if (
                 old["job_type"] != job_type
@@ -66,7 +75,7 @@ class JobService:
             ):
                 raise ValueError("Idempotency key is already associated with a different job.")
             return old
-        job = {"job_id": job_id, "job_type": job_type, "lead_id": lead_id,
+        job = {"job_id": job_id, "idempotency_key": effective_key, "job_type": job_type, "lead_id": lead_id,
                "project_id": project_id, "build_id": build_id, "parent_job_id": parent_job_id,
                "status": "PENDING", "priority": priority, "attempts": 0,
                "max_attempts": self.max_attempts, "input": input or {}, "output": None,
@@ -75,9 +84,18 @@ class JobService:
                "dry_run": dry_run, "next_job_types": []}
         self.store.state["jobs"][job_id] = job
         self.store._save()
-        return job
+        if job_id not in self.store.state["jobs"]:
+            merged_existing = next(
+                (j for j in self.store.state["jobs"].values() if j.get("idempotency_key") == effective_key),
+                None,
+            )
+            if merged_existing is not None:
+                return merged_existing
+        return self.store.state["jobs"].get(job_id, job)
 
     def get(self, job_id: str) -> dict[str, Any]:
+        if getattr(self.store, "db_backend", None) is not None and hasattr(self.store, "refresh"):
+            self.store.refresh()
         job = self.store.state["jobs"].get(job_id)
         if not job:
             raise ValueError("Unknown job.")
@@ -121,9 +139,11 @@ class JobService:
         return job
 
     def recover_stale(self, *, older_than_seconds: int = 900, now: datetime | None = None) -> list[dict[str, Any]]:
+        if getattr(self.store, "db_backend", None) is not None and hasattr(self.store, "refresh"):
+            self.store.refresh()
         current = now or datetime.now(timezone.utc)
         recovered = []
-        for job in self.store.state["jobs"].values():
+        for job in list(self.store.state["jobs"].values()):
             if job["status"] != "RUNNING" or not job.get("heartbeat_at"):
                 continue
             heartbeat = datetime.fromisoformat(job["heartbeat_at"].replace("Z", "+00:00"))

@@ -239,11 +239,19 @@ class Phase26RealDraftTests(unittest.TestCase):
         proj1 = store.state["projects"]["project-0001"]
         self.assertEqual(lead1["data_classification"], "TEST_FIXTURE")
         self.assertEqual(proj1["current_stage"], "READY_FOR_REVIEW")
+        proj2 = store.state["projects"]["project-0002"]
+        self.assertEqual(proj2["current_stage"], "READY_FOR_REVIEW")
+        self.assertEqual(proj2["review_status"], "PENDING")
 
         p25_audit = Path("data/leads/phase25-lagos-restaurants-discovery-and-qualification-20261012.json")
         p26_audit = Path("data/leads/phase26-pitstop-lagos-website-draft-20261012.json")
-        self.assertTrue(p25_audit.exists())
-        self.assertTrue(p26_audit.exists())
+        if p25_audit.exists() and p26_audit.exists():
+            self.assertTrue(p25_audit.is_file())
+            self.assertTrue(p26_audit.is_file())
+        else:
+            ws_check = store.check_local_state()
+            self.assertIn(str(p25_audit), ws_check["irrecoverable_gitignored_audit_files"])
+            self.assertIn(str(p26_audit), ws_check["irrecoverable_gitignored_audit_files"])
 
     def test_missing_business_fact_cannot_silently_fallback_to_unverified_or_fictional_data(self):
         builder = WebsiteBuilder(output_root=self.root / "output")

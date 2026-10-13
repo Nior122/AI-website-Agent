@@ -1,0 +1,3 @@
+# Production PostgreSQL driver for Supabase PostgreSQL persistence on Render.
+# Local development and unit tests remain runnable with the Python 3.11+ standard library alone.
+psycopg[binary]>=3.1.18,<4.0.0

@@ -49,8 +49,11 @@
     "placeholderPatterns": ["Lorem ipsum", "Demo Business", "Example Company", "Your Business Name"]
   },
   "tracking": {
-    "mode": "local_json",
+    "mode": "local_json_or_supabase_postgres",
     "statePath": "data/tracking/state.json",
+    "databaseUrlEnvironmentVariable": "DATABASE_URL",
+    "storageBackendEnvironmentVariable": "AI_WEBSITE_AGENT_STORAGE_BACKEND",
+    "migrationFile": "migrations/0001_supabase_postgres_schema.sql",
     "allowManualStateEdits": false
   },
   "orchestration": {
@@ -60,7 +63,10 @@
     "staleJobTimeoutSeconds": 900,
     "allowN8nCoordination": false,
     "apiBindHost": "127.0.0.1",
-    "apiTokenEnvironmentVariable": "AI_WEBSITE_AGENT_API_TOKEN"
+    "apiPortEnvironmentVariable": "PORT",
+    "allowNonLoopbackEnvironmentVariable": "AI_WEBSITE_AGENT_ALLOW_NON_LOOPBACK",
+    "apiTokenEnvironmentVariable": "AI_WEBSITE_AGENT_API_TOKEN",
+    "livenessEndpoint": "/healthz"
   },
   "workers": {
     "mode": "registry_and_mock_only",

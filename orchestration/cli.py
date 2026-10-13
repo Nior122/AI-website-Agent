@@ -15,8 +15,14 @@ def main(argv: list[str] | None = None) -> int:
         choices=["serve", "recover-stale", "list-jobs", "check-workspace", "recover-workspace", "create-job", "run-job", "retry-job"],
     )
     parser.add_argument("--state-path", default="data/tracking/state.json")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8787)
+    parser.add_argument("--host", default=None, help="Bind host (defaults to AI_WEBSITE_AGENT_BIND_HOST or 127.0.0.1).")
+    parser.add_argument("--port", type=int, default=None, help="Bind port (defaults to Render PORT, AI_WEBSITE_AGENT_API_PORT, or 8787).")
+    parser.add_argument(
+        "--allow-non-loopback",
+        action="store_true",
+        help="Explicitly allow binding to 0.0.0.0 for cloud/Render deployment (requires AI_WEBSITE_AGENT_API_TOKEN).",
+    )
+    parser.add_argument("--database-url", default=None, help="Optional PostgreSQL/SQLite database URL override.")
     parser.add_argument("--older-than-seconds", type=int, default=900)
     parser.add_argument("--job-type", default=None, help="Job type for create-job (SCOUT, RESEARCH, QUALIFY, BUILD, VALIDATE, DEPLOY, PREPARE_OUTREACH).")
     parser.add_argument("--job-id", default=None, help="Idempotent job_id for create-job, run-job, or retry-job.")
@@ -27,17 +33,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-root", default="output", help="Output directory for LocalPipelineWorker BUILD jobs.")
     args = parser.parse_args(argv)
     if args.command == "serve":
-        serve(state_path=args.state_path, host=args.host, port=args.port, output_root=args.output_root)
+        serve(
+            state_path=args.state_path,
+            host=args.host,
+            port=args.port,
+            allow_non_loopback=args.allow_non_loopback,
+            output_root=args.output_root,
+            database_url=args.database_url,
+        )
         return 0
     if args.command == "check-workspace":
-        store = TrackingStore(args.state_path, auto_bootstrap_workspace=False)
+        store = TrackingStore(args.state_path, auto_bootstrap_workspace=False, database_url=args.database_url)
         print(json.dumps(store.check_local_state(), indent=2))
         return 0
     if args.command == "recover-workspace":
-        store = TrackingStore(args.state_path, auto_bootstrap_workspace=False)
+        store = TrackingStore(args.state_path, auto_bootstrap_workspace=False, database_url=args.database_url)
         print(json.dumps(store.recover_local_state(), indent=2))
         return 0
-    store = TrackingStore(args.state_path)
+    store = TrackingStore(args.state_path, database_url=args.database_url)
     service = JobService(store)
     if args.command == "create-job":
         if not args.job_type or not args.job_id:

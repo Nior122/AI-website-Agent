@@ -17,19 +17,26 @@ class WorkerRegistry:
     def __init__(self, store, *, lease_seconds=300, heartbeat_seconds=90, preferences=None):
         self.store=store; self.lease_seconds=lease_seconds; self.heartbeat_seconds=heartbeat_seconds; self.preferences=preferences or {}
         for key in ("workers","executions","project_locks"): self.store.state.setdefault(key,{})
+    def _refresh(self):
+        if getattr(self.store, "db_backend", None) is not None and hasattr(self.store, "refresh"):
+            self.store.refresh()
     def register(self, worker_id, *, name, worker_type="OTHER", capabilities, priority=0, enabled=True, cost_class="FREE", configuration=None):
+        self._refresh()
         if worker_type not in WORKER_TYPES or not set(capabilities) <= JOB_TYPES: raise ValueError("Invalid worker type or capability.")
         old=self.store.state["workers"].get(worker_id); stamp=_now()
         record={"worker_id":worker_id,"name":name,"type":worker_type,"capabilities":sorted(set(capabilities)),"priority":priority,"enabled":enabled,"cost_class":cost_class,"status":"IDLE" if enabled else "DISABLED","health_status":"AVAILABLE" if enabled else "UNAVAILABLE","last_heartbeat":stamp if enabled else None,"current_job_id":None,"last_successful_job":None,"last_failed_job":None,"last_error":None,"configuration":configuration or {},"created_at":old.get("created_at",stamp) if old else stamp,"updated_at":stamp}
         if old and old.get("current_job_id"): raise ValueError("Cannot replace a busy worker record.")
         self.store.state["workers"][worker_id]=record; self.store._save(); return record
     def heartbeat(self, worker_id, *, status="IDLE", health_status="AVAILABLE"):
+        self._refresh()
         worker=self._worker(worker_id); worker.update({"status":status,"health_status":health_status,"last_heartbeat":_now(),"updated_at":_now()}); self.store._save(); return worker
     def set_enabled(self, worker_id, enabled):
+        self._refresh()
         worker=self._worker(worker_id)
         if worker.get("current_job_id"): raise ValueError("Release the active job before disabling a worker.")
         worker.update({"enabled":enabled,"status":"IDLE" if enabled else "DISABLED","health_status":"AVAILABLE" if enabled else "UNAVAILABLE","updated_at":_now()}); self.store._save(); return worker
     def candidates(self, job, *, exclude=()):
+        self._refresh()
         required=job["job_type"]; now=datetime.now(timezone.utc)
         items=[]
         for w in self.store.state["workers"].values():
@@ -38,6 +45,7 @@ class WorkerRegistry:
         preferred=self.preferences.get(required,[])
         return sorted(items,key=lambda w:(preferred.index(w["worker_id"]) if w["worker_id"] in preferred else 999,-w["priority"],w["worker_id"]))
     def claim(self, job_id, worker_id):
+        self._refresh()
         job=self.store.state["jobs"].get(job_id); worker=self._worker(worker_id)
         if not job or job["status"] not in {"PENDING","QUEUED","BLOCKED"}: raise ValueError("Job is not claimable.")
         if worker not in self.candidates(job): raise ValueError("Worker is not eligible to claim this job.")
@@ -53,6 +61,7 @@ class WorkerRegistry:
         if job.get("project_id") and job["job_type"] in MUTATING: self.store.state["project_locks"][job["project_id"]]={"project_id":job["project_id"],"job_id":job_id,"worker_id":worker_id,"lease_id":lease,"expires_at":expiry}
         eid=f"execution-{uuid4().hex}"; self.store.state["executions"][eid]={"execution_id":eid,"job_id":job_id,"worker_id":worker_id,"attempt_number":job["attempts"],"status":"RUNNING","started_at":stamp,"completed_at":None,"result":None,"error_type":None,"error_message":None,"artifacts":[],"commit_sha":None,"logs_reference":None,"created_at":stamp}; job["execution_id"]=eid; self.store._save(); return job
     def renew_lease(self, job_id, worker_id, lease_id):
+        self._refresh()
         job=self.store.state["jobs"].get(job_id); lease=(job or {}).get("lease",{})
         if lease.get("worker_id")!=worker_id or lease.get("lease_id")!=lease_id: raise ValueError("Invalid worker lease.")
         expiry=(datetime.now(timezone.utc)+timedelta(seconds=self.lease_seconds)).replace(microsecond=0).isoformat().replace("+00:00","Z"); lease.update({"heartbeat_at":_now(),"expires_at":expiry}); job["heartbeat_at"]=_now()
@@ -60,6 +69,7 @@ class WorkerRegistry:
         if lock and lock["lease_id"]==lease_id: lock["expires_at"]=expiry
         self.store._save(); return job
     def report(self, job_id, worker_id, lease_id, result:WorkerResult):
+        self._refresh()
         job=self.store.state["jobs"].get(job_id); lease=(job or {}).get("lease",{})
         if lease.get("worker_id")!=worker_id or lease.get("lease_id")!=lease_id: raise ValueError("Stale or unauthorized result rejected.")
         worker=self._worker(worker_id); execution=self.store.state["executions"][job["execution_id"]]; status=result.status
@@ -76,6 +86,7 @@ class WorkerRegistry:
         worker.update({"status":"IDLE","current_job_id":None,"updated_at":_now(),"last_successful_job":job_id if final=="COMPLETED" else worker.get("last_successful_job"),"last_failed_job":job_id if final in {"FAILED","NEEDS_REVIEW"} else worker.get("last_failed_job"),"last_error":result.error})
         self._unlock(job); self.store._save(); return job
     def recover_expired(self):
+        self._refresh()
         now=datetime.now(timezone.utc); recovered=[]
         for job in list(self.store.state["jobs"].values()):
             lease=job.get("lease") or {}
@@ -83,6 +94,7 @@ class WorkerRegistry:
                 worker=self._worker(lease["worker_id"]); worker.update({"status":"DEGRADED","health_status":"UNAVAILABLE","current_job_id":None,"last_error":"Lease expired."}); job.update({"status":"QUEUED" if job["attempts"]<job["max_attempts"] else "NEEDS_REVIEW","error":"Worker lease expired.","lease":None,"updated_at":_now()}); self._unlock(job); recovered.append(job)
         self.store._save(); return recovered
     def human_takeover(self, job_id, worker_id):
+        self._refresh()
         worker=self._worker(worker_id)
         if worker["type"]!="HUMAN": raise ValueError("Human takeover requires a HUMAN worker.")
         job=self.store.state["jobs"].get(job_id); job["status"]="QUEUED"; job["error"]=None; self.store._save(); return self.claim(job_id,worker_id)
@@ -402,6 +414,15 @@ class LocalPipelineWorker:
             if not build.get("output_location"):
                 return WorkerResult("FAILED", error=f"Build {build_id} has no output_location.", retryable=False)
             out_path = Path(build["output_location"])
+            if not out_path.is_file() and build_id in (store.state.get("build_artifacts") or {}):
+                try:
+                    store.get_or_materialize_build_artifact(
+                        build_id,
+                        repository_root=self.repository_root,
+                        verify_hash=True,
+                    )
+                except ValueError as err:
+                    return WorkerResult("FAILED", error=str(err), retryable=False)
             if not out_path.is_file():
                 return WorkerResult("FAILED", error=f"Build artifact does not exist: {out_path}", retryable=False)
             html = out_path.read_text(encoding="utf-8")
@@ -418,6 +439,18 @@ class LocalPipelineWorker:
                 expected_facts=None if is_fix else facts,
                 synthetic_contact=is_fix,
             )
+            expected_sha = build.get("artifact_sha256")
+            if expected_sha:
+                import hashlib
+                actual_sha = hashlib.sha256(html.encode("utf-8")).hexdigest()
+                if actual_sha != expected_sha:
+                    validation["status"] = "FAIL"
+                    validation["passed"] = False
+                    validation.setdefault("findings", []).append({
+                        "severity": "ERROR",
+                        "code": "ARTIFACT_SHA256_MISMATCH",
+                        "message": f"Build artifact SHA-256 mismatch for {build_id}: expected {expected_sha}, got {actual_sha}.",
+                    })
             validation["artifact_path"] = str(out_path)
             recorded_val = store.record_validation(project_id, validation)
             v_status = recorded_val["status"]
@@ -442,7 +475,17 @@ class LocalPipelineWorker:
             p = store.state["projects"][project_id]
             build_id = job.get("build_id") or p.get("assigned_build_id")
             build = store.state["builds"][build_id]
-            build_dir = Path(build["output_location"]).parent
+            out_file = Path(build["output_location"])
+            if not out_file.is_file() and build_id in (store.state.get("build_artifacts") or {}):
+                try:
+                    store.get_or_materialize_build_artifact(
+                        build_id,
+                        repository_root=self.repository_root,
+                        verify_hash=True,
+                    )
+                except ValueError as err:
+                    return WorkerResult("FAILED", error=str(err), retryable=False)
+            build_dir = out_file.parent
             provider = self.deployment_provider or VercelDeploymentProvider(self.repository_root)
             dep_res = provider.deploy(
                 build_dir,

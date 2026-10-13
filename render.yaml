@@ -1,0 +1,28 @@
+# Render Blueprint for AI Website Agent (Prepared for Cloud Deployment — Not Deployed Automatically)
+# Note on database migrations:
+#   Do NOT run schema migrations automatically inside `buildCommand` on every container build.
+#   Apply or verify `migrations/0001_supabase_postgres_schema.sql` explicitly via the controlled CLI:
+#     python3 -m tracking.cli migrate-db
+#     python3 -m tracking.cli migrate-db --verify-only
+services:
+  - type: web
+    name: ai-website-agent-api
+    runtime: python
+    plan: starter
+    autoDeploy: false
+    buildCommand: pip install -r requirements.txt
+    startCommand: python3 -m orchestration.cli serve --host 0.0.0.0 --allow-non-loopback
+    healthCheckPath: /healthz
+    envVars:
+      - key: AI_WEBSITE_AGENT_ENV
+        value: production
+      - key: AI_WEBSITE_AGENT_STORAGE_BACKEND
+        value: postgres
+      - key: AI_WEBSITE_AGENT_BIND_HOST
+        value: 0.0.0.0
+      - key: AI_WEBSITE_AGENT_ALLOW_NON_LOOPBACK
+        value: "true"
+      - key: DATABASE_URL
+        sync: false
+      - key: AI_WEBSITE_AGENT_API_TOKEN
+        sync: false

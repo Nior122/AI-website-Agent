@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 from typing import TextIO
 
+from .database import DatabasePersistenceError, MIGRATION_0001_PATH, MIGRATION_VERSION, RelationalStateBackend, configured_database_url
 from .store import DEFAULT_STATE_PATH, PERMITTED_REVIEW_ACTIONS, REVIEW_DECISIONS, TrackingStore
 
 
@@ -181,13 +182,62 @@ def run_cli(
     out_parser.add_argument("--decision", default=None, help="Review decision for --outreach-id (APPROVED, REJECTED, CHANGES_REQUESTED).")
     out_parser.add_argument("--notes", default=None, help="Review notes for --outreach-id.")
 
+    rec_exp_parser = subparsers.add_parser(
+        "recover-verified-exports",
+        help="Recover project-0001 and project-0002 from committed fixtures and SHA-256 verified review packages.",
+    )
+    rec_exp_parser.add_argument("--repo-root", type=Path, default=Path("."), help="Repository root directory.")
+
+    mig_parser = subparsers.add_parser(
+        "migrate-db",
+        help="Apply or verify versioned SQL migration 0001_supabase_postgres_schema.sql on DATABASE_URL.",
+    )
+    mig_parser.add_argument("--database-url", default=None, help="Database connection URL (defaults to DATABASE_URL env var).")
+    mig_parser.add_argument(
+        "--verify-only",
+        action="store_true",
+        help="Verify that the migration and its SHA-256 checksum are already applied without running DDL.",
+    )
+
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
         return int(exc.code) if isinstance(exc.code, int) else 1
 
     try:
+        if args.command == "migrate-db":
+            db_url = configured_database_url(args.database_url)
+            if not db_url:
+                raise ValueError("DATABASE_URL or --database-url is required to run migrate-db.")
+            if args.verify_only:
+                backend = RelationalStateBackend(db_url, auto_migrate=False)
+                verified = backend.verify_schema()
+                out_stream.write(json.dumps(verified, indent=2) + "\n")
+                return 0
+            backend = RelationalStateBackend(db_url, auto_migrate=True)
+            verified = backend.verify_schema()
+            out_stream.write(
+                json.dumps(
+                    {
+                        "status": "MIGRATED",
+                        "migration_version": MIGRATION_VERSION,
+                        "migration_file": str(MIGRATION_0001_PATH),
+                        "checksum": verified["checksum"],
+                        "dialect": backend.dialect,
+                        "database": backend.redacted_url,
+                    },
+                    indent=2,
+                )
+                + "\n"
+            )
+            return 0
+
         store = TrackingStore(args.state_path)
+        if args.command == "recover-verified-exports":
+            report = store.recover_from_verified_exports(repository_root=args.repo_root)
+            out_stream.write(json.dumps(report, indent=2) + "\n")
+            return 0
+
         if args.command == "status":
             out_stream.write(json.dumps(store.status_summary(), indent=2) + "\n")
             return 0
@@ -475,7 +525,7 @@ def run_cli(
             )
             return 0
 
-    except ValueError as error:
+    except (ValueError, DatabasePersistenceError) as error:
         err_stream.write(json.dumps({"error": str(error)}) + "\n")
         return 1
 

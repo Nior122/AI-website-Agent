@@ -12,13 +12,56 @@ from pathlib import Path
 import threading
 from urllib.parse import parse_qs, urlparse
 
+from tracking.database import DatabasePersistenceError, is_production_mode
 from tracking.store import TrackingStore
-from .health import system_health
+from .health import readiness_for, system_health
 from .jobs import JobService, JobWorker
 from .workers import LocalPipelineWorker
 
+DEFAULT_BIND_HOST = "127.0.0.1"
+DEFAULT_PORT = 8787
 ALLOWED_LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
+ALLOWED_PRODUCTION_HOSTS = {"0.0.0.0"}
 ALLOWED_API_JOB_TYPES = {"SCOUT", "RESEARCH", "QUALIFY", "BUILD", "VALIDATE"}
+
+
+def resolve_bind_config(
+    host: str | None = None,
+    port: int | None = None,
+    *,
+    allow_non_loopback: bool = False,
+    env: dict[str, str] | None = None,
+) -> tuple[str, int, bool]:
+    """Resolve and validate HTTP bind host and port with localhost defaults and Render PORT support."""
+    source = env if env is not None else os.environ
+    resolved_host = str(
+        host
+        or source.get("AI_WEBSITE_AGENT_BIND_HOST")
+        or source.get("AI_WEBSITE_AGENT_HOST")
+        or DEFAULT_BIND_HOST
+    ).strip()
+    if port is not None:
+        resolved_port = int(port)
+    else:
+        raw_port = str(source.get("PORT") or source.get("AI_WEBSITE_AGENT_API_PORT") or DEFAULT_PORT).strip()
+        resolved_port = int(raw_port)
+    if resolved_port < 0 or resolved_port > 65535:
+        raise ValueError(f"Invalid port: {resolved_port}")
+
+    env_non_loopback = str(source.get("AI_WEBSITE_AGENT_ALLOW_NON_LOOPBACK") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    effective_allow = bool(allow_non_loopback or env_non_loopback)
+    if resolved_host not in ALLOWED_LOOPBACK_HOSTS:
+        if not effective_allow or resolved_host not in ALLOWED_PRODUCTION_HOSTS:
+            raise ValueError(
+                f"Refusing non-loopback bind host '{resolved_host}'; allowed loopback hosts: "
+                f"{sorted(ALLOWED_LOOPBACK_HOSTS)}. Set AI_WEBSITE_AGENT_ALLOW_NON_LOOPBACK=true "
+                "(or pass --allow-non-loopback) with host '0.0.0.0' for Render production deployment."
+            )
+    return resolved_host, resolved_port, effective_allow
 
 
 def _enrich_job(job: dict) -> dict:
@@ -84,13 +127,18 @@ def make_handler(
             return parsed
 
         def do_GET(self) -> None:  # noqa: N802
-            if not self._authorized():
-                return self._json(401, {"error": "Unauthorized"})
             parsed_url = urlparse(self.path)
             path = [seg for seg in parsed_url.path.strip("/").split("/") if seg]
+            if path == ["healthz"]:
+                # Lightweight Render liveness probe: does not expose operational data or secrets.
+                return self._json(200, {"status": "ok"})
+            if not self._authorized():
+                return self._json(401, {"error": "Unauthorized"})
             query = parse_qs(parsed_url.query)
             with lock:
                 try:
+                    if getattr(service.store, "db_backend", None) is not None and hasattr(service.store, "refresh"):
+                        service.store.refresh()
                     if path == ["health"]:
                         return self._json(200, {
                             "api_status": "OK",
@@ -98,6 +146,17 @@ def make_handler(
                             "worker_name": getattr(active_worker, "name", None),
                             "health": system_health(service.store),
                         })
+                    if path == ["readiness"]:
+                        db_backend = getattr(service.store, "db_backend", None)
+                        return self._json(200, {
+                            "status": "READY",
+                            "storage_backend": db_backend.dialect if db_backend is not None else "json",
+                            "production_mode": is_production_mode(),
+                            "worker_registered": active_worker is not None,
+                            "worker_name": getattr(active_worker, "name", None),
+                        })
+                    if len(path) == 3 and path[0] == "jobs" and path[2] == "readiness":
+                        return self._json(200, readiness_for(service.store, service, path[1]))
                     if path == ["jobs"]:
                         jobs = [_enrich_job(j) for j in service.store.state["jobs"].values()]
                         status_filter = (query.get("status") or [None])[0]
@@ -122,6 +181,30 @@ def make_handler(
                         return self._json(200, service.store.snapshot(path[1]))
                     if len(path) == 3 and path[0] == "projects" and path[2] == "snapshot":
                         return self._json(200, service.store.snapshot(path[1]))
+                    if len(path) == 3 and path[0] == "projects" and path[2] == "artifact":
+                        project_id = path[1]
+                        snap = service.store.snapshot(project_id)
+                        assigned_build_id = snap["project"].get("assigned_build_id")
+                        if not assigned_build_id:
+                            return self._json(404, {"error": f"Project {project_id} has no assigned build."})
+                        art = service.store.get_or_materialize_build_artifact(
+                            assigned_build_id,
+                            repository_root=repo_path,
+                            verify_hash=True,
+                        )
+                        durable_rec = service.store.get_build_artifact(assigned_build_id, verify_hash=True) or {}
+                        return self._json(200, {
+                            "project_id": project_id,
+                            "lead_id": snap["lead"]["lead_id"],
+                            "build_id": assigned_build_id,
+                            "review_status": snap["project"].get("review_status"),
+                            "artifact_path": art["artifact_path"],
+                            "html_sha256": art["html_sha256"],
+                            "html_bytes": art["html_bytes"],
+                            "html_content": art["html_content"],
+                            "materialized": art["materialized"],
+                            "review_package": durable_rec.get("review_package_json"),
+                        })
                     if len(path) == 3 and path[0] == "projects" and path[2] == "review-package":
                         project_id = path[1]
                         snap = service.store.snapshot(project_id)
@@ -143,6 +226,8 @@ def make_handler(
                             "verification": verification,
                         })
                     return self._json(404, {"error": "Not found"})
+                except DatabasePersistenceError as db_error:
+                    return self._json(503, {"error": "Database persistence error", "detail": str(db_error)})
                 except (KeyError, ValueError) as error:
                     return self._json(404, {"error": str(error)})
 
@@ -152,6 +237,8 @@ def make_handler(
             path = [seg for seg in urlparse(self.path).path.strip("/").split("/") if seg]
             with lock:
                 try:
+                    if getattr(service.store, "db_backend", None) is not None and hasattr(service.store, "refresh"):
+                        service.store.refresh()
                     payload = self._body()
                     if path == ["jobs"]:
                         if "job_type" not in payload or "job_id" not in payload:
@@ -270,6 +357,8 @@ def make_handler(
                         })
 
                     return self._json(404, {"error": "Not found"})
+                except DatabasePersistenceError as db_error:
+                    return self._json(503, {"error": "Database persistence error", "detail": str(db_error)})
                 except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
                     return self._json(400, {"error": str(error)})
 
@@ -282,21 +371,27 @@ def make_handler(
 def serve(
     *,
     state_path: str = "data/tracking/state.json",
-    host: str = "127.0.0.1",
-    port: int = 8787,
+    host: str | None = None,
+    port: int | None = None,
+    allow_non_loopback: bool = False,
     output_root: str = "output",
     export_root: str = "preview-export",
     repository_root: str = ".",
+    database_url: str | None = None,
 ) -> None:
-    if host not in ALLOWED_LOOPBACK_HOSTS:
-        raise ValueError(f"Refusing non-loopback bind host '{host}'; allowed hosts: {sorted(ALLOWED_LOOPBACK_HOSTS)}.")
+    resolved_host, resolved_port, _ = resolve_bind_config(
+        host,
+        port,
+        allow_non_loopback=allow_non_loopback,
+    )
     token = os.environ.get("AI_WEBSITE_AGENT_API_TOKEN")
     if not token:
         raise RuntimeError("AI_WEBSITE_AGENT_API_TOKEN is required; server not started.")
-    service = JobService(TrackingStore(state_path))
+    store = TrackingStore(state_path, database_url=database_url)
+    service = JobService(store)
     worker = LocalPipelineWorker(repository_root=repository_root, output_root=output_root)
     ThreadingHTTPServer(
-        (host, port),
+        (resolved_host, resolved_port),
         make_handler(
             service,
             token,
