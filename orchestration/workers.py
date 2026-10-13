@@ -52,9 +52,9 @@ class WorkerRegistry:
         if job.get("project_id") and job["job_type"] in MUTATING:
             lock=self.store.state["project_locks"].get(job["project_id"])
             if lock and _parse(lock["expires_at"])>datetime.now(timezone.utc): raise ValueError("Project is locked by another mutating job.")
-        if job["job_type"] in {"VALIDATE","DEPLOY"} and job.get("build_id") and job["project_id"]:
+        if job["job_type"] in {"BUILD","VALIDATE","DEPLOY","DEPLOY_PREVIEW"} and job.get("build_id") and job["project_id"]:
             p=self.store.state["projects"].get(job["project_id"])
-            if not p or p.get("assigned_build_id")!=job["build_id"]: raise ValueError("Job build version is stale for this project.")
+            if not p or (job["job_type"]!="BUILD" and p.get("assigned_build_id")!=job["build_id"]) or (job["job_type"]=="BUILD" and p.get("assigned_build_id") and p.get("assigned_build_id")!=job["build_id"]): raise ValueError("Job build version is stale for this project.")
         stamp=_now(); expiry=(datetime.now(timezone.utc)+timedelta(seconds=self.lease_seconds)).replace(microsecond=0).isoformat().replace("+00:00","Z"); lease=f"lease-{uuid4().hex}"
         job.update({"status":"RUNNING","attempts":job["attempts"]+1,"started_at":job.get("started_at") or stamp,"updated_at":stamp,"heartbeat_at":stamp,"lease":{"lease_id":lease,"worker_id":worker_id,"claimed_at":stamp,"heartbeat_at":stamp,"expires_at":expiry}})
         worker.update({"status":"BUSY","current_job_id":job_id,"updated_at":stamp})
