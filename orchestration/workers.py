@@ -442,7 +442,7 @@ class LocalPipelineWorker:
             expected_sha = build.get("artifact_sha256")
             if expected_sha:
                 import hashlib
-                actual_sha = hashlib.sha256(html.encode("utf-8")).hexdigest()
+                actual_sha = hashlib.sha256(out_path.read_bytes()).hexdigest()
                 if actual_sha != expected_sha:
                     validation["status"] = "FAIL"
                     validation["passed"] = False

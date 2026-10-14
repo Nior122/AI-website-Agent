@@ -654,14 +654,15 @@ class TrackingStore:
             out_loc = stored_build.get("output_location")
             manifest_data = None
             scanned_assets: dict[str, dict] = {}
-            if out_loc and Path(str(out_loc)).is_file():
+            out_path_obj = Path(str(out_loc)) if out_loc else None
+            if out_path_obj is not None and out_path_obj.is_file():
                 try:
-                    if html_content is None:
-                        html_content = Path(str(out_loc)).read_text(encoding="utf-8")
-                    manifest_file = Path(str(out_loc)).parent / "build.json"
+                    # Preserve the exact on-disk bytes and newline endings.
+                    html_content = out_path_obj.read_bytes().decode("utf-8")
+                    manifest_file = out_path_obj.parent / "build.json"
                     if manifest_file.is_file():
                         manifest_data = json.loads(manifest_file.read_text(encoding="utf-8"))
-                    scanned_assets = _collect_safe_local_assets(Path(str(out_loc)).parent)
+                    scanned_assets = _collect_safe_local_assets(out_path_obj.parent)
                 except Exception:
                     pass
             local_assets = copy.deepcopy(explicit_assets) if isinstance(explicit_assets, dict) else scanned_assets
@@ -873,7 +874,7 @@ class TrackingStore:
             raise ValueError(f"Build artifact {build_id} is missing from disk ({out_path}) and no durable artifact is stored.")
 
         resolved_html.parent.mkdir(parents=True, exist_ok=True)
-        resolved_html.write_text(art["html_content"], encoding="utf-8")
+        resolved_html.write_bytes(art["html_content"].encode("utf-8"))
         manifest_file = resolved_html.parent / "build.json"
         if not manifest_file.is_file() and isinstance(art.get("build_manifest"), dict) and art["build_manifest"]:
             manifest_file.write_text(json.dumps(art["build_manifest"], indent=2) + "\n", encoding="utf-8")
@@ -1569,7 +1570,7 @@ class TrackingStore:
             if art and isinstance(art.get("review_package_json"), dict) and art.get("review_readme_md"):
                 resolved_exp.mkdir(parents=True, exist_ok=True)
                 if not exp_html_path.is_file():
-                    exp_html_path.write_text(art["html_content"], encoding="utf-8")
+                    exp_html_path.write_bytes(art["html_content"].encode("utf-8"))
                 if not exp_json_path.is_file():
                     exp_json_path.write_text(json.dumps(art["review_package_json"], indent=2) + "\n", encoding="utf-8")
                 if not exp_md_path.is_file():

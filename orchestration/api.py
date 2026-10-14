@@ -139,11 +139,23 @@ def make_handler(
                 try:
                     if getattr(service.store, "db_backend", None) is not None and hasattr(service.store, "refresh"):
                         service.store.refresh()
+                    registered_workers = list(
+                        (service.store.state.get("workers") or {}).values()
+                    )
+                    available_registered_workers = [
+                        w for w in registered_workers
+                        if w.get("enabled")
+                        and w.get("status") == "IDLE"
+                        and w.get("health_status") == "AVAILABLE"
+                    ]
                     if path == ["health"]:
                         return self._json(200, {
                             "api_status": "OK",
                             "worker_registered": active_worker is not None,
                             "worker_name": getattr(active_worker, "name", None),
+                            "api_execution_worker_configured": active_worker is not None,
+                            "registered_worker_count": len(registered_workers),
+                            "available_registered_worker_count": len(available_registered_workers),
                             "health": system_health(service.store),
                         })
                     if path == ["readiness"]:
@@ -154,6 +166,9 @@ def make_handler(
                             "production_mode": is_production_mode(),
                             "worker_registered": active_worker is not None,
                             "worker_name": getattr(active_worker, "name", None),
+                            "api_execution_worker_configured": active_worker is not None,
+                            "registered_worker_count": len(registered_workers),
+                            "available_registered_worker_count": len(available_registered_workers),
                         })
                     if len(path) == 3 and path[0] == "jobs" and path[2] == "readiness":
                         return self._json(200, readiness_for(service.store, service, path[1]))

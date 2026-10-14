@@ -130,6 +130,7 @@ def evaluate_n8n_template(
     node_outputs: dict[str, dict[str, Any]],
     env: dict[str, str],
     execution_id: str,
+    json_context: bool = False,
 ) -> Any:
     if not isinstance(raw, str):
         return raw
@@ -144,6 +145,19 @@ def evaluate_n8n_template(
             execution_id=execution_id,
         )
 
+    def _is_inside_json_string(position: int) -> bool:
+        in_string = False
+        escaped = False
+        for char in text[:position]:
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = not in_string
+        return in_string
+
     def _replace(match: re.Match[str]) -> str:
         val = _eval_expr_content(
             match.group(1),
@@ -152,6 +166,33 @@ def evaluate_n8n_template(
             env=env,
             execution_id=execution_id,
         )
+
+        if json_context:
+            if _is_inside_json_string(match.start()):
+                if val is None:
+                    return ""
+                if isinstance(val, bool):
+                    val_text = "true" if val else "false"
+                elif isinstance(val, (dict, list)):
+                    val_text = json.dumps(val, ensure_ascii=False)
+                else:
+                    val_text = str(val)
+                # Escape quotes, backslashes and control characters as JSON string content.
+                return json.dumps(val_text, ensure_ascii=False)[1:-1]
+
+            if val is None:
+                return "null"
+
+            # Some workflow fields intentionally contain raw JSON text, such as retry input.
+            if isinstance(val, str):
+                try:
+                    val = json.loads(val)
+                except json.JSONDecodeError:
+                    pass
+
+            return json.dumps(val, ensure_ascii=False)
+
+        # Preserve the original behavior for URLs, headers and non-JSON templates.
         if isinstance(val, bool):
             return "true" if val else "false"
         if val is None:
@@ -317,8 +358,12 @@ class N8nWorkflowRunner:
                 node_outputs=node_outputs,
                 env=self.env,
                 execution_id=execution_id,
+                json_context=True,
             )
-            parsed_body = json.loads(str(rendered_body))
+            if isinstance(rendered_body, (dict, list, int, float, bool)) or rendered_body is None:
+                parsed_body = rendered_body
+            else:
+                parsed_body = json.loads(str(rendered_body))
             body_bytes = json.dumps(parsed_body).encode("utf-8")
         req = Request(url, data=body_bytes, headers=headers, method=method)
         try:
