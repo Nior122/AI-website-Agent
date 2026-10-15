@@ -333,6 +333,101 @@ def run_cli(
     out_parser.add_argument("--decision", default=None, help="Review decision for --outreach-id (APPROVED, REJECTED, CHANGES_REQUESTED).")
     out_parser.add_argument("--notes", default=None, help="Review notes for --outreach-id.")
 
+    def _ledger(target: argparse.ArgumentParser, *, lead_required: bool = True) -> None:
+        """Engagement subcommands share the same evidence flags; one helper keeps them consistent."""
+        if lead_required:
+            target.add_argument("lead_id", help="Tracked lead the record attaches to (e.g. lead-0002).")
+        target.add_argument("--evidence-note", default=None, help="What the evidence says, in the operator's words. Contact details are redacted on write.")
+        target.add_argument("--evidence-url", default=None, help="Absolute http(s) URL of the public source, when there is one.")
+        target.add_argument("--occurred-at", default=None, help="When it happened (YYYY-MM-DD or ISO-8601). Defaults to now.")
+
+    eng_parser = subparsers.add_parser("engagement-record", help="Append one engagement event (note, send, response, decision) to a lead's audit trail.")
+    _ledger(eng_parser)
+    eng_parser.add_argument("--kind", required=True, help="Event kind, e.g. NOTE, RESPONSE_RECEIVED, PROPOSAL_DECISION.")
+    eng_parser.add_argument("--summary", required=True, help="Short description of what happened.")
+    eng_parser.add_argument("--direction", default="INTERNAL", help="OUTBOUND, INBOUND, or INTERNAL.")
+    eng_parser.add_argument("--channel", default=None, help="EMAIL, WHATSAPP, INSTAGRAM, FACEBOOK, LINKEDIN, SMS, PHONE, IN_PERSON, OTHER.")
+    eng_parser.add_argument("--project-id", default=None, help="Project the event concerns, when it is not the lead's own.")
+    eng_parser.add_argument("--outreach-id", default=None, help="Link an outreach draft record.")
+    eng_parser.add_argument("--proposal-id", default=None, help="Link a proposal record.")
+    eng_parser.add_argument("--follow-up-id", default=None, help="Link a follow-up record.")
+    eng_parser.add_argument("--idempotency-key", default=None, help="Repeat-safe key; the same key records the event once.")
+
+    resp_parser = subparsers.add_parser("response-record", help="Record an inbound reply from the business, with its evidence.")
+    _ledger(resp_parser)
+    resp_parser.add_argument("--channel", required=True, help="Channel the reply arrived on.")
+    resp_parser.add_argument("--summary", required=True, help="What the business said, in the operator's words.")
+    resp_parser.add_argument("--quote", default=None, help="Short verbatim quote from the message (contact details redacted).")
+    resp_parser.add_argument("--received-at", default=None, help="When the reply arrived (defaults to --occurred-at or now).")
+    resp_parser.add_argument("--outreach-id", default=None, help="Outreach draft this answers, if known.")
+    resp_parser.add_argument("--idempotency-key", default=None, help="Repeat-safe key for the same inbound message.")
+
+    sent_parser = subparsers.add_parser("outreach-mark-sent", help="Record that a human actually sent an approved draft (a prepared draft is never 'sent').")
+    sent_parser.add_argument("outreach_id", help="Outreach record id (e.g. outreach-0001).")
+    sent_parser.add_argument("--occurred-at", default=None, help="When it was sent.")
+    sent_parser.add_argument("--evidence-note", default=None, help="How the operator knows it went out.")
+    sent_parser.add_argument("--evidence-url", default=None, help="Link to the sent message, when one exists.")
+    sent_parser.add_argument("--provider-message-id", default=None, help="Provider id as given; recorded verbatim and not verified against any provider.")
+
+    fu_sched = subparsers.add_parser("follow-up-schedule", help="Schedule a follow-up for a lead (refused when that channel is opted out).")
+    _ledger(fu_sched)
+    fu_sched.add_argument("--due", required=True, help="Due date (YYYY-MM-DD means end of that day).")
+    fu_sched.add_argument("--reason", required=True, help="Why this follow-up exists.")
+    fu_sched.add_argument("--channel", default=None, help="Channel the follow-up will use, if decided.")
+    fu_sched.add_argument("--proposal-id", default=None, help="Link a proposal this follow-up concerns.")
+    fu_sched.add_argument("--allow-past-due", action="store_true", help="Permit backdating a schedule deliberately.")
+
+    fu_update = subparsers.add_parser("follow-up-update", help="Complete, cancel, or reschedule a follow-up.")
+    fu_update.add_argument("follow_up_id", help="Follow-up id (e.g. follow_up-0001).")
+    fu_update.add_argument("--action", required=True, help="COMPLETE, CANCEL, or RESCHEDULE.")
+    fu_update.add_argument("--notes", default=None, help="What happened, or why it was cancelled/rescheduled.")
+    fu_update.add_argument("--evidence-note", default=None, help="Evidence supporting a completion.")
+    fu_update.add_argument("--evidence-url", default=None, help="Public source URL supporting the change.")
+    fu_update.add_argument("--due", default=None, help="New due date (required with RESCHEDULE).")
+    fu_update.add_argument("--allow-past-due", action="store_true", help="Permit a backdated reschedule.")
+
+    due_parser = subparsers.add_parser("due-follow-ups", help="List scheduled follow-ups that are due or overdue, as of today.")
+    due_parser.add_argument("--today", default=None, help="Override the reference date (YYYY-MM-DD) for a report.")
+
+    prop_create = subparsers.add_parser("proposal-create", help="Draft a proposal record for a lead (creating it does not present it).")
+    _ledger(prop_create)
+    prop_create.add_argument("--summary", required=True, help="What is being offered, in the operator's words.")
+    prop_create.add_argument("--project-id", default=None, help="Project this proposal covers (defaults to the lead's project).")
+    prop_create.add_argument("--outreach-id", default=None, help="Outreach draft it relates to.")
+    prop_create.add_argument("--idempotency-key", default=None, help="Repeat-safe key for the same draft.")
+    prop_create.add_argument("--terms-note", default=None, help="Free-text terms as written by the operator.")
+    prop_create.add_argument("--currency", default=None, help="ISO currency code, only together with --amount-minor.")
+    prop_create.add_argument("--amount-minor", type=int, default=None, help="Amount in minor units, only together with --currency.")
+
+    prop_update = subparsers.add_parser("proposal-update", help="Move a proposal through READY_FOR_PRESENTATION, PRESENTED, ACCEPTED, DECLINED, WITHDRAWN.")
+    prop_update.add_argument("proposal_id", help="Proposal id (e.g. proposal-0001).")
+    prop_update.add_argument("--status", required=True, help="Target status; transitions are enforced and evidence is required to present or decide.")
+    prop_update.add_argument("--evidence-note", default=None, help="How the presentation or decision happened.")
+    prop_update.add_argument("--evidence-url", default=None, help="Source URL for it, when one exists.")
+    prop_update.add_argument("--occurred-at", default=None, help="When it happened.")
+    prop_update.add_argument("--notes", default=None, help="Operator note stored with the decision.")
+
+    out_parser2 = subparsers.add_parser("outcome-record", help="Record the prospect's outcome; WON needs evidence and a contract/invoice/payment reference.")
+    _ledger(out_parser2)
+    out_parser2.add_argument("--status", required=True, help="INTERESTED, FOLLOW_UP_REQUESTED, NEGOTIATING, WON, LOST, DECLINED, OPTED_OUT, NO_RESPONSE, PAUSED, UNRESOLVED.")
+    out_parser2.add_argument("--evidence-kind", default="CUSTOMER_MESSAGE", help="Evidence kind (CUSTOMER_MESSAGE, CONTRACT, INVOICE, PAYMENT, CALL_NOTE, MEETING, ...).")
+    out_parser2.add_argument("--reference", default=None, help="Contract/invoice/payment reference (required for WON).")
+    out_parser2.add_argument("--notes", default=None, help="Operator note kept with the outcome.")
+
+    opt_parser = subparsers.add_parser("opt-out", help="Record that a business asked not to be contacted, cancelling matching open follow-ups.")
+    _ledger(opt_parser, lead_required=True)
+    opt_parser.add_argument("--channel", default=None, help="Channel the request covers; omit for all channels.")
+    opt_parser.add_argument("--reason", default=None, help="The request as reported by the operator.")
+
+    opt_revoke = subparsers.add_parser("opt-out-revoke", help="Withdraw an opt-out only when the business asked to be contacted again.")
+    opt_revoke.add_argument("block_id", help="Opt-out record id (e.g. block-0001).")
+    opt_revoke.add_argument("--reason", required=True, help="What the business asked for, in the operator's words.")
+    opt_revoke.add_argument("--evidence-note", default=None, help="Evidence of the reversal request.")
+
+    ledger_parser = subparsers.add_parser("ledger", help="Show the engagement, proposal, follow-up, and outcome records for one lead or project.")
+    ledger_parser.add_argument("lead_id", nargs="?", default=None, help="Lead id (e.g. lead-0002), or omit with --project-id.")
+    ledger_parser.add_argument("--project-id", default=None, help="View by project instead of by lead.")
+
     rec_exp_parser = subparsers.add_parser(
         "recover-verified-exports",
         help="Recover project-0001 and project-0002 from committed fixtures and SHA-256 verified review packages.",
@@ -658,6 +753,124 @@ def run_cli(
             out_stream.write(json.dumps(draft, indent=2) + "\n")
             return 0
 
+        if args.command in {
+            "engagement-record", "response-record", "outreach-mark-sent", "follow-up-schedule",
+            "follow-up-update", "due-follow-ups", "proposal-create", "proposal-update", "outcome-record",
+            "opt-out", "opt-out-revoke", "ledger",
+        }:
+            from tracking.engagement import EngagementLedger
+
+            ledger = EngagementLedger(store)
+            evidence = [
+                payload for payload in [
+                    {"kind": "OPERATOR_NOTE", "note": getattr(args, "evidence_note", None)},
+                    {"kind": "URL", "source_url": getattr(args, "evidence_url", None)},
+                ]
+                if payload.get("note") or payload.get("source_url")
+            ]
+            if args.command == "engagement-record":
+                result = ledger.record_event(
+                    args.lead_id,
+                    kind=args.kind,
+                    summary=args.summary,
+                    direction=args.direction,
+                    channel=args.channel,
+                    occurred_at=args.occurred_at,
+                    evidence=evidence,
+                    project_id=args.project_id if hasattr(args, "project_id") else None,
+                    outreach_id=args.outreach_id,
+                    proposal_id=args.proposal_id,
+                    follow_up_id=args.follow_up_id,
+                    idempotency_key=args.idempotency_key,
+                )
+            elif args.command == "response-record":
+                result = ledger.record_response(
+                    args.lead_id,
+                    channel=args.channel,
+                    summary=args.summary,
+                    received_at=args.received_at or args.occurred_at,
+                    evidence_note=args.evidence_note,
+                    evidence_url=args.evidence_url,
+                    quote=args.quote,
+                    outreach_id=args.outreach_id,
+                    idempotency_key=args.idempotency_key,
+                )
+            elif args.command == "outreach-mark-sent":
+                result = ledger.mark_outreach_sent(
+                    args.outreach_id,
+                    occurred_at=args.occurred_at,
+                    evidence_note=args.evidence_note,
+                    evidence_url=args.evidence_url,
+                    provider_message_id=args.provider_message_id,
+                )
+            elif args.command == "follow-up-schedule":
+                result = ledger.schedule_follow_up(
+                    args.lead_id,
+                    due_at=args.due,
+                    reason=args.reason,
+                    channel=args.channel,
+                    proposal_id=args.proposal_id,
+                    allow_past_due=bool(args.allow_past_due),
+                )
+            elif args.command == "follow-up-update":
+                result = ledger.update_follow_up(
+                    args.follow_up_id,
+                    action=args.action,
+                    notes=args.notes,
+                    evidence_note=args.evidence_note,
+                    evidence_url=args.evidence_url,
+                    due_at=args.due,
+                    allow_past_due=bool(args.allow_past_due),
+                )
+            elif args.command == "due-follow-ups":
+                result = ledger.due_follow_ups(today=args.today)
+            elif args.command == "proposal-create":
+                result = ledger.create_proposal(
+                    args.lead_id,
+                    summary=args.summary,
+                    project_id=args.project_id if hasattr(args, "project_id") else None,
+                    outreach_id=args.outreach_id,
+                    terms_note=args.terms_note,
+                    currency=args.currency,
+                    amount_minor=args.amount_minor,
+                    idempotency_key=args.idempotency_key,
+                )
+            elif args.command == "proposal-update":
+                result = ledger.update_proposal(
+                    args.proposal_id,
+                    status=args.status,
+                    evidence_note=args.evidence_note,
+                    evidence_url=args.evidence_url,
+                    occurred_at=args.occurred_at,
+                    notes=args.notes,
+                )
+            elif args.command == "outcome-record":
+                result = ledger.record_outcome(
+                    args.lead_id,
+                    status=args.status,
+                    evidence_note=args.evidence_note,
+                    evidence_url=args.evidence_url,
+                    evidence_kind=args.evidence_kind,
+                    reference=args.reference,
+                    occurred_at=args.occurred_at,
+                    notes=args.notes,
+                )
+            elif args.command == "opt-out":
+                result = ledger.record_opt_out(
+                    args.lead_id,
+                    channel=args.channel,
+                    reason=args.reason,
+                    evidence_note=args.evidence_note,
+                    evidence_url=args.evidence_url,
+                    occurred_at=args.occurred_at,
+                )
+            elif args.command == "opt-out-revoke":
+                result = ledger.revoke_opt_out(args.block_id, reason=args.reason, evidence_note=args.evidence_note)
+            else:
+                result = ledger.ledger(args.lead_id, project_id=args.project_id)
+            out_stream.write(json.dumps(result, indent=2) + "\n")
+            return 0
+
         if args.command == "configure-preview":
             updated = store.configure_preview_target(args.project_id, args.project_name)
             out_stream.write(
@@ -789,7 +1002,13 @@ def run_cli(
             return 0
 
     except (ValueError, DatabasePersistenceError) as error:
-        err_stream.write(json.dumps({"error": str(error)}) + "\n")
+        # A refusal names its code when it has one, so an operator (or an n8n failure branch) can act on the
+        # reason rather than parsing prose.
+        payload: dict = {"error": str(error)}
+        code = getattr(error, "code", None)
+        if code:
+            payload["error_code"] = code
+        err_stream.write(json.dumps(payload) + "\n")
         return 1
 
     return 1

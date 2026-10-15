@@ -309,7 +309,8 @@ class RelationalStateBackend:
     @staticmethod
     def _empty_snapshot() -> dict[str, Any]:
         snap: dict[str, Any] = {col: {} for col in TRACKED_COLLECTIONS}
-        snap["worker_routing"] = {}
+        for collection in RelationalStateBackend.KV_PERSISTED_COLLECTIONS:
+            snap[collection] = {}
         return snap
 
     def _connect(self) -> Any:
@@ -404,6 +405,12 @@ class RelationalStateBackend:
     #: anything is applied to it. A fresh migration and a shared production database look identical
     #: to `CREATE TABLE IF NOT EXISTS`, which is precisely why the counts are reported.
     COUNTED_TABLES = ("leads", "projects", "jobs", "reviews", "deployments", "outreach_packages")
+
+    #: Whole-dict state that has no dedicated table and is therefore kept as one JSON document per key in
+    #: ``system_kv`` - the mechanism ``worker_routing`` already uses. The engagement ledger lives here so a
+    #: PostgreSQL deployment persists it with no new DDL in this phase; promoting it to real tables (with
+    #: per-row idempotency and indexes) is the migration that should follow, not a reason to lose records now.
+    KV_PERSISTED_COLLECTIONS = ("worker_routing", "engagements", "proposals", "follow_ups", "outcomes", "contact_blocks")
 
     def identity(self) -> dict[str, Any]:
         """Where this connection string points, with every secret removed.
@@ -1064,10 +1071,11 @@ class RelationalStateBackend:
             })
             state["build_artifacts"][b_id] = payload
 
-        res_kv = self._exec(cur, "SELECT key, payload FROM system_kv WHERE key = 'worker_routing'")
-        kv_rows = res_kv.fetchall()
-        if kv_rows:
-            state["worker_routing"] = self._decode_json(kv_rows[0][1])
+        for kv_key in self.KV_PERSISTED_COLLECTIONS:
+            res_kv = self._exec(cur, f"SELECT key, payload FROM system_kv WHERE key = {self._placeholder()}", (kv_key,))
+            kv_rows = res_kv.fetchall()
+            if kv_rows:
+                state[kv_key] = self._decode_json(kv_rows[0][1])
 
         return state
 
@@ -1203,19 +1211,19 @@ class RelationalStateBackend:
                             merged_rec["lock_version"] = prev_lock_ver + 1
                         self._upsert_record(cur, collection, rec_id, merged_rec)
 
-            # Persist `worker_routing` system KV if modified
-            baseline_routing = self._loaded_snapshot.get("worker_routing") or {}
-            current_routing = state.get("worker_routing") or {}
-            if current_routing and current_routing != baseline_routing:
-                ph = self._placeholder()
-                cast = self._json_cast()
-                now_val = _now_iso()
-                self._exec(
-                    cur,
-                    f"INSERT INTO system_kv (key, payload, updated_at) VALUES ({ph}, {ph}{cast}, {ph}) "
-                    f"ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at",
-                    ("worker_routing", self._json_param(current_routing), now_val),
-                )
+            # Persist whole-dict system KV collections (worker routing plus the engagement ledger) if modified
+            for kv_key in self.KV_PERSISTED_COLLECTIONS:
+                baseline_kv = self._loaded_snapshot.get(kv_key) or {}
+                current_kv = state.get(kv_key) or {}
+                if current_kv and current_kv != baseline_kv:
+                    ph = self._placeholder()
+                    cast = self._json_cast()
+                    self._exec(
+                        cur,
+                        f"INSERT INTO system_kv (key, payload, updated_at) VALUES ({ph}, {ph}{cast}, {ph}) "
+                        f"ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at",
+                        (kv_key, self._json_param(current_kv), _now_iso()),
+                    )
 
             # Re-read the committed state inside the transaction so concurrent rows are visible
             fresh_state = self._read_all_tables(cur)
@@ -1226,12 +1234,12 @@ class RelationalStateBackend:
 
             self._loaded_snapshot = copy.deepcopy(fresh_state)
             for col_key, col_val in fresh_state.items():
-                if col_key == "worker_routing":
-                    if isinstance(state.get("worker_routing"), dict) and isinstance(col_val, dict):
-                        state["worker_routing"].clear()
-                        state["worker_routing"].update(copy.deepcopy(col_val))
+                if col_key in self.KV_PERSISTED_COLLECTIONS:
+                    if isinstance(state.get(col_key), dict) and isinstance(col_val, dict):
+                        state[col_key].clear()
+                        state[col_key].update(copy.deepcopy(col_val))
                     else:
-                        state["worker_routing"] = copy.deepcopy(col_val)
+                        state[col_key] = copy.deepcopy(col_val)
                     continue
                 target_col = state.setdefault(col_key, {})
                 if isinstance(target_col, dict) and isinstance(col_val, dict):

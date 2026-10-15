@@ -374,6 +374,13 @@ def _empty_state() -> dict:
         "qualifications": {},
         "reviews": {},
         "build_artifacts": {},
+        # Engagement ledger (tracking/engagement.py). Declared here so a fresh workspace has the collections
+        # and an absent key never means "no engagement history was ever recorded" versus "state is corrupt".
+        "engagements": {},
+        "proposals": {},
+        "follow_ups": {},
+        "outcomes": {},
+        "contact_blocks": {},
     }
 
 

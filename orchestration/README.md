@@ -222,3 +222,21 @@ Each executed attempt (including the service, CLI, and API paths, not only lease
 decision have to be told apart, or the operator is sent to approve something that is already approved.
 
 Structured events are emitted with `orchestration.observability.log_event()`: one JSON object per line to stderr (filtered by `AI_WEBSITE_AGENT_LOG_LEVEL`, default `WARNING`) and appended to `AI_WEBSITE_AGENT_LOG_DIR/operations.jsonl` when that directory is configured. Every line carries `timestamp`, `severity`, `operation`, a stable `code`, the identifiers needed to trace it (`job_id`, `lead_id`, `project_id`, `build_id`, `validation_id`, `deployment_id`, `execution_id`, `worker_id`, `attempt`), and a sanitized `detail`. `redact()` removes bearer/authorization values, named secrets, `sk-` keys, JWTs, and complete connection-string userinfo before anything is persisted or returned, and messages are length-bounded. Duplicate alert suppression is in-process by design: a long-lived caller should pass its own `seen` set, and no second copy of workflow state is kept for monitoring.
+
+## Engagement ledger: no HTTP write surface, on purpose
+
+Phase 46 added persistent tracking for everything after an approved outreach draft - replies, follow-ups,
+proposal status, prospect decisions, outcomes, and opt-outs - in `tracking/engagement.py`. It is reachable from
+`python3 -m tracking` (twelve commands, listed in `tracking/README.md`) and from `TrackingStore` consumers, and
+it was deliberately **not** exposed as an `orchestration/api.py` endpoint: an automated caller that can write
+`OUTREACH_SENT`, `PRESENTED`, or `WON` can declare its own success, which is the failure mode the review gate and
+the `AWAITING_REVIEW -> READY_TO_SEND` handoff exist to prevent. A future worker may therefore call
+`EngagementLedger` methods directly - they are pure state transitions that never send, deploy, approve, or
+build - but the values it can store are bounded by what the store will accept: a send needs operator evidence and
+is still recorded as `SENT_REPORTED` with `provider_verified: false`, a proposal needs evidence before it reads
+as `PRESENTED`, `WON` needs a customer-side document reference, and no number of elapsed days turns an unanswered
+follow-up into a `DECLINED` outcome. `orchestration/workers.py` was not changed and no n8n workflow example was
+changed or activated: `n8n/workflows/03-core-lead-to-review-package-pipeline.json` still ends at
+"Generate & Verify Review Package" and hands off to a human, so no exported graph creates a ledger record, marks
+outreach as sent, or closes an opportunity. (The `sendBody`/`sendHeaders` keys inside those files are n8n HTTP
+node configuration for calling this repository's own API, not anything that contacts a prospect.)

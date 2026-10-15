@@ -4,6 +4,42 @@ All notable project changes are recorded here. Dates use ISO 8601 (`YYYY-MM-DD`)
 
 ## [Unreleased]
 
+### Added — 2026-10-15 (Phase 46: persistent prospect engagement and customer-outcome ledger)
+
+- `tracking/engagement.py` adds `EngagementLedger`, the persistent record of the steps after an outreach draft
+  is approved: `engagements` (append-only event log), `proposals`, `follow_ups`, `outcomes` and `contact_blocks`
+  in the existing `TrackingStore` state file, with the existing id and bounded-text guards and no new database
+  or dependency. `tracking/store.py` declares the five collections in `_empty_state()`, and
+  `tracking/database.py` persists them through the same `system_kv` document mechanism that `worker_routing`
+  already uses (`KV_PERSISTED_COLLECTIONS`), so a Postgres or SQLite backend round-trips them without new DDL.
+- Twelve `python -m tracking` commands: `engagement-record`, `response-record`, `outreach-mark-sent`,
+  `follow-up-schedule`, `follow-up-update`, `due-follow-ups`, `proposal-create`, `proposal-update`,
+  `outcome-record`, `opt-out`, `opt-out-revoke`, `ledger`. Refusals now print an `error_code` next to the
+  message (e.g. `EVIDENCE_REQUIRED`, `CONTACT_BLOCKED`, `OUTREACH_NOT_APPROVED`, `WON_EVIDENCE_REQUIRED`) so a
+  human can act on a rejection without guessing at it.
+- The boundary between adjacent claims is now enforced rather than assumed. Marking a draft as sent requires an
+  evidence note or URL and still stores `provider_verified: false` with
+  `delivery_status: REPORTED_BY_OPERATOR`, so an unverified message can never read as a confirmed delivery; a
+  DRAFT proposal cannot be marked presented, and `PRESENTED` needs evidence of the act; `WON` needs a
+  customer-side evidence kind plus a contract, invoice, or payment reference and stores no revenue figure at
+  all; an outcome may only move along declared transitions and repeating it returns `unchanged: true`; nothing
+  derives rejection from silence, because `due-follow-ups` is read-only and `NO_RESPONSE` is only ever an
+  operator's explicit observation about their own inbox.
+- Follow-ups respect consent and volume: an opt-out cancels the open follow-ups it covers and blocks new
+  follow-ups and further sends on that channel (`CONTACT_BLOCKED`), the per-lead per-channel send count is
+  capped at `MAX_SENDS_PER_LEAD_PER_CHANNEL = 3` (only counting reported sends, not prepared drafts), a due
+  date in the past is refused without `--allow-past-due`, and revoking an opt-out requires a stated reason and
+  does not reschedule anything by itself. Email and phone shapes are redacted from every free-text field on
+  write, records link to `lead_id`/`project_id`/`outreach_id` rather than copying contact data, and repeated
+  commands are idempotent on a derived or supplied key so a retried event cannot duplicate.
+- Tests (`tests/test_phase46_engagement_ledger.py`, 29) cover persistence and reload, a SQLite and a JSON
+  round-trip, the truth rules above, the contact limit, cancellation after opt-out, the proposal and outcome
+  lifecycles, illegal transitions, duplicate events, redaction, and the CLI. One test asserts by reading the
+  source that the ledger imports no network, builder, deployer, or sender module and exposes no route. No
+  message is sent by any part of this phase, no n8n workflow is activated, no live delivery or response API is
+  integrated, and no `orchestration/api.py` endpoint was added, so nothing outside this machine can record its
+  own success.
+
 ### Changed — 2026-10-15 (Phase 45: Research Got a Real Public-Information Path, and the Permission to Use It Stayed Out of the Request's Hands)
 
 - **The seam the Phase 3 design left open is now filled, without touching the qualification logic.** `_evaluate_website` has always accepted a `website_observation` - `load`, `correct_business`, `poor_mobile`, `missing_contact`, `outdated_information`, and the rest - and nothing ever produced one except a hand-written fixture, which is why a real prospect's website could only ever be `UNKNOWN`. `research/live_source.py` is that producer: it emits the same vocabulary, so identity verification, fact reconciliation, evidence tiers, and the `QUALIFIED`/`REVIEW`/`SKIP` machine are reused unchanged instead of being duplicated next to a second opinion.

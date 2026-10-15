@@ -117,6 +117,29 @@ Consent is deliberately split from the request: live research runs only when `AI
 
 Observations are the existing `website_observation` vocabulary, so `_evaluate_website` remains the single place where evidence becomes a website classification: a page that could not be read yields `UNKNOWN` with the retrieval status and reason recorded as our limitation, never `NO_WEBSITE`. The source makes no decision and imports no builder, reviewer, deployer, or sender; `QUALIFY` and everything after it remain separate jobs.
 
+## Engagement and outcome tracking
+
+`tracking/engagement.py` is the persistent record of the steps after discovery: what was sent, what came back,
+what is due, where a proposal stands, and how the opportunity ended. It writes into the same `TrackingStore`
+state as leads, builds, reviews, and deployments, uses the same guards (`validate_record_id`,
+`validate_bounded_text`, `next_numeric_id`), and adds five collections - `engagements`, `proposals`,
+`follow_ups`, `outcomes`, `contact_blocks`.
+
+The module encodes the difference between adjacent facts rather than trusting the caller to remember it: an
+approved draft, a reported send, and a verified delivery are three different records, and only the first two
+exist here (`provider_verified: false` is always stored); a drafted proposal, a presented proposal, and an
+accepted proposal are three states with evidence required for the last two; `NO_RESPONSE` is the one outcome
+that needs no customer evidence and it is never produced by the passage of time; and `WON` requires a
+customer-side evidence kind plus a contract, invoice, or payment reference. Opt-outs are not just history -
+recording one cancels the follow-ups it covers and blocks new ones and further sends on that channel, and the
+per-lead, per-channel send count is capped so "one more nudge" cannot become an uncounted habit.
+
+Free-text is redacted of email and phone shapes on write, records link to `lead_id`/`project_id`/`outreach_id`
+instead of copying contact details, and every operation is idempotent on a derived or supplied key so a retried
+command cannot double-count a reply. The ledger has no HTTP endpoint and imports no network, builder,
+deployer, or sender - a workflow cannot mark its own outreach successful; that record comes from a human who
+saw it happen.
+
 ## Website opportunity handoff
 
 `opportunities.assess_opportunity()` is the single Scout-to-builder qualification handoff. It produces a score, reasons, evidence, priority, normalized website status, and a content brief split into `verified`, `unknown`, and `suggested` information. Existing website evidence maps to `WEBSITE_POOR`, `WEBSITE_OUTDATED`, `WEBSITE_BASIC`, or `WEBSITE_MODERN`; missing website data from a listing maps only to `WEBSITE_UNKNOWN`.
