@@ -135,6 +135,19 @@ Generated, validated, awaiting-review, approved-for-one-action, deployed, and re
 - `TrackingStore.authorize_preview_deployment(project_id)` answers the same question from the durable record — project existence, ownership, assigned build, `PASS` validation, stage, approval binding and supersession, artifact presence, prior attempts, and the real-business isolated-target requirement — so every entry point reports the same machine-readable code. It requires the approval for **all** data classes, not only `REAL_PUBLIC_DATA`.
 - Publishing is recorded, never assumed: `deployment-attempts.json` appends `DEPLOYING` before the provider is invoked and the terminal state after. A repeat of an already-published artifact is refused (`DEPLOYMENT_ALREADY_RECORDED`), a retried job whose deployment is recorded returns `ALREADY_DEPLOYED_REPEAT_SKIPPED`, and an interrupted or unverifiable publish ends as `PUBLISH_UNCERTAIN` — refused on the next attempt until an operator inspects the provider and deliberately re-runs with `--resolve-uncertain-publish`.
 
+## HTTP trust boundary
+
+The loopback API has exactly one credential: the shared `AI_WEBSITE_AGENT_API_TOKEN`. It is compared in
+constant time and grants access to workflow state, not to a human identity. The boundary is therefore
+drawn where authority differs, not where convenience does: a request may name identifiers only in a
+validated form, may send a bounded body read only after the size check, may export a review package only
+inside the operator-configured export root, and may never assert that its reviewer was verified -
+`TrackingStore` clamps such a claim again at the point the approval capability is materialized, so a
+self-granted assurance cannot reach the publish gate. Refusals are machine-readable (`error_code`) and
+sanitized: internal filesystem paths, credentials, and stack traces stay out of responses and logs.
+Read `orchestration/README.md` (*HTTP trust boundary*) for the endpoint-level rules and for the
+limitations this design accepts.
+
 ## Directory responsibilities
 
 | Path | Responsibility |

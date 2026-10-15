@@ -31,19 +31,73 @@ Supported authenticated endpoints (`Authorization: Bearer <token>`):
 - `POST /jobs/recover-stale` — moves stale `RUNNING` jobs older than `older_than_seconds` to `NEEDS_REVIEW`.
 - `POST /leads/deduplicate` — checks candidate business identity against `TrackingStore.find_duplicate()`.
 - `GET /projects/:id` — returns `TrackingStore.snapshot(project_id)`.
-- `POST /projects/:id/review` — records one explicit human review decision (`decision`, `notes`, `reviewer`, and `confirm=<project_id>:<assigned_build_id>:<DECISION>`). A stale or misrouted confirmation is refused with `409` before anything is written, the reviewer string is recorded verbatim with `identity_verified: false`, and the response carries the resulting `deployment_authorization`. Recording a decision never publishes anything.
+- `POST /projects/:id/review` — records one explicit human review decision (`decision`, `notes`, `reviewer`, and `confirm=<project_id>:<assigned_build_id>:<DECISION>`). `decision` must be one of `APPROVED_FOR_PREVIEW`, `APPROVED`, `REJECTED`, `CHANGES_REQUESTED`; `notes`, `reviewer`, and `confirm` must be strings within the recorded bounds (4000 and 120 characters). A stale or misrouted confirmation is refused with `409 REVIEW_CONFIRMATION_MISMATCH` before anything is written, the reviewer string is recorded verbatim with `identity_verified: false`, and the response carries the resulting `deployment_authorization`. Supplying `identity_verified: true` is refused with `400 IDENTITY_ASSERTION_REFUSED` (see *HTTP trust boundary* below). Recording a decision never publishes anything.
 - `GET /projects/:id/deployment-authorization` — read-only view of the server-side publish gate for the assigned build (or `?build_id=` to assert one): `authorized`, a machine-readable `code` (`APPROVAL_MISSING`, `APPROVED_FOR_DEPLOYMENT`, `ALREADY_DEPLOYED` with `skip_publish: true`, `REVIEW_REJECTED`, `REVIEW_CHANGES_REQUESTED`, `VALIDATION_NOT_PASSED`, `PUBLISH_STATE_UNCERTAIN`, `REAL_ISOLATED_TARGET_REQUIRED`, …) and an actionable `reason`. It never deploys and never mutates state.
 - `GET /attention` — the operator backlog from `operator_attention()`: stale-running jobs, blocked/failed/exhausted jobs, projects awaiting a human decision or sent back by review, and deployment outcomes that need manual resolution - each with a stable code, the sanitized recorded message, and the safe next action.
 - `GET /deployment-status` — recorded publish state per project (`VERIFIED_RECORDED`, `UNCERTAIN`, `FAILED`, `RECORDED_UNCONFIRMED`, `SUPERSEDED`, `NOT_ATTEMPTED`) plus deployment *configuration* (CLI on `PATH`, project link, isolated target). It reads the ledger and configuration only and always reports `provider_contacted: false` / `live_url_checked: false`, so a configuration check cannot be mistaken for verification of a live site; `?project_id=` narrows the attention list.
 - `POST /jobs/:id/retry` refuses an ineligible retry with `409`, `error_code: RETRY_NOT_ELIGIBLE`, and the recorded eligibility explanation rather than a generic error.
 
 - `GET /projects/:id/artifact` — retrieves (and re-materializes from durable storage if local temporary files were removed) the SHA-256-verified `index.html`, `html_sha256`, `html_bytes`, and `review_package` for a project's assigned build.
-- `POST /projects/:id/review-package` — exports and verifies a human-review package (`index.html`, `review-package.json`, `REVIEW_README.md`) for a `READY_FOR_REVIEW` project, leaving `review_status` at `"PENDING"`.
-- `GET /projects/:id/review-package?export_dir=...` — verifies an exported review package against `TrackingStore`.
+- `POST /projects/:id/review-package` — exports and verifies a human-review package (`index.html`, `review-package.json`, `REVIEW_README.md`) for a `READY_FOR_REVIEW` project, leaving `review_status` at `"PENDING"`. `export_dir` is optional and must name a directory *inside* the handler's configured export root; anything else is `400 EXPORT_PATH_NOT_ALLOWED`.
+- `GET /projects/:id/review-package?export_dir=...` — verifies an exported review package against `TrackingStore`, under the same export-root confinement (verification reads files by path, so an unrestricted name would let a request inspect another project's evidence).
 
 Unauthenticated liveness probe (for Render load balancer health checks):
 
 - `GET /healthz` — returns `200 OK` with `{"status": "ok"}` and never exposes operational state, paths, or credentials. It is intentionally *liveness only*: it does not read the database, so it keeps answering while `GET /readiness` correctly reports `NOT_READY` because the source of truth is unreachable. `200 /healthz` is therefore never a statement that work can proceed.
+
+### HTTP trust boundary (Phase 40)
+
+The API is a single-trust-zone automation surface: whoever holds the shared token may read and advance
+workflow state, and nothing else. Everything below keeps that one credential meaningful without
+pretending it is something it is not.
+
+- **Credential check.** `_authorized()` compares the exact `Bearer <token>` form with
+  `hmac.compare_digest`, requires exactly one `Authorization` header, and fails closed when no token is
+  configured (`serve()` refuses to start without one). Missing, wrong-scheme, malformed, wrong, and
+  duplicated credentials all answer the identical `401 {"error": "Unauthorized"}` plus
+  `WWW-Authenticate: Bearer realm="ai-website-agent"`, so a probe learns nothing about which part
+  failed. Only `GET /healthz` is public, and it returns exactly `{"status": "ok"}`.
+- **No credential material in answers or logs.** The refusal body is fixed text; the `Authorization`
+  value is never echoed, and the failure is logged as `{"operation":"http.auth","code":"AUTH_MISSING|
+  AUTH_FAILED","detail":"GET /jobs"}` with nothing else. `log_message` stays disabled so request headers
+  never reach the access log.
+- **Bind policy.** A token shorter than 32 characters or equal to a documented placeholder is refused for
+  any bind reachable outside the machine (`0.0.0.0` or production mode): the shared-token design is only
+  safe while the token is unguessable. Local loopback development is unaffected.
+- **Request limits.** Bodies are capped at `MAX_REQUEST_BYTES` (1 MiB) and the cap is applied before the
+  socket is read (`413 REQUEST_BODY_TOO_LARGE`). `Transfer-Encoding: chunked` is refused rather than
+  silently buffered, a non-numeric `Content-Length`, a truncated body, non-UTF-8 bytes, and a JSON value
+  that is not an object are `400 INVALID_REQUEST`.
+- **Identifier validation.** Every `/jobs/:id`, `/leads/:id`, and `/projects/:id` segment, plus body
+  `job_id`/`lead_id`/`project_id`/`build_id`/`parent_job_id`/`idempotency_key`/`reviewer_id`, is checked
+  by `tracking.store.validate_record_id` before it reaches state, SQL parameters, or a derived path.
+  A malformed identifier is `400 INVALID_REQUEST`; an unknown but well-formed one is `404
+  RECORD_NOT_FOUND`.
+- **Review bounds and identity.** `notes` (4000) and `reviewer` (120) are bounded strings; an object or
+  array is refused instead of being stringified into persisted evidence. `identity_verified` cannot be
+  supplied at all: the API authenticates an automation token, not a person, and deployment
+  authorization is bound to that flag, so the request is refused and the recorded decision always says
+  `identity_verified: false` with `identity_source: "orchestration-api"`. `TrackingStore` re-checks this
+  with `clamp_reviewer_identity_claim()` — a claim arriving from any source outside
+  `VERIFIED_IDENTITY_SOURCES` (currently empty, because no verifying mechanism exists here) is stored as
+  unverified and annotated `identity_claim_refused`, so neither the durable review nor the build-local
+  approval capability can carry a self-granted human assurance.
+- **Error text.** `404`/`400`/`503`/`500` bodies carry a stable `error_code` plus
+  `sanitize_diagnostic()`-bounded, `redact_local_paths()`-filtered text: absolute POSIX, Windows drive,
+  UNC, and `file:` paths become `[LOCAL-PATH-REDACTED]` while URLs and repository-relative paths stay
+  readable, and unexpected failures are additionally logged as one structured `UNHANDLED_FAULT` event
+  rather than a stack trace. Unsupported verbs answer `405` JSON with `Allow: GET, POST` instead of the
+  standard library's HTML error page.
+- **Deliberate asymmetry.** Review-package exports over HTTP are confined to the handler's
+  `export_root` (`preview-export` by default), while `tracking.cli review-package --export-dir` still
+  honours any path the operator names: a local operator already has that filesystem authority, and a
+  network caller does not. That boundary is the trust decision, not an inconsistency to reconcile.
+- **Known limitation (documented, not hidden).** One shared bearer token cannot distinguish reviewers,
+  rotate per client, or authenticate a human. Grants are therefore not per-user: any holder may record a
+  review *decision*, but no holder may represent it as identity-verified, and publishing still requires
+  the build-local approval capability that only a review recorded through a verifying channel produces.
+  Adding per-reviewer identity is a deliberate non-goal here (it would need an authentication provider
+  and a schema change) and is listed in `TASKS.md`.
 
 ## Cloud Deployment Configuration (Render + Supabase PostgreSQL)
 

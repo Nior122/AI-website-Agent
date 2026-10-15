@@ -136,6 +136,18 @@ Keep this file concise. It is the shared handoff record, not a replacement for G
 | Never claim a duration, retry count, or cause that is not recorded | Reporting an estimated age or a generic failure cause would make an operator act on evidence that does not exist, so unrecorded values are reported as `null` and codes stay specific | 2026-10-15 |
 | Let tests read workspace records only through a copy | The Phase 32 review-package tests previously persisted `updated_at` and package digests onto the real `data/tracking/state.json` when the suite ran from the repository root; a disposable copy keeps the same assertions without mutating recorded project data | 2026-10-15 |
 
+| Keep the shared API token as the only credential, and refuse it where it is unsafe | Per-reviewer authentication would need an identity provider and a schema change; the honest fixes are constant-time comparison, a 32-character minimum for reachable binds, and a strict separation between *authenticated automation* and *verified human reviewer* (`IDENTITY_ASSERTION_REFUSED`, plus the store-level clamp) | 2026-10-15 |
+| Confine HTTP review-package exports, leave CLI operator paths free | A network caller choosing a writable directory can create or overwrite the review evidence the verification hash reads, so HTTP is restricted to `preview-export`; an operator running `tracking.cli review-package --export-dir` already holds that filesystem authority, so restricting them would only break local recovery work | 2026-10-15 |
+| Cap request bodies before reading them, and refuse chunked framing | An unbounded `Content-Length` turns the API into a memory-exhaustion and audit-bloat vector; answering `413` before reading keeps the failure cheap and the durable record small | 2026-10-15 |
+| Redact absolute paths from HTTP error answers only | Operators need repository-relative paths and preview URLs in CLI output to act, while a remote response must not map the host filesystem - so `redact_local_paths()` is applied at the HTTP boundary, not inside the store | 2026-10-15 |
+
+### Open security limitations (accepted, documented, revisit before real customers)
+
+- Reviewer identity is never *verifiable* in this system: `VERIFIED_IDENTITY_SOURCES` is empty by design, so no channel can currently produce `identity_verified: true` other than a local operator writing the approval file with `deployment.authorization.write_approval`. A real per-reviewer identity needs an authentication provider plus a `reviewers` schema change - both deferred until there is more than one human in the loop.
+- One shared bearer token means no per-client rotation, no rate limiting, and no lockout; the API must stay on loopback or behind a private network, and `GET /healthz` is the only route that may be exposed publicly.
+- The relational backend is exercised through the SQLite compatibility mode in this environment: no live PostgreSQL/Supabase instance, Vercel account, n8n server, or Render service was contacted, so provider-side authentication behaviour remains untested here.
+- `data/tracking/state.json` is protected by test isolation (temporary copies, disposable state paths, and a byte-identity assertion in the Phase 40 end-to-end test) rather than by a store-level write guard.
+
 ## Update template
 
 When resuming or handing off, update the Current handoff table and add completed work, known issues, checks, and any decision requiring approval. Never remove prior decisions; append corrections when necessary.

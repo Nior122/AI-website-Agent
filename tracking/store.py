@@ -66,6 +66,105 @@ DATA_CLASSIFICATIONS = {"TEST_FIXTURE", "REAL_PUBLIC_DATA"}
 REVIEW_DECISIONS = {"PENDING", "APPROVED_FOR_PREVIEW", "APPROVED", "REJECTED", "CHANGES_REQUESTED"}
 PERMITTED_REVIEW_ACTIONS = {"HOLD", "REBUILD", "DISCARD", "PREVIEW_DEPLOYMENT", "OUTREACH_PREPARATION"}
 SHARED_FICTIONAL_PREVIEW_PROJECT = "ai-website-agent-preview"
+
+#: Identity mechanisms that can actually prove *who* a reviewer was. This repository has none: there
+#: is no SSO, no signed assertion, and no multi-factor channel. A review therefore always records
+#: ``identity_verified: false`` no matter what a caller claims - a reviewer string is evidence of what
+#: was submitted, never of who submitted it. Adding a name here requires an authentication mechanism
+#: that verifies a human, not a new field in a payload.
+VERIFIED_IDENTITY_SOURCES: frozenset[str] = frozenset()
+
+#: Accepted shape of any caller-supplied record identifier. Identifiers are dictionary keys in the
+#: state document and bound parameters in SQL - never path components - but one bounded, traversal-
+#: free pattern keeps both of those properties easy to reason about at every entry point.
+RECORD_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$")
+
+#: Free-text bounds for review fields, so a request cannot bloat the durable audit record.
+MAX_REVIEW_NOTES_CHARS = 4000
+MAX_REVIEWER_CHARS = 120
+MAX_EXPORT_PATH_CHARS = 240
+
+
+def validate_record_id(value: object, *, kind: str = "record") -> str:
+    """Return a safe identifier or raise an actionable error (no traversal, no control characters)."""
+    text = str(value if value is not None else "").strip()
+    if not text:
+        raise ValueError(f"A {kind} is required.")
+    if RECORD_ID_PATTERN.fullmatch(text) is None:
+        raise ValueError(
+            f"Invalid {kind} '{text[:60]}': use 1-120 characters of letters, digits, dot, colon, "
+            "underscore or hyphen, starting with a letter or digit."
+        )
+    return text
+
+
+def validate_bounded_text(value: object, *, field: str, limit: int) -> str:
+    """Require non-empty single-purpose text within a length bound, without control characters."""
+    text = "" if value is None else str(value)
+    cleaned = text.strip()
+    if not cleaned:
+        raise ValueError(f"'{field}' is required and must not be empty.")
+    if any(ord(char) < 32 and char not in "\n\t" for char in cleaned):
+        raise ValueError(f"'{field}' must not contain control characters.")
+    if len(cleaned) > limit:
+        raise ValueError(f"'{field}' is too long ({len(cleaned)} characters; the limit is {limit}).")
+    return cleaned
+
+
+def validate_export_directory(candidate: object, *, base_root: Path | str, allowed_roots: list[Path | str]) -> Path:
+    """Resolve a caller-supplied export directory and require it to stay inside an approved root.
+
+    A review-package export writes files, so a path a remote caller controls may only land inside a
+    root the operator configured (``preview-export`` by default). Absolute paths, ``..`` segments and
+    symlinks are all resolved first, so the containment test is on the real destination rather than on
+    the spelling of the request. Relative paths are interpreted against ``base_root``.
+    """
+    text = str(candidate if candidate is not None else "").strip()
+    if not text or len(text) > MAX_EXPORT_PATH_CHARS:
+        raise ValueError(f"Export directory must be a non-empty path of at most {MAX_EXPORT_PATH_CHARS} characters.")
+    if "\x00" in text or any(char in text for char in ("\n", "\r")):
+        raise ValueError("Export directory must not contain newline or NUL characters.")
+    if ".." in Path(text).parts or ".." in PureWindowsPath(text).parts:
+        raise ValueError("Export directory must not contain '..' segments; choose a directory inside the export root.")
+    base = Path(base_root).resolve()
+    candidate_path = Path(text)
+    resolved = (candidate_path if candidate_path.is_absolute() else base / candidate_path).resolve()
+    roots = [Path(root).resolve() for root in allowed_roots]
+    containing = None
+    for root in roots:
+        try:
+            relative = resolved.relative_to(root)
+        except ValueError:
+            continue
+        containing = root
+        if any(part.startswith(".") for part in relative.parts):
+            raise ValueError("Export directory must not point into a hidden directory inside the export root.")
+        break
+    if containing is None:
+        raise ValueError(
+            f"Refusing export directory outside the approved export root(s) {', '.join(str(root) for root in roots)}."
+        )
+    return resolved
+def clamp_reviewer_identity_claim(reviewer: object, identity_source: object) -> object:
+    """Force ``identity_verified`` off unless a verifying mechanism recorded the decision.
+
+    A caller-provided reviewer name (or a self-declared flag in a request body) is not evidence that a
+    human was authenticated. Since deployment authorization is bound to that flag, only a source listed
+    in :data:`VERIFIED_IDENTITY_SOURCES` may carry it; any other claim is refused and annotated so the
+    audit trail explains why the decision is stored as unverified.
+    """
+    if not isinstance(reviewer, dict) or not reviewer.get("identity_verified"):
+        return reviewer
+    source = str(identity_source or "unspecified")
+    clamped = dict(reviewer)
+    clamped["identity_verified"] = False
+    clamped["identity_claim_refused"] = (
+        "The caller requested identity_verified, but no verified-identity mechanism recorded this "
+        f"decision (identity_source: {source}), so it is stored as unverified."
+    )
+    return clamped
+
+
 DEFAULT_STATE_PATH = Path("data/tracking/state.json")
 
 
@@ -1480,6 +1579,14 @@ class TrackingStore:
         reviewer = entry.get("reviewer")
         reviewer_identity = dict(reviewer) if isinstance(reviewer, dict) else {"reviewer_id": str(reviewer or "operator")}
         reviewer_identity.setdefault("reviewer_id", str(reviewer or "operator"))
+        # Assurance comes from the mechanism that recorded the decision, never from the payload: a
+        # caller cannot mark its own decision "verified" inside the approval evidence that the publish
+        # gate and later audits read. `VERIFIED_IDENTITY_SOURCES` is empty, so this is always False.
+        # Reviews are clamped on the way in (record_review); this re-checks the durable entry itself so
+        # a record written by any other path cannot smuggle a claim into the capability.
+        reviewer_identity = clamp_reviewer_identity_claim(
+            reviewer_identity, entry.get("identity_source")
+        )
         reviewer_identity.setdefault("identity_verified", False)
         validation = self.state["validations"].get(entry.get("validation_id") or "") or {}
         write_approval(build_dir, {
@@ -1616,6 +1723,10 @@ class TrackingStore:
                 raise ValueError("Project is not in a reviewable stage.")
         else:
             intended_action = intended_action or "HOLD"
+
+        # Persisted review evidence carries only the identity assurance this process can vouch for,
+        # so a self-declared flag cannot be stored (and later read back) as a verified human decision.
+        reviewer = clamp_reviewer_identity_claim(reviewer, identity_source)
 
         # An exactly repeated review decision for the same build is an idempotent replay (for
         # example a retried CLI call or an n8n re-delivery), not a second audit entry.

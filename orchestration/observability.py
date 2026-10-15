@@ -203,6 +203,31 @@ def log_event(
     return record
 
 
+_LOCAL_PATHS = (
+    # POSIX absolute paths (including file:// URLs) and Windows drive/UNC paths.
+    re.compile(r"file://[^\s,\"']+"),
+    # A leading '/' that is not part of a URL (scheme would put ':' or '/' in front of it).
+    re.compile(r"(?<![:/\w])/(?:[^/\s,\"']+/)*[A-Za-z0-9._\-]+"),
+    # A Windows drive root only when the letter stands alone (so `https:/` is never mistaken for one).
+    re.compile(r"(?<![A-Za-z0-9_])[A-Za-z]:[\\/](?:[^\s,\"'\\/]+[\\/])*[^\s,\"'\\/]*"),
+    re.compile(r"\\\\[^\s,\"']+"),
+)
+
+
+def redact_local_paths(text: Any) -> str:
+    """Replace absolute local filesystem paths with a marker, for responses that must not map the host.
+
+    Stored records legitimately carry *repository-relative* artifact paths (an operator needs them to
+    find a file), so this is applied at the HTTP boundary rather than when data is persisted: it removes
+    sandbox/home/container absolute paths that an exception or configuration message may have picked up,
+    while leaving relative paths and URLs readable.
+    """
+    message = str(text)
+    for pattern in _LOCAL_PATHS:
+        message = pattern.sub("[LOCAL-PATH-REDACTED]", message)
+    return message
+
+
 def url_host(url: Any) -> str | None:
     """Host-only view of a URL, for operator reports that must not echo credentials or paths."""
     text = str(url or "").strip()

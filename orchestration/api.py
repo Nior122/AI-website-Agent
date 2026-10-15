@@ -6,14 +6,22 @@ reverse proxy; this small adapter intentionally has no public-internet defaults.
 from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import hmac
 import json
 import os
 from pathlib import Path
 import threading
 from urllib.parse import parse_qs, urlparse
 
-from tracking.database import DatabasePersistenceError, is_production_mode, sanitize_db_error
-from tracking.store import TrackingStore
+from tracking.database import DatabasePersistenceError, is_production_mode
+from tracking.store import (
+    MAX_REVIEWER_CHARS,
+    MAX_REVIEW_NOTES_CHARS,
+    TrackingStore,
+    validate_bounded_text,
+    validate_export_directory,
+    validate_record_id,
+)
 from .health import (
     STALE_RUNNING_SECONDS,
     deployment_report,
@@ -24,6 +32,7 @@ from .health import (
     verify_storage,
 )
 from .jobs import JobService, JobWorker
+from .observability import log_event, redact_local_paths, sanitize_diagnostic
 from .workers import LocalPipelineWorker
 
 DEFAULT_BIND_HOST = "127.0.0.1"
@@ -31,6 +40,36 @@ DEFAULT_PORT = 8787
 ALLOWED_LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
 ALLOWED_PRODUCTION_HOSTS = {"0.0.0.0"}
 ALLOWED_API_JOB_TYPES = {"SCOUT", "RESEARCH", "QUALIFY", "BUILD", "VALIDATE"}
+
+#: Largest request body the HTTP adapter accepts (JSON), so a caller cannot exhaust memory or bloat
+#: the durable audit record with an oversized payload.
+MAX_REQUEST_BYTES = 1_048_576
+
+#: Review decisions an automation caller may submit. Anything else is a bad request, not a 500.
+API_REVIEW_DECISIONS = {"APPROVED_FOR_PREVIEW", "APPROVED", "REJECTED", "CHANGES_REQUESTED"}
+
+#: A shared token short enough to be brute-forced, or one of the documented placeholders, is refused
+#: for any bind that is reachable outside the machine.
+MIN_NON_LOOPBACK_TOKEN_CHARS = 32
+WEAK_TOKEN_PLACEHOLDERS = {
+    "changeme", "change-me", "secret", "token", "test", "test-token", "local", "dev", "development",
+    "password", "ai-website-agent", "local-secret-not-committed",
+}
+
+
+class BadRequest(ValueError):
+    """Malformed or disallowed client input; answered with 400 instead of a misleading 404/500.
+
+    ``code`` is the stable machine-readable reason an automation caller can branch on.
+    """
+
+    def __init__(self, message: str, *, code: str = "INVALID_REQUEST") -> None:
+        super().__init__(message)
+        self.error_code = code
+
+
+class RequestBodyTooLarge(ValueError):
+    """A body over ``MAX_REQUEST_BYTES``; answered with 413 and never read in full."""
 
 
 def resolve_bind_config(
@@ -114,25 +153,119 @@ def make_handler(
     lock = threading.RLock()
 
     class Handler(BaseHTTPRequestHandler):
-        def _json(self, code: int, payload: dict) -> None:
+        def _json(self, code: int, payload: dict, *, headers: dict[str, str] | None = None) -> None:
             body = json.dumps(payload).encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            for name, value in (headers or {}).items():
+                self.send_header(name, value)
             self.end_headers()
             self.wfile.write(body)
 
         def _authorized(self) -> bool:
-            return bool(token) and self.headers.get("Authorization") == f"Bearer {token}"
+            """Single shared API credential, compared in constant time.
+
+            A missing header, a malformed scheme, a repeated header, and a wrong value are all simply
+            unauthorized, and nothing the caller submitted is echoed back or logged. `token` empty is
+            a hard refusal (`serve()` requires one), so no unauthenticated default exists.
+            """
+            supplied = self.headers.get("Authorization")
+            headers = self.headers.get_all("Authorization") or []
+            if not token or supplied is None or len(headers) != 1:
+                return False
+            return hmac.compare_digest(supplied.encode("utf-8"), f"Bearer {token}".encode("utf-8"))
+
+        def _require_auth(self) -> bool:
+            """Answer 401 (with no credential material) unless the request is authenticated."""
+            if self._authorized():
+                return True
+            log_event(
+                severity="WARNING",
+                operation="http.auth",
+                code="AUTH_FAILED" if (self.headers.get("Authorization") or "") else "AUTH_MISSING",
+                message=f"{self.command} {urlparse(self.path).path}",
+            )
+            self._json(401, {"error": "Unauthorized"}, headers={"WWW-Authenticate": 'Bearer realm="ai-website-agent"'})
+            return False
 
         def _body(self) -> dict:
-            length = int(self.headers.get("Content-Length", "0"))
+            raw_length = self.headers.get("Content-Length")
+            if (self.headers.get("Transfer-Encoding") or "").strip().lower().startswith("chunked"):
+                raise BadRequest("Chunked request bodies are not supported; send a JSON object with Content-Length.")
+            if raw_length is None or not str(raw_length).strip():
+                return {}
+            cleaned = str(raw_length).strip()
+            if not cleaned.isdigit():
+                raise BadRequest("Content-Length must be a non-negative integer number of bytes.")
+            length = int(cleaned)
+            if length > MAX_REQUEST_BYTES:
+                raise RequestBodyTooLarge(
+                    f"Request body is {length} bytes; the limit is {MAX_REQUEST_BYTES} bytes."
+                )
             if not length:
                 return {}
-            parsed = json.loads(self.rfile.read(length).decode("utf-8"))
+            raw = self.rfile.read(length)
+            if len(raw) != length:
+                raise BadRequest(f"Request body was truncated ({len(raw)} of {length} bytes received).")
+            try:
+                parsed = json.loads(raw.decode("utf-8"))
+            except UnicodeDecodeError as error:
+                raise BadRequest("Request body must be UTF-8 encoded JSON.") from error
+            except json.JSONDecodeError as error:
+                raise BadRequest(f"Request body must be valid JSON: {error.msg} at line {error.lineno}.") from error
             if not isinstance(parsed, dict):
-                raise ValueError("Request body must be a JSON object.")
+                raise BadRequest("Request body must be a JSON object.")
             return parsed
+
+        def _record_id(self, value: object, *, kind: str) -> str:
+            """Validate an externally supplied identifier before it touches state, SQL, or a path."""
+            try:
+                return validate_record_id(value, kind=kind)
+            except ValueError as error:
+                raise BadRequest(str(error)) from error
+
+        def _export_directory(self, requested: object, *, lead_id: str, project_id: str) -> Path:
+            """Confine a caller-named export directory to the operator-configured export root.
+
+            A review-package export creates directories and writes files, so a remote caller may only
+            name a location inside `export_root` (`preview-export` by default). The default target stays
+            `<export_root>/<lead_id>-<project_id>`. Local operators keep full freedom through the CLIs,
+            which run with the operator's own authority.
+            """
+            if requested is None or str(requested).strip() == "":
+                return exp_path / f"{lead_id}-{project_id}"
+            try:
+                return validate_export_directory(requested, base_root=exp_path, allowed_roots=[exp_path])
+            except ValueError as error:
+                # The store's message names the resolved root; keep the absolute path out of the answer.
+                raise BadRequest(
+                    f"Export directory must stay inside the configured export root ({export_root!r}); "
+                    f"use a plain directory name (the default is '{lead_id}-{project_id}').",
+                    code="EXPORT_PATH_NOT_ALLOWED",
+                ) from error
+
+        def _guard_ids(self, path: list[str]) -> list[str]:
+            """Reject unsafe path identifiers once, before any route can use them.
+
+            Every `/jobs/:id`, `/leads/:id`, and `/projects/:id` route reaches state records, the durable
+            ledger, or a directory named after the project, so the shape is enforced at the boundary: a
+            malformed identifier is answered 400 instead of being looked up, persisted, or interpolated
+            into a path. Collection pseudo-segments are left alone.
+            """
+            if len(path) >= 2 and path[0] in ("jobs", "leads", "projects") and path[1] not in (
+                "recover-stale", "deduplicate",
+            ):
+                path[1] = self._record_id(path[1], kind=f"{path[0][:-1]}_id")
+            return path
+
+        def _detail(self, error: BaseException) -> str:
+            """Sanitized, bounded, path-free text for an unexpected 500 answer."""
+            return redact_local_paths(sanitize_diagnostic(error) or type(error).__name__)
+
+        def _client_detail(self, error: BaseException) -> str:
+            """Message-only text for expected client/storage refusals (no exception class noise)."""
+            return redact_local_paths(sanitize_diagnostic(str(error)) or "Rejected.")
 
         def do_GET(self) -> None:  # noqa: N802
             parsed_url = urlparse(self.path)
@@ -144,9 +277,13 @@ def make_handler(
                 # Readiness (which verifies the database) is the authenticated GET /readiness, and
                 # operational state is GET /health, GET /attention and GET /deployment-status.
                 return self._json(200, {"status": "ok"})
-            if not self._authorized():
-                return self._json(401, {"error": "Unauthorized"})
+            if not self._require_auth():
+                return
             query = parse_qs(parsed_url.query)
+            try:
+                path = self._guard_ids(path)
+            except ValueError as error:
+                return self._json(400, {"error": str(error), "error_code": getattr(error, "error_code", "INVALID_REQUEST")})
             with lock:
                 try:
                     if getattr(service.store, "db_backend", None) is not None and hasattr(service.store, "refresh"):
@@ -298,8 +435,12 @@ def make_handler(
                         project_id = path[1]
                         snap = service.store.snapshot(project_id)
                         lead_id = snap["lead"]["lead_id"]
-                        req_export = (query.get("export_dir") or [None])[0]
-                        target_export = Path(req_export) if req_export else (exp_path / f"{lead_id}-{project_id}")
+                        # A read-only check may not name a directory outside the operator's export root:
+                        # verification hashes files on disk, so an arbitrary path would let a caller probe
+                        # or steer evidence for another project.
+                        target_export = self._export_directory(
+                            (query.get("export_dir") or [None])[0], lead_id=lead_id, project_id=project_id
+                        )
                         verification = service.store.verify_review_package(
                             project_id,
                             target_export,
@@ -314,26 +455,45 @@ def make_handler(
                             "review_status": snap["project"].get("review_status"),
                             "verification": verification,
                         })
-                    return self._json(404, {"error": "Not found"})
+                    return self._json(404, {"error": "Not found", "error_code": "ROUTE_NOT_FOUND"})
+                except RequestBodyTooLarge as error:
+                    return self._json(413, {"error": str(error), "error_code": "REQUEST_BODY_TOO_LARGE"})
+                except BadRequest as error:
+                    return self._json(400, {"error": self._client_detail(error),
+                                            "error_code": getattr(error, "error_code", "INVALID_REQUEST")})
                 except DatabasePersistenceError as db_error:
-                    return self._json(503, {"error": "Database persistence error", "detail": str(db_error)})
+                    # The storage layer already redacts connection secrets; paths are removed here so an
+                    # HTTP answer cannot map the host filesystem.
+                    return self._json(503, {"error": "Database persistence error", "error_code": "STORAGE_UNAVAILABLE",
+                                            "detail": self._client_detail(db_error)})
                 except (KeyError, ValueError) as error:
-                    return self._json(404, {"error": str(error)})
+                    # A GET failure is a lookup failure on this surface (unknown job/project); malformed
+                    # input is answered above as 400.
+                    return self._json(404, {"error": self._client_detail(error), "error_code": "RECORD_NOT_FOUND"})
                 except Exception as error:  # Never close the socket without a structured answer.
-                    return self._json(500, {"error": "Unhandled request failure", "detail": sanitize_db_error(error)})
+                    log_event(severity="ERROR", operation="http.get", code="UNHANDLED_FAULT",
+                              message=f"{self.command} {urlparse(self.path).path}: {type(error).__name__}: {error}")
+                    return self._json(500, {"error": "Unhandled request failure", "error_code": "INTERNAL_ERROR",
+                                            "detail": self._detail(error)})
 
         def do_POST(self) -> None:  # noqa: N802
-            if not self._authorized():
-                return self._json(401, {"error": "Unauthorized"})
+            if not self._require_auth():
+                return
             path = [seg for seg in urlparse(self.path).path.strip("/").split("/") if seg]
             with lock:
                 try:
                     if getattr(service.store, "db_backend", None) is not None and hasattr(service.store, "refresh"):
                         service.store.refresh()
+                    path = self._guard_ids(path)
                     payload = self._body()
                     if path == ["jobs"]:
                         if "job_type" not in payload or "job_id" not in payload:
-                            raise ValueError("POST /jobs requires 'job_type' and 'job_id'.")
+                            raise BadRequest("POST /jobs requires 'job_type' and 'job_id'.")
+                        # Identifiers are validated before they reach the ledger, SQL parameters, or the
+                        # export path derived from a project's lead.
+                        for name in ("job_id", "lead_id", "project_id", "build_id", "parent_job_id", "idempotency_key"):
+                            if payload.get(name) is not None:
+                                payload[name] = self._record_id(payload[name], kind=name)
                         run_immediately = bool(payload.pop("run", False))
                         job_type = str(payload.pop("job_type")).strip().upper()
                         if job_type not in ALLOWED_API_JOB_TYPES:
@@ -438,23 +598,50 @@ def make_handler(
                         if not project:
                             raise KeyError(f"Unknown project: {project_id}")
                         decision = str(payload.get("decision") or "").strip().upper()
+                        if decision not in API_REVIEW_DECISIONS:
+                            raise BadRequest(
+                                "'decision' must be one of: " + ", ".join(sorted(API_REVIEW_DECISIONS)) + "."
+                            )
                         notes = payload.get("notes")
                         confirm = payload.get("confirm")
                         reviewer = payload.get("reviewer") or payload.get("reviewer_id")
+                        # Type-checked before coercion: a structured value must not be stringified into
+                        # persisted review evidence (an object repr would otherwise read like a note).
+                        for name, value in (("notes", notes), ("confirm", confirm), ("reviewer", reviewer)):
+                            if value is not None and not isinstance(value, str):
+                                raise BadRequest(f"'{name}' must be a string.")
                         missing = [name for name, value in (("decision", decision), ("notes", notes), ("confirm", confirm), ("reviewer", reviewer)) if not value]
                         if missing:
                             return self._json(400, {
                                 "error": "POST /projects/:id/review requires " + ", ".join(f"'{name}'" for name in missing)
                                          + ". Record the decision with the build id you actually reviewed: "
                                          + "confirm=<project_id>:<build_id>:<DECISION>.",
+                                "error_code": "REVIEW_FIELDS_REQUIRED",
+                            })
+                        # Notes and reviewer names are persisted operator-visible evidence; bound their size.
+                        notes = validate_bounded_text(notes, field="notes", limit=MAX_REVIEW_NOTES_CHARS)
+                        reviewer = validate_bounded_text(reviewer, field="reviewer", limit=MAX_REVIEWER_CHARS)
+                        # An API caller cannot assert that its own reviewer identity was verified: this
+                        # surface authenticates the automation token, not a person, and a claimed identity
+                        # is exactly what deployment authorization is bound to.
+                        if payload.get("identity_verified"):
+                            return self._json(400, {
+                                "error": (
+                                    "'identity_verified' cannot be supplied by an API caller. Record the decision "
+                                    "through the review channel that authenticates a human reviewer; the field is "
+                                    "always False here so the approval gate stays honest."
+                                ),
+                                "error_code": "IDENTITY_ASSERTION_REFUSED",
                             })
                         assigned_build_id = project.get("assigned_build_id")
                         expected_confirmation = f"{project_id}:{assigned_build_id}:{decision}"
                         if str(confirm) != expected_confirmation:
                             return self._json(409, {
                                 "error": "Review confirmation does not match the project's currently assigned build.",
+                                "error_code": "REVIEW_CONFIRMATION_MISMATCH",
                                 "expected_confirmation": expected_confirmation,
-                                "received_confirmation": str(confirm),
+                                # Bounded reflection of the caller's own value, for diagnostics only.
+                                "received_confirmation": str(confirm)[:200],
                                 "detail": (
                                     "A decision about an older build cannot approve a newer one. Read "
                                     f"GET /projects/{project_id} for the assigned build, then re-send with "
@@ -465,17 +652,26 @@ def make_handler(
                         if payload.get("reviewer_type"):
                             reviewer_value = {
                                 "reviewer_id": str(reviewer),
-                                "reviewer_type": str(payload.get("reviewer_type")),
-                                "identity_verified": bool(payload.get("identity_verified", False)),
+                                "reviewer_type": validate_bounded_text(
+                                    payload.get("reviewer_type"), field="reviewer_type", limit=40
+                                ).strip().upper(),
+                                # Forced, never inferred from the request.
+                                "identity_verified": False,
                             }
+                        build_id = payload.get("build_id")
+                        if build_id is not None:
+                            build_id = self._record_id(build_id, kind="build_id")
+                        action = payload.get("action")
+                        if action is not None:
+                            action = validate_bounded_text(action, field="action", limit=40).strip().upper()
                         updated = service.store.record_review(
                             project_id,
                             decision,
                             notes,
                             reviewer=reviewer_value,
                             require_notes=True,
-                            build_id=payload.get("build_id"),
-                            action=payload.get("action"),
+                            build_id=build_id,
+                            action=action,
                             identity_source="orchestration-api",
                         )
                         snap_after = service.store.snapshot(project_id)
@@ -493,6 +689,7 @@ def make_handler(
                             "workflow_state": snap_after["workflow_state"],
                             "deployment_authorization": service.store.authorize_preview_deployment(project_id),
                             "identity_verified": False,
+                            "identity_source": "orchestration-api",
                             "identity_note": (
                                 "The automation API records the reviewer string it was given; it cannot verify a human "
                                 "identity. An approved decision still requires the publish itself to be executed by an "
@@ -506,8 +703,11 @@ def make_handler(
                         project_id = path[1]
                         snap = service.store.snapshot(project_id)
                         lead_id = snap["lead"]["lead_id"]
-                        req_export = payload.get("export_dir")
-                        target_export = Path(req_export) if req_export else (exp_path / f"{lead_id}-{project_id}")
+                        # Confined like the GET form: a request can choose a name inside `export_root`,
+                        # never an arbitrary filesystem location to create directories and files in.
+                        target_export = self._export_directory(
+                            payload.get("export_dir"), lead_id=lead_id, project_id=project_id
+                        )
                         pkg = service.store.build_review_package(
                             project_id,
                             export_dir=target_export,
@@ -535,13 +735,53 @@ def make_handler(
                             "verification": verification,
                         })
 
-                    return self._json(404, {"error": "Not found"})
+                    return self._json(404, {"error": "Not found", "error_code": "ROUTE_NOT_FOUND"})
+                except RequestBodyTooLarge as error:
+                    return self._json(413, {"error": str(error), "error_code": "REQUEST_BODY_TOO_LARGE"})
+                except BadRequest as error:
+                    return self._json(400, {"error": self._client_detail(error),
+                                            "error_code": getattr(error, "error_code", "INVALID_REQUEST")})
                 except DatabasePersistenceError as db_error:
-                    return self._json(503, {"error": "Database persistence error", "detail": str(db_error)})
-                except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
-                    return self._json(400, {"error": str(error)})
+                    return self._json(503, {"error": "Database persistence error", "error_code": "STORAGE_UNAVAILABLE",
+                                            "detail": self._client_detail(db_error)})
+                except KeyError as error:
+                    # An unknown record is 404; invalid input is 400, never both.
+                    return self._json(404, {"error": self._client_detail(error), "error_code": "RECORD_NOT_FOUND"})
+                except (TypeError, ValueError, json.JSONDecodeError) as error:
+                    return self._json(400, {"error": self._client_detail(error), "error_code": "INVALID_REQUEST"})
                 except Exception as error:  # A partial write must surface as a 500, not a dropped connection.
-                    return self._json(500, {"error": "Unhandled request failure", "detail": sanitize_db_error(error)})
+                    log_event(severity="ERROR", operation="http.post", code="UNHANDLED_FAULT",
+                              message=f"{self.command} {urlparse(self.path).path}: {type(error).__name__}: {error}")
+                    return self._json(500, {"error": "Unhandled request failure", "error_code": "INTERNAL_ERROR",
+                                            "detail": self._detail(error)})
+
+        def do_PUT(self) -> None:  # noqa: N802
+            self._method_not_allowed()
+
+        def do_PATCH(self) -> None:  # noqa: N802
+            self._method_not_allowed()
+
+        def do_DELETE(self) -> None:  # noqa: N802
+            self._method_not_allowed()
+
+        def do_HEAD(self) -> None:  # noqa: N802
+            self._method_not_allowed()
+
+        def do_OPTIONS(self) -> None:  # noqa: N802
+            self._method_not_allowed()
+
+        def _method_not_allowed(self) -> None:
+            """Answer 405 as JSON. This API is intentionally read/mutate-only over GET and POST.
+
+            The state ledger has no delete or partial-update verb on purpose: records stay auditable.
+            The answer is produced only after authentication, so an unauthenticated probe cannot map
+            which verbs or routes this API supports.
+            """
+            if not self._require_auth():
+                return
+            self._json(405, {"error": f"{self.command} is not supported; use GET or POST.",
+                             "error_code": "METHOD_NOT_ALLOWED"},
+                       headers={"Allow": "GET, POST"})
 
         def log_message(self, _format: str, *_args) -> None:
             """Avoid logging headers or request bodies, which could contain credentials."""
@@ -560,7 +800,7 @@ def serve(
     repository_root: str = ".",
     database_url: str | None = None,
 ) -> None:
-    resolved_host, resolved_port, _ = resolve_bind_config(
+    resolved_host, resolved_port, outside_loopback = resolve_bind_config(
         host,
         port,
         allow_non_loopback=allow_non_loopback,
@@ -568,6 +808,18 @@ def serve(
     token = os.environ.get("AI_WEBSITE_AGENT_API_TOKEN")
     if not token:
         raise RuntimeError("AI_WEBSITE_AGENT_API_TOKEN is required; server not started.")
+    # A single shared bearer token is the documented design (no user management). It is only adequate
+    # when it cannot be guessed: refuse a short or placeholder credential for any socket that is
+    # reachable beyond this machine or in production, while local development keeps working unchanged.
+    # The token value itself is never included in the message.
+    if outside_loopback or is_production_mode():
+        normalized = token.strip()
+        if len(normalized) < MIN_NON_LOOPBACK_TOKEN_CHARS or normalized.lower() in WEAK_TOKEN_PLACEHOLDERS:
+            raise RuntimeError(
+                "AI_WEBSITE_AGENT_API_TOKEN is too weak for a non-loopback or production bind: use at "
+                f"least {MIN_NON_LOOPBACK_TOKEN_CHARS} characters and not a placeholder value. Local "
+                "loopback development may keep a shorter token."
+            )
     store = TrackingStore(state_path, database_url=database_url)
     service = JobService(store)
     worker = LocalPipelineWorker(repository_root=repository_root, output_root=output_root)
