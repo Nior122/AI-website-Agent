@@ -210,6 +210,20 @@ class JobService:
                 return "DEPLOY requires PASS validation."
             if project.get("review_status") in {"REJECTED", "CHANGES_REQUESTED"} or project.get("current_stage") not in {"READY_FOR_REVIEW", "PREVIEW_DEPLOYED"}:
                 return "DEPLOY requires a project build in READY_FOR_REVIEW (not rejected or awaiting rebuild)."
+            if not job.get("dry_run", True):
+                # A real publish must be covered by an explicit human approval for this exact build;
+                # a dry run is not a deployment and needs none. The gate is checked here as well as at
+                # the publish boundary so every execution path that can run a DEPLOY job is covered -
+                # including POST /jobs/:id/retry?run and POST /run, which bypass the create-time
+                # job-type allowlist. It reports authorization; it does not grant it.
+                authorize = getattr(self.store, "authorize_preview_deployment", None)
+                if not callable(authorize):
+                    return "DEPLOY cannot be executed: the tracking store cannot verify deployment authorization."
+                gate = authorize(project["project_id"], build_id=(build or {}).get("build_id")) or {}
+                if gate.get("skip_publish"):
+                    return None  # already published: the worker reuses the recorded deployment, never re-publishes
+                if not gate.get("authorized"):
+                    return f"DEPLOY requires explicit human approval ({gate.get('code')}): {gate.get('reason')}"
             is_real = (
                 (lead or {}).get("data_classification") == "REAL_PUBLIC_DATA"
                 or (project or {}).get("data_classification") == "REAL_PUBLIC_DATA"

@@ -167,6 +167,13 @@ def run_cli(
     build_parser.add_argument("--output-root", type=Path, default=Path("output"), help="Output directory for generated build artifacts.")
     build_parser.add_argument("--job-id", default=None, help="Optional idempotency job ID prefix.")
 
+    dep_check_parser = subparsers.add_parser(
+        "deploy-check",
+        help="Read-only: report whether a real preview deployment is currently authorized for a project (never deploys).",
+    )
+    dep_check_parser.add_argument("project_id", help="Target project ID (e.g. project-0001).")
+    dep_check_parser.add_argument("--build-id", default=None, help="Assert the intended build_id instead of the project's assigned build.")
+
     prep_parser = subparsers.add_parser("prepare-preview", help="Run a safe dry-run deployment readiness check for a project's assigned build.")
     prep_parser.add_argument("project_id", help="Target project ID (e.g. project-0002).")
     prep_parser.add_argument("--project-name", default=None, help="Expected isolated Vercel preview project name.")
@@ -357,6 +364,37 @@ def run_cli(
             )
             return 0
 
+        if args.command == "deploy-check":
+            from deployment.authorization import UNRESOLVED_ATTEMPT_STATES
+
+            gate = store.authorize_preview_deployment(args.project_id, build_id=args.build_id)
+            unresolved = str(gate.get("latest_attempt_status") or "") in UNRESOLVED_ATTEMPT_STATES
+            payload = {
+                key: value for key, value in gate.items() if key not in {"approval", "publish_attempts", "latest_attempt"}
+            }
+            payload.update({
+                "publish_state_uncertain": unresolved,
+                "note": (
+                    "Nothing was published by this check. It only reports what a real deployment would be allowed to do."
+                ),
+                "prior_attempts": gate.get("prior_attempts"),
+                "next_command": (
+                    None
+                    if gate.get("authorized")
+                    else "python3 -m tracking.cli review "
+                         f"{args.project_id} --decision APPROVED_FOR_PREVIEW --action PREVIEW_DEPLOYMENT "
+                         "--notes \"...\" --confirm "
+                         f"{args.project_id}:{gate.get('build_id')}:APPROVED_FOR_PREVIEW"
+                ),
+            })
+            out_stream.write(json.dumps(payload, indent=2) + "\n")
+            if not gate.get("authorized") and not gate.get("skip_publish"):
+                err_stream.write(
+                    "Deployment is not authorized. Nothing was published. Resolve the reported condition, "
+                    "then re-run deploy-check before executing a deployment.\n"
+                )
+            return 0 if gate.get("authorized") else 1
+
         if args.command == "prepare-preview":
             from orchestration.jobs import JobService
             from orchestration.workers import LocalPipelineWorker
@@ -503,12 +541,19 @@ def run_cli(
                 require_notes=True,
                 build_id=args.build_id,
                 action=action,
+                identity_source="tracking-cli",
             )
             latest_entry = store.get_review_history(args.project_id)[-1]
             out_stream.write(
                 json.dumps(
                     {
                         "target": context,
+                        "deployment_authorization": store.authorize_preview_deployment(args.project_id),
+                        "deployed": False,
+                        "note": (
+                            "Recording a review decision never publishes anything. An APPROVED_FOR_PREVIEW decision "
+                            "authorizes one explicit, separately executed preview deployment of this exact build."
+                        ),
                         "project_id": updated["project_id"],
                         "lead_id": updated["lead_id"],
                         "assigned_build_id": updated.get("assigned_build_id"),

@@ -230,6 +230,12 @@ def make_handler(
                             "materialized": art["materialized"],
                             "review_package": durable_rec.get("review_package_json"),
                         })
+                    if len(path) == 3 and path[0] == "projects" and path[2] == "deployment-authorization":
+                        # Read-only view of the server-side publish gate: what a real deployment would be
+                        # allowed to do right now, and exactly which condition blocks it if it is not.
+                        return self._json(200, service.store.authorize_preview_deployment(
+                            path[1], build_id=(query.get("build_id") or [None])[0]
+                        ))
                     if len(path) == 3 and path[0] == "projects" and path[2] == "review-package":
                         project_id = path[1]
                         snap = service.store.snapshot(project_id)
@@ -348,6 +354,80 @@ def make_handler(
                             "is_duplicate": dup["match"] == "EXACT_MATCH",
                             "existing_lead": existing_lead,
                             "existing_project_id": existing_proj["project_id"] if existing_proj else None,
+                        })
+
+                    if len(path) == 3 and path[0] == "projects" and path[2] == "review":
+                        # Explicit human review decision recorded through the automation API. The decision
+                        # is bound to the currently assigned build by a confirmation string the operator can
+                        # only produce after reading it, so a stale or misrouted request cannot approve a
+                        # build. Reviewer identity is recorded verbatim and never asserted as verified.
+                        project_id = path[1]
+                        project = service.store.state["projects"].get(project_id)
+                        if not project:
+                            raise KeyError(f"Unknown project: {project_id}")
+                        decision = str(payload.get("decision") or "").strip().upper()
+                        notes = payload.get("notes")
+                        confirm = payload.get("confirm")
+                        reviewer = payload.get("reviewer") or payload.get("reviewer_id")
+                        missing = [name for name, value in (("decision", decision), ("notes", notes), ("confirm", confirm), ("reviewer", reviewer)) if not value]
+                        if missing:
+                            return self._json(400, {
+                                "error": "POST /projects/:id/review requires " + ", ".join(f"'{name}'" for name in missing)
+                                         + ". Record the decision with the build id you actually reviewed: "
+                                         + "confirm=<project_id>:<build_id>:<DECISION>.",
+                            })
+                        assigned_build_id = project.get("assigned_build_id")
+                        expected_confirmation = f"{project_id}:{assigned_build_id}:{decision}"
+                        if str(confirm) != expected_confirmation:
+                            return self._json(409, {
+                                "error": "Review confirmation does not match the project's currently assigned build.",
+                                "expected_confirmation": expected_confirmation,
+                                "received_confirmation": str(confirm),
+                                "detail": (
+                                    "A decision about an older build cannot approve a newer one. Read "
+                                    f"GET /projects/{project_id} for the assigned build, then re-send with "
+                                    "confirm=" + expected_confirmation + "."
+                                ),
+                            })
+                        reviewer_value: object = str(reviewer)
+                        if payload.get("reviewer_type"):
+                            reviewer_value = {
+                                "reviewer_id": str(reviewer),
+                                "reviewer_type": str(payload.get("reviewer_type")),
+                                "identity_verified": bool(payload.get("identity_verified", False)),
+                            }
+                        updated = service.store.record_review(
+                            project_id,
+                            decision,
+                            notes,
+                            reviewer=reviewer_value,
+                            require_notes=True,
+                            build_id=payload.get("build_id"),
+                            action=payload.get("action"),
+                            identity_source="orchestration-api",
+                        )
+                        snap_after = service.store.snapshot(project_id)
+                        history = service.store.get_review_history(project_id)
+                        return self._json(200, {
+                            "project_id": project_id,
+                            "lead_id": updated["lead_id"],
+                            "build_id": assigned_build_id,
+                            "validation_id": snap_after["project"].get("latest_validation_id"),
+                            "decision": decision,
+                            "review": history[-1] if history else None,
+                            "review_count": len(history),
+                            "current_stage": snap_after["project"]["current_stage"],
+                            "review_status": snap_after["project"].get("review_status"),
+                            "workflow_state": snap_after["workflow_state"],
+                            "deployment_authorization": service.store.authorize_preview_deployment(project_id),
+                            "identity_verified": False,
+                            "identity_note": (
+                                "The automation API records the reviewer string it was given; it cannot verify a human "
+                                "identity. An approved decision still requires the publish itself to be executed by an "
+                                "operator or worker that re-verifies the approval."
+                            ),
+                            "deployed": False,
+                            "note": "Recording a review decision never publishes anything.",
                         })
 
                     if len(path) == 3 and path[0] == "projects" and path[2] == "review-package":

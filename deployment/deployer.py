@@ -15,9 +15,19 @@ import shutil
 import subprocess
 from urllib.parse import unquote, urlparse, urlsplit
 
-DEPLOYMENT_STATES = {"PENDING", "PREPARING", "DEPLOYING", "DEPLOYED", "FAILED", "NEEDS_REVIEW"}
+from .authorization import (
+    DEPLOYMENT_ACTION,
+    append_attempt,
+    artifact_sha256,
+    classify_prior_attempt,
+    read_attempts,
+    verify_approval,
+)
+
+DEPLOYMENT_STATES = {"PENDING", "PREPARING", "DEPLOYING", "DEPLOYED", "FAILED", "NEEDS_REVIEW", "PUBLISH_UNCERTAIN"}
+DEFAULT_DEPLOY_TIMEOUT_SECONDS = 300
 EXPECTED_PREVIEW_PROJECT = "ai-website-agent-preview"
-_FORBIDDEN_PAYLOAD_NAMES = {"build.json", "deployment.json", "vercel.json", ".env"}
+_FORBIDDEN_PAYLOAD_NAMES = {"build.json", "deployment.json", "deployment-approval.json", "deployment-attempts.json", "vercel.json", ".env"}
 _SECRET_PATTERNS = (r"(?:api[_-]?key|secret|token|password)\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{8,}", r"sk-[A-Za-z0-9]{12,}")
 _TEXT_PAYLOAD_SUFFIXES = {".css", ".html", ".js", ".json", ".svg", ".txt"}
 _CSS_URL = re.compile(r"url\(\s*(['\"]?)(.*?)\1\s*\)", re.IGNORECASE)
@@ -72,8 +82,9 @@ class VercelDeploymentProvider:
     """Deploys only a staged public payload to the dedicated Vercel preview project."""
     name = "vercel"
 
-    def __init__(self, repository_root: Path, runner: Callable[..., subprocess.CompletedProcess] = subprocess.run, *, expected_project_name: str = EXPECTED_PREVIEW_PROJECT) -> None:
+    def __init__(self, repository_root: Path, runner: Callable[..., subprocess.CompletedProcess] = subprocess.run, *, expected_project_name: str = EXPECTED_PREVIEW_PROJECT, deploy_timeout_seconds: int = DEFAULT_DEPLOY_TIMEOUT_SECONDS) -> None:
         self.repository_root, self.runner, self.expected_project_name = repository_root, runner, expected_project_name
+        self.deploy_timeout_seconds = max(1, int(deploy_timeout_seconds))
 
     def deploy(
         self,
@@ -83,6 +94,7 @@ class VercelDeploymentProvider:
         approve_needs_review: bool = False,
         approve_real_preview: bool = False,
         project_name: str | None = None,
+        resolve_uncertain_publish: bool = False,
     ) -> DeploymentResult:
         created_at, build_path = _now(), build_path.resolve()
         manifest = _load_build_manifest(build_path); build_id = str(manifest.get("build_id") or "unknown-build")
@@ -90,6 +102,7 @@ class VercelDeploymentProvider:
         result = DeploymentResult(f"deployment-{suffix}", str(manifest.get("lead_id") or "unknown-lead"), _business_name(build_path), build_id,
             (manifest.get("validation") or {}).get("validation_id"), (manifest.get("validation") or {}).get("status", "MISSING"), self.name,
             "PREPARING", None, None, _vercel_project_id(self.repository_root), _git_sha(self.repository_root), str(build_path), created_at)
+        approval: dict | None = None
         try:
             _assert_safe_build(build_path, manifest, approve_needs_review)
             data_class = manifest.get("data_classification") or (manifest.get("metadata") or {}).get("data_classification")
@@ -110,17 +123,69 @@ class VercelDeploymentProvider:
                     f"Refusing deployment: real-business drafts cannot use or fall back to the shared fictional preview project '{EXPECTED_PREVIEW_PROJECT}'; specify an isolated preview project via --project-name."
                 )
             _assert_valid_preview_target(target_project_name, configured_isolated=configured_isolated)
-            project = _assert_project_linked(self.repository_root, target_project_name)
+            if not dry_run:
+                # The operation that publishes authorizes itself: an explicit human approval bound to
+                # this exact build, validation, and artifact must exist, and no prior attempt may be
+                # unresolved. A refusal below stages no payload and never calls the provider CLI, so it
+                # holds for the operator CLI, a worker, a retried job, and an n8n-triggered call alike.
+                approved, code, reason, approval = verify_approval(build_path, manifest=manifest)
+                if not approved:
+                    return self._refuse(build_path, result, code, reason, approval=approval,
+                        status="NEEDS_REVIEW" if code.startswith("APPROVAL_") else "FAILED")
+                project = _assert_project_linked(self.repository_root, target_project_name)
+                proceed, code, reason, prior = classify_prior_attempt(
+                    build_path,
+                    artifact_sha=artifact_sha256(build_path),
+                    project_id=project["projectId"],
+                    resolve_uncertain_publish=resolve_uncertain_publish,
+                )
+                if not proceed:
+                    # An already-published artifact is a redundant request (FAILED); an unresolved
+                    # attempt needs an operator to inspect the provider first (NEEDS_REVIEW).
+                    return self._refuse(build_path, result, code, reason, prior=prior,
+                        status="NEEDS_REVIEW" if code == "PUBLISH_STATE_UNCERTAIN" else "FAILED")
+            else:
+                project = _assert_project_linked(self.repository_root, target_project_name)
             result.vercel_project_id = project["projectId"]
             result.metadata.update({"target": "preview", "dry_run": dry_run, "project_name": project["projectName"]})
             with TemporaryDirectory(prefix="ai-website-agent-preview-") as temporary:
                 payload = stage_public_payload(build_path, Path(temporary))
                 result.metadata["payload_files"] = list(payload.files)
                 if dry_run:
+                    # A dry run is a verification, never a deployment: no ledger entry, no provider call.
                     result.deployment_status, result.completed_at = "PENDING", _now(); _write_manifest(build_path, result); return result
+                if self.runner is subprocess.run:
+                    # Only the default real executor needs a PATH check; an injected runner (a test
+                    # double or an operator-supplied executor) is the caller's responsibility.
+                    _assert_vercel_cli_available()
                 result.deployment_status = "DEPLOYING"
+                # The in-flight attempt is recorded before the provider is called: if this process is
+                # interrupted, the ledger keeps an unresolved state so a later run cannot publish on
+                # the assumption that nothing happened.
+                _append_attempt(build_path, result, "DEPLOYING", approval_review_id=(approval or {}).get("review_id"))
                 cmd = [_vercel_command(), "deploy", str(payload.directory), "--yes", "--project", project["projectId"]]
-                completed = self.runner(cmd, cwd=str(self.repository_root), capture_output=True, text=True, check=False)
+                try:
+                    completed = self.runner(cmd, cwd=str(self.repository_root), capture_output=True, text=True, check=False, timeout=self.deploy_timeout_seconds)
+                except subprocess.TimeoutExpired as error:
+                    result.deployment_status = "PUBLISH_UNCERTAIN"
+                    result.error = (
+                        f"The {self.name} CLI did not return within {self.deploy_timeout_seconds}s, so the publish may have been "
+                        f"accepted by the provider ({_safe_error(str(error)) or 'no output'}). Verify the preview project before retrying."
+                    )
+                    result.completed_at = _now(); _write_manifest(build_path, result)
+                    _append_attempt(build_path, result, "PUBLISH_UNCERTAIN")
+                    return result
+                if completed is None:
+                    # The call was made and produced nothing verifiable, so the provider's state is
+                    # unknown; that must never be recorded as an ordinary failure.
+                    result.deployment_status = "PUBLISH_UNCERTAIN"
+                    result.error = (
+                        f"The {self.name} CLI invocation produced no verifiable result; the publish may have been accepted "
+                        "by the provider. Verify the preview project before retrying."
+                    )
+                    result.completed_at = _now(); _write_manifest(build_path, result)
+                    _append_attempt(build_path, result, "PUBLISH_UNCERTAIN")
+                    return result
                 output = "\n".join(part for part in (completed.stdout, completed.stderr) if part)
                 if completed.returncode != 0: raise RuntimeError(_safe_error(output) or f"Vercel CLI exited with code {completed.returncode}.")
                 url = _preview_url(output)
@@ -130,8 +195,26 @@ class VercelDeploymentProvider:
             result.deployment_status, result.error = "NEEDS_REVIEW", str(error)
         except Exception as error:
             result.deployment_status, result.error = "FAILED", str(error)
-        result.completed_at = _now(); _write_manifest(build_path, result); return result
+        result.completed_at = _now(); _write_manifest(build_path, result)
+        if not dry_run:
+            _append_attempt(build_path, result, result.deployment_status, validation_id=result.validation_id, deployment_url=result.deployment_url)
+        return result
 
+    @staticmethod
+    def _refuse(build_path: Path, result: DeploymentResult, code: str, reason: str, *, status: str, approval: dict | None = None, prior: dict | None = None) -> DeploymentResult:
+        """Record a gate refusal in the manifest and the attempt ledger, without publishing anything."""
+        result.deployment_status, result.error, result.completed_at = status, f"{code}: {reason}", _now()
+        result.metadata.update({
+            "denial_code": code,
+            "required_action": DEPLOYMENT_ACTION,
+            "dry_run": False,
+            "target": "preview",
+            "approval_review_id": (approval or {}).get("review_id"),
+            "prior_attempt": prior,
+        })
+        _write_manifest(build_path, result)
+        _append_attempt(build_path, result, status, denial_code=code, published=False)
+        return result
 
 class NeedsReview(Exception): pass
 
@@ -250,6 +333,38 @@ def _vercel_project_id(root: Path) -> str | None:
 def _vercel_command() -> str:
     candidates = ["vercel.cmd", "vercel.exe", "vercel"] if os.name == "nt" else ["vercel"]
     return next((path for candidate in candidates if (path := shutil.which(candidate))), candidates[-1])
+
+
+def _append_attempt(build_dir: Path, result: DeploymentResult, state: str, **extra) -> list[dict]:
+    """Append one entry to the build-local publish ledger; history is never rewritten."""
+    record = {
+        "attempt": len(read_attempts(build_dir)) + 1,
+        "deployment_id": result.deployment_id,
+        "deployment_status": state,
+        "build_id": result.build_id,
+        "lead_id": result.lead_id,
+        "validation_id": result.validation_id,
+        "deployment_url": result.deployment_url,
+        "vercel_project_id": result.vercel_project_id,
+        "git_commit_sha": result.git_commit_sha,
+        "artifact_sha256": artifact_sha256(build_dir),
+        "error": result.error,
+        "created_at": result.created_at,
+        "completed_at": result.completed_at,
+    }
+    record.update(extra)
+    return append_attempt(build_dir, {key: value for key, value in record.items() if value is not None})
+
+
+def _assert_vercel_cli_available() -> None:
+    """Fail with an actionable configuration error instead of an opaque OS error."""
+    command = _vercel_command()
+    if shutil.which(command) is None:
+        raise ValueError(
+            f"Deployment configuration is incomplete: the '{command}' CLI is not available on PATH. "
+            "Install/authenticate the approved Vercel CLI before executing a preview deployment."
+        )
+
 
 def _git_sha(root: Path) -> str | None:
     completed = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(root), capture_output=True, text=True, check=False)

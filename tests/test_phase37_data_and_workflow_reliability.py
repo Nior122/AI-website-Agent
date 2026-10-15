@@ -739,6 +739,9 @@ class HealthAndRetrySafetyTests(ReliabilityTestCase):
             "status": "PASS",
             "score": 100,
         })
+        # Publishing (job dry_run False) additionally requires an explicit human approval bound to this
+        # exact build; the approval is what materializes the capability the deployment gate verifies.
+        store.record_review(project["project_id"], "APPROVED_FOR_PREVIEW", "Fictional v2 approved for preview.", action="PREVIEW_DEPLOYMENT")
         job["build_id"] = "build-fixture-0002"
         second_result = worker.execute(job, {"tracking_store": store, "dry_run": False})
         self.assertEqual(provider.calls, 1)

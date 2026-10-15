@@ -64,11 +64,17 @@ Do not push, deploy, send outreach, create accounts, or install services unless 
 
 ## Vercel preview prerequisite
 
-An operator must manually authenticate with Vercel and link this directory to the dedicated, already approved `ai-website-agent-preview` project before an executed preview can be attempted. This repository must not create that project or invent `.vercel/project.json`; it explicitly refuses any other linked name, including `grace-light-community-church`. Configure the dedicated project as static HTML (Framework Preset `Other`, Build Command override enabled and empty, output served from the staged root) without changing the church project. After that manual setup, regenerate a fictional build and run:
+An operator must manually authenticate with Vercel and link this directory to the dedicated, already approved `ai-website-agent-preview` project before an executed preview can be attempted. This repository must not create that project or invent `.vercel/project.json`; it explicitly refuses any other linked name, including `grace-light-community-church`. Configure the dedicated project as static HTML (Framework Preset `Other`, Build Command override enabled and empty, output served from the staged root) without changing the church project.
+
+After that manual setup, an executed preview additionally requires an **explicit human approval for that exact build**: generated artifacts and `PASS` validations are never authorization on their own. Record the decision, check what the server-side gate will answer, and only then execute:
 
 ```powershell
-python -m deployment.cli --build output/<lead-id>/<build-id> --execute
+python3 -m tracking.cli review project-0001 --decision APPROVED_FOR_PREVIEW --action PREVIEW_DEPLOYMENT --notes "Reviewed the fictional draft" --confirm project-0001:<build-id>:APPROVED_FOR_PREVIEW
+python3 -m tracking.cli deploy-check project-0001
+python -m deployment.cli --build output/<lead-id>/<build-id> --execute --project-id project-0001
 ```
+
+`--execute` refuses without a recorded approval (`APPROVAL_MISSING`) and exits `1` before staging anything, so no external call happens. `deploy-check` is read-only and reports the same verdict the publish boundary will reach. A successful publish consumes the approval, so a retried job returns `ALREADY_DEPLOYED_REPEAT_SKIPPED` instead of publishing twice; an interrupted publish is recorded as `PUBLISH_UNCERTAIN` and must be resolved by an operator.
 
 The adapter calls Vercel without `--prod`, explicitly targets the dedicated linked project ID, deploys a temporary sanitized payload rather than the internal build directory, accepts only an HTTPS `*.vercel.app` host, and records a real result in the artifact-local `deployment.json`. It never creates a fake URL.
 
@@ -81,10 +87,12 @@ Real-business (`REAL_PUBLIC_DATA`) builds are **disabled by default** (`NEEDS_RE
    ```bash
    python3 -m tracking.cli configure-preview project-0002 --project-name pitstop-lagos-preview
    ```
-3. Verify the dry-run deployment gate before executing:
+3. Verify the dry-run deployment gate and the authorization gate before executing:
    ```bash
    python3 -m deployment.cli --build output/lead-0002/build-2026-10-13T012227z --project-name pitstop-lagos-preview --approve-real-preview
+   python3 -m tracking.cli deploy-check project-0002
    ```
+   Real-business builds follow the same approval rule as fictional ones, plus their isolation rules: without `APPROVED_FOR_PREVIEW` for the assigned build the gate answers `APPROVAL_MISSING`, and without a configured isolated target it answers `REAL_ISOLATED_TARGET_REQUIRED`. Nothing is published in either case.
 4. Export, verify, or locally serve (`127.0.0.1` only) the human-review package, inspect project status/history, or record an explicit human review decision with operator confirmation (`<project_id>:<build_id>:<DECISION>[:<ACTION>]`):
    ```bash
    python3 -m tracking.cli review-package project-0002 --export-dir preview-export/lead-0002-pitstop-lagos

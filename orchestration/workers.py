@@ -508,14 +508,50 @@ class LocalPipelineWorker:
                         "outcome": "ALREADY_DEPLOYED_REPEAT_SKIPPED",
                     },
                 )
+            dry_run = bool(job.get("dry_run", True))
+            if not dry_run:
+                # Server-side pre-publish gate. A dry run needs no authorization because it can never
+                # publish; a real publish may only proceed for the assigned, PASS-validated build that
+                # an explicit human approval still covers. The provider re-verifies this itself, so this
+                # check only produces a clearer refusal earlier - it is not the boundary.
+                gate = store.authorize_preview_deployment(project_id, build_id=build_id)
+                if gate.get("skip_publish"):
+                    return WorkerResult(
+                        "COMPLETED",
+                        summary=f"Preview {gate.get('deployment_id')} already covers {build_id}; repeat publish skipped.",
+                        output={
+                            "lead_id": p["lead_id"], "project_id": project_id, "build_id": build_id,
+                            "validation_id": p.get("latest_validation_id"), "deployment_id": gate.get("deployment_id"),
+                            "deployment_url": gate.get("deployment_url"), "deployment_status": "DEPLOYED",
+                            "outcome": "ALREADY_DEPLOYED_REPEAT_SKIPPED", "authorization": gate,
+                        },
+                        retryable=False,
+                    )
+                if not gate.get("authorized"):
+                    return WorkerResult(
+                        "NEEDS_REVIEW",
+                        error=f"{gate.get('code')}: {gate.get('reason')}" if gate.get("code") else (gate.get("reason") or "Deployment is not authorized."),
+                        output={
+                            "lead_id": p["lead_id"], "project_id": project_id, "build_id": build_id,
+                            "validation_id": p.get("latest_validation_id"), "outcome": (
+                                # An uncertain prior publish is a distinct, explicitly recoverable state.
+                                "PUBLISH_STATE_UNCERTAIN" if gate.get("code") == "PUBLISH_STATE_UNCERTAIN"
+                                else "DEPLOYMENT_UNAUTHORIZED"
+                            ),
+                            "authorization_code": gate.get("code"), "dry_run": False,
+                        },
+                        retryable=False,
+                    )
             provider = self.deployment_provider or VercelDeploymentProvider(self.repository_root)
-            dep_res = provider.deploy(
-                build_dir,
-                dry_run=bool(job.get("dry_run", True)),
-                approve_needs_review=bool(job_input.get("approve_needs_review")),
-                approve_real_preview=bool(job_input.get("approve_real_preview")),
-                project_name=job_input.get("project_name") or p.get("isolated_preview_project"),
-            )
+            deploy_kwargs = {
+                "dry_run": dry_run,
+                "approve_needs_review": bool(job_input.get("approve_needs_review")),
+                "approve_real_preview": bool(job_input.get("approve_real_preview")),
+                "project_name": job_input.get("project_name") or p.get("isolated_preview_project"),
+            }
+            if not dry_run:
+                deploy_kwargs["resolve_uncertain_publish"] = bool(job_input.get("resolve_uncertain_publish"))
+            dep_res = provider.deploy(build_dir, **deploy_kwargs)
             dep_out = {
                 **dep_res.to_dict(),
                 "lead_id": p["lead_id"],
@@ -530,10 +566,27 @@ class LocalPipelineWorker:
                 }.get(dep_res.deployment_status, "DEPLOYMENT_FAILED"),
             }
             if dep_res.deployment_status == "DEPLOYED":
-                store.record_deployment(project_id, dep_res.to_dict())
+                try:
+                    store.record_deployment(project_id, dep_res.to_dict())
+                except ValueError as err:
+                    # The publish happened but the audit record was refused: surface it as needing
+                    # human review with the live URL, never as a silent success or a retryable failure.
+                    return WorkerResult(
+                        "NEEDS_REVIEW",
+                        error=f"Preview {dep_res.deployment_id} was published but could not be recorded: {err}",
+                        output={**dep_out, "outcome": "DEPLOYMENT_RECORD_FAILED"},
+                        retryable=False,
+                    )
                 return WorkerResult("COMPLETED", summary=f"Deployed preview {dep_res.deployment_id}.", output=dep_out)
             if dep_res.deployment_status == "PENDING":
                 return WorkerResult("COMPLETED", summary=f"Verified dry-run deployment {dep_res.deployment_id}.", output=dep_out)
+            if dep_res.deployment_status == "PUBLISH_UNCERTAIN":
+                return WorkerResult(
+                    "NEEDS_REVIEW",
+                    error=dep_res.error,
+                    output={**dep_out, "outcome": "PUBLISH_STATE_UNCERTAIN"},
+                    retryable=False,
+                )
             if dep_res.deployment_status == "NEEDS_REVIEW":
                 return WorkerResult("NEEDS_REVIEW", error=dep_res.error, output=dep_out, retryable=False)
             return WorkerResult("FAILED", error=dep_res.error or "Deployment failed.", output=dep_out, retryable=False)
