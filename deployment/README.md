@@ -65,6 +65,32 @@ If `.vercel/project.json` is missing, points to another project, or `vercel whoa
 
 Do not use `--prod`, `vercel domains`, or an account upgrade as part of this workflow.
 
+`python3 -m orchestration.cli preflight --project-id <project_id>` reports the same configuration an
+operator would otherwise discover by trial: whether the Vercel CLI is on `PATH` here, whether a project is
+linked, whether the linked name is the isolated preview project, and what the durable gate currently
+answers for that project - marked configuration-only, because it executes no provider command and makes no
+network call.
+
+### Order of operations for one controlled preview
+
+`docs/INTEGRATION-SETUP.md` §5 states the whole procedure; the short form is below, and no step may be
+skipped forward. A step that is unverified is not a step that succeeded.
+
+1. Link the intended preview project by hand (`vercel link`); confirm the name, never hand-write IDs.
+2. Build and validate the artifact (`tracking.cli build`, then `validate-build`), and confirm the
+   disclosure text matches the data classification (fictional wording only for `TEST_FIXTURE` data).
+3. `tracking.cli deploy-check <project_id> --build-id <build-id>` - the read-only form of the gate verdict.
+4. Record the human decision (`tracking.cli review ... --decision APPROVED_FOR_PREVIEW
+   --action PREVIEW_DEPLOYMENT --build-id <build-id> --notes ... --confirm ...`).
+5. Dry run (`deployment.cli --build <dir> --state-path ... --project-id ... --build-id ...`): verifies
+   manifest, approval capability, artifact hash, and build identity; writes no ledger entry.
+6. Execute, once, with the same flags plus `--execute`. Evidence of success is a recorded `DEPLOYED`
+   status with an `https://<name>.vercel.app` URL returned by the provider - nothing else counts, and this
+   repository has no path that marks a preview deployed without it.
+7. `deployment-status` / `GET /deployment-status` to read the outcome back, and `attention` for anything
+   that needs a human afterwards (an uncertain publish stays uncertain until §"Resolving an uncertain
+   publish" is followed).
+
 ## States and recovery
 
 `PENDING → PREPARING → DEPLOYING → DEPLOYED`; failures end as `FAILED`; review-gated or unauthorized builds end as `NEEDS_REVIEW`.

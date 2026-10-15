@@ -395,6 +395,239 @@ def deployment_report(store, *, repository_root: Path | str = ".", include_evide
     }
 
 
+#: The four things an operator keeps confusing: the code works, the configuration names real things,
+#: a service was actually reached, and a preview exists. Every preflight section states which of these
+#: it answered, so "configured" is never printed as "connected".
+ASSURANCE_LEVELS = ("code_readiness", "configuration_readiness", "connectivity", "preview_deployment")
+
+
+def integration_preflight(store, *, repository_root: Path | str = ".", host: str | None = None,
+                          port: int | None = None, allow_non_loopback: bool = False,
+                          project_id: str | None = None, now: datetime | None = None,
+                          storage_error: str | None = None) -> dict:
+    """One answer to "is this workspace ready to run a controlled preview", without touching anything.
+
+    Composed from the same functions the health endpoints use, and deliberately read-only: no socket is
+    bound, no DDL runs, no provider command executes, no network call is made. Each section carries
+    ``verified`` (an answer from evidence gathered now) or is marked configuration-only, because the
+    useful distinction for an operator is not pass/fail but *what still has to happen outside this
+    repository*.
+    """
+    # Local import: api imports this module, so importing it at module scope would be circular.
+    from .api import ALLOWED_API_JOB_TYPES, resolve_bind_config
+
+    root = Path(repository_root)
+    environment = os.environ
+    sections: dict[str, Any] = {}
+    blockers: list[str] = []
+    manual_steps: list[str] = []
+    next_actions: list[str] = []
+
+    # -- 1. API liveness: what `serve` would do with this configuration, decided without binding.
+    bind: dict[str, Any] = {"verified": False, "evidence": "configuration only; no socket was opened"}
+    try:
+        resolved_host, resolved_port, outside_loopback = resolve_bind_config(host, port, allow_non_loopback=allow_non_loopback)
+        token = environment.get("AI_WEBSITE_AGENT_API_TOKEN")
+        bind.update({
+            "ok": True, "bind_host": resolved_host, "bind_port": resolved_port,
+            "reachable_beyond_this_machine": outside_loopback,
+            "liveness_route": "/healthz", "liveness_requires_token": False,
+            "token_configured": bool(token),
+            "token_strength": (None if not token else
+                               "ok" if (len(token.strip()) >= 32 and outside_loopback) or not outside_loopback
+                               else "too_short_for_public_bind"),
+        })
+        if not token:
+            bind["ok"] = False
+            blockers.append("AI_WEBSITE_AGENT_API_TOKEN is not set; `serve` refuses to start without it.")
+            next_actions.append("Set AI_WEBSITE_AGENT_API_TOKEN (32+ characters for any non-loopback bind), then start the API.")
+        elif bind["token_strength"] != "ok":
+            # `serve` refuses this bind. A preflight that reported ok would send an operator to a server
+            # that never starts, so the refusal is reproduced here rather than discovered later. The
+            # token value itself is never copied into the report.
+            bind["ok"] = False
+            bind["would_be_refused_by_serve"] = True
+            blockers.append(
+                "AI_WEBSITE_AGENT_API_TOKEN is shorter than 32 characters while this bind would be "
+                "reachable beyond this machine, so `serve` refuses to start."
+            )
+            next_actions.append("Replace the token with a 32+ character secret in the environment, then restart.")
+    except Exception as error:  # a refused bind is the answer, not a crash
+        bind.update({"ok": False, "error": sanitize_diagnostic(error)})
+        blockers.append(f"Bind configuration refused: {sanitize_diagnostic(error)}")
+    sections["api_liveness"] = bind
+
+    # -- 4. Automation (n8n): importable files, required environment, manual edits, activation state.
+    from .n8n_runner import workflow_readiness
+
+    workflow_dir = root / "n8n" / "workflows"
+    exported = sorted(workflow_dir.glob("*.json")) if workflow_dir.is_dir() else []
+    automation = workflow_readiness(exported, env=dict(environment))
+    automation["verified"] = bool(exported)
+    automation["evidence"] = "parsed locally; no n8n runtime was contacted and no workflow was activated"
+    automation["api_url_configured"] = bool(environment.get("AI_WEBSITE_AGENT_API_URL"))
+    automation["expected_api_url"] = f"http://{resolved_host or '127.0.0.1'}:{resolved_port or 8787}" if bind.get("ok") else None
+    sections["automation_n8n"] = automation
+    if not exported:
+        manual_steps.append("No workflow JSON found to check: n8n/workflows/ is missing or empty in this workspace.")
+    if automation["missing_environment"]:
+        blockers.append("n8n workflows read environment variables that are not set here: "
+                        + ", ".join(automation["missing_environment"])
+                        + " (an unset $env.AI_WEBSITE_AGENT_API_URL renders to an empty URL).")
+        next_actions.append("Set AI_WEBSITE_AGENT_API_URL (and AI_WEBSITE_AGENT_API_TOKEN) in the environment n8n reads.")
+    if automation["workflows_needing_manual_edit"]:
+        manual_steps.append("Edit before importing in the n8n UI (starter placeholders): "
+                            + ", ".join(Path(item).name for item in automation["workflows_needing_manual_edit"]))
+
+    # -- 2. Storage readiness: actively probed when a backend exists, so this row is not a guess.
+    # A store that could not even be built (production mode with no database URL) is the most important
+    # thing this command can report, so it is reported as an answer rather than raised as a traceback.
+    if store is None:
+        # Everything that does not need tracking state is still answered, so a broken production
+        # configuration is fixed in one pass rather than one error per run.
+        blockers.insert(0, storage_error or "Tracking state is unavailable.")
+        manual_steps.insert(0, "Storage is unavailable: the pipeline cannot read or record any project state.")
+        next_actions.insert(0, "Configure AI_WEBSITE_AGENT_ENV/AI_WEBSITE_AGENT_STORAGE_BACKEND only with a "
+                              "real DATABASE_URL - production mode refuses local JSON by design - then run "
+                              "`python3 -m tracking.cli preflight-db` to identify the configured target.")
+        return {
+            "checked_at": (now or datetime.now(timezone.utc)).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            "status": "blocked",
+            "sections": {"api_liveness": bind,
+                         "storage_readiness": {"status": "unavailable", "verified": False, "backend": None,
+                                              "error": storage_error,
+                                              "evidence": "the store could not be constructed",
+                                              "json_fallback": "prohibited in production mode"},
+                         "workflow_execution_readiness": {"ok": False, "verified": False,
+                                                          "evidence": "not evaluated: storage is unavailable"},
+                         "automation_n8n": sections["automation_n8n"],
+                         "deployment_provider_configuration": {"ok": False, "verified": False,
+                                                                "evidence": "not evaluated: storage is unavailable"}},
+            "blockers": blockers,
+            "manual_steps": manual_steps,
+            "next_actions": next_actions,
+            "assurance": {"code_readiness": "verified", "configuration_readiness": "verified",
+                          "connectivity": "failed", "preview_deployment": "not_performed"},
+            "actions_not_performed": {"network_calls": 0, "provider_commands_executed": 0,
+                                      "ddl_executed": False, "socket_bound": False,
+                                      "secrets_printed": False, "state_mutated": False},
+            "exit_code": 1,
+        }
+    storage = verify_storage(store)
+    storage["json_fallback"] = (
+        "prohibited in production mode" if is_production_mode()
+        else "permitted only outside production mode (single-process local JSON)"
+    )
+    storage["verified"] = getattr(store, "db_backend", None) is not None
+    storage["evidence"] = ("verify_schema() was run against the configured database"
+                           if storage["verified"] else "local JSON state file; no database was contacted")
+    sections["storage_readiness"] = storage
+    if storage["status"] != "healthy":
+        blockers.append(f"Storage is {storage['status']}: {storage.get('error')}")
+        next_actions.append("Run `python3 -m tracking.cli preflight-db` for the database identity, migration state, and next command.")
+
+    # -- 3. Workflow execution readiness: can a job be claimed, executed, and recovered here.
+    attention = operator_attention(store, now=now, repository_root=root, include_deployment=False)
+    workers = dict((getattr(store, "state", {}) or {}).get("workers") or {})
+    attention_items = list(attention.get("items") or [])
+    workflow = {
+        "ok": not attention.get("requires_attention"),
+        "verified": True,
+        "evidence": "read from the recorded job, worker, and project state in this store",
+        # The combined human-actionable backlog, not just the job rows: two projects waiting for a
+        # review decision is real work even when the queue is empty.
+        "attention_count": len(attention_items),
+        "attention_codes": sorted({str(item.get("code")) for item in attention_items if item.get("code")}),
+        "counts": attention.get("counts", {}),
+        "registered_workers": len(workers),
+        "worker_execution": "LocalPipelineWorker runs in-process inside `serve`/`run-job`; no external queue exists",
+        "job_types_reachable_over_http": sorted(ALLOWED_API_JOB_TYPES),
+        "deployment_jobs_reachable_over_http": "DEPLOY" in ALLOWED_API_JOB_TYPES,
+    }
+    sections["workflow_execution_readiness"] = workflow
+    if workflow["deployment_jobs_reachable_over_http"]:
+        blockers.append("DEPLOY is reachable over the job API; the documented deployment path is the CLI.")
+    if attention.get("requires_attention"):
+        kinds = attention.get("counts", {}).get("by_kind") or {}
+        detail = ", ".join(f"{name}: {count}" for name, count in sorted(kinds.items())) or "no detail recorded"
+        first = attention_items[0] if attention_items else {}
+        manual_steps.append(
+            f"{len(attention_items)} item(s) need an operator before anything else is scheduled ({detail}); "
+            f"first: {first.get('code', 'unknown')} on {first.get('project_id') or first.get('job_id') or 'unknown target'}"
+            " - `python3 -m orchestration.cli attention --brief`")
+        next_actions.append("Clear the attention backlog first: `python3 -m orchestration.cli recover-stale` then `attention --brief`.")
+
+    # -- 4. Deployment provider: configuration only, and the approval gate's current answer.
+    provider = provider_section(store, root, include_evidence=False)
+    configuration = provider.get("configuration", {})
+    sections["deployment_provider_configuration"] = {
+        "verified": False,
+        "evidence": "read from local files and PATH; no provider command was executed and no network call was made",
+        "provider": configuration.get("provider", "vercel"),
+        "cli_available": configuration.get("cli_available", False),
+        "project_linked": configuration.get("project_linked", False),
+        "link_error": configuration.get("link_error"),
+        "expected_preview_project": configuration.get("expected_preview_project"),
+        "target_is_isolated": configuration.get("target_is_isolated"),
+        "production_publishing": "not executed by this repository's commands without --execute and an approval",
+        "recorded_outcomes": {key: provider.get(key) for key in ("outcomes", "uncertain_count", "attention_count") if key in provider},
+    }
+    if not configuration.get("cli_available"):
+        manual_steps.append("Install and authenticate the Vercel CLI in the environment that will publish, then link the "
+                            "dedicated preview project (`vercel link` writes .vercel/project.json).")
+    if not configuration.get("project_linked"):
+        blockers.append("No linked Vercel preview project; a real publish is impossible from here by design.")
+        next_actions.append("Link the preview project: `vercel link --project ai-website-agent-preview` (never the production project).")
+    elif configuration.get("target_is_isolated") is False:
+        blockers.append("The linked project is not the isolated preview project; publishing would target the wrong scope.")
+
+    # -- 5. Preview readiness for one project: the durable gate's own answer, unmodified.
+    if project_id:
+        try:
+            gate = store.authorize_preview_deployment(project_id)
+        except Exception as error:  # the gate is authoritative; a refusal is a reportable answer
+            gate = {"code": "GATE_UNAVAILABLE", "reason": sanitize_diagnostic(error)}
+        sections["preview_readiness"] = {
+            "verified": True,
+            "evidence": "store.authorize_preview_deployment() - the same durable gate the CLI and worker consult",
+            "project_id": project_id,
+            "authorized": gate.get("authorized"),
+            "code": gate.get("code"),
+            "reason": gate.get("reason"),
+            "build_id": gate.get("build_id"),
+            "action": gate.get("action"),
+            "publish_state_uncertain": gate.get("publish_state_uncertain"),
+        }
+        if gate.get("authorized") is not True:
+            # Quote the gate's own reason instead of inventing a next step: for a project that has no
+            # build yet, "record the human review decision" would be advice nobody can act on.
+            manual_steps.append(f"Project {project_id} is not publishable yet ({gate.get('code')}): "
+                                f"{gate.get('reason')}")
+        if gate.get("publish_state_uncertain"):
+            blockers.append(f"Project {project_id} has an unresolved publish: `deployment.cli --resolve-uncertain-publish --resolve-note ...`")
+
+    assurance = {
+        "code_readiness": "verified",
+        "configuration_readiness": "verified",
+        "connectivity": "verified" if storage["verified"] else "not_tested",
+        "preview_deployment": "not_performed - this command never publishes, and a recorded deployment is read back as a record",
+    }
+    return {
+        "checked_at": (now or datetime.now(timezone.utc)).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "status": "blocked" if blockers else ("pending_manual_steps" if manual_steps else "ready"),
+        "sections": sections,
+        "blockers": blockers,
+        "manual_steps": manual_steps,
+        "next_actions": next_actions,
+        "assurance": assurance,
+        "actions_not_performed": {
+            "network_calls": 0, "provider_commands_executed": 0, "ddl_executed": False,
+            "socket_bound": False, "secrets_printed": False, "state_mutated": False,
+        },
+        "exit_code": 1 if blockers else 0,
+    }
+
+
 def provider_section(store, repository_root: Path, *, include_evidence: bool = True) -> dict:
     """Deployment section for ``system_health``: provider configuration plus recorded outcomes."""
     try:

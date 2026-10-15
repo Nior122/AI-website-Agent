@@ -4,10 +4,12 @@ AI Website Agent is a future, provider-neutral system for finding and qualifying
 
 ## Current state
 
-**Phase:** 37 — Data and Workflow Reliability (Idempotent Record Reuse, Concurrent-Write Safety, Atomic State Writes, & Storage-Aware Readiness)
+**Phase:** 42 — Real Integration Setup and Controlled Preview Readiness (read-only database preflight, a confirmed migration step, one readiness command, n8n workflow configuration checks, and a documented operator path to a preview)
 **Status:** Fictional demonstration (`lead-0001` / `project-0001`) remains live at `https://ai-website-agent-preview.vercel.app` (`READY_FOR_REVIEW`, `PENDING` approval). First qualified real business Pitstop Lagos (`lead-0002` / `project-0002`) has its updated, conflict-free local website draft at `output/lead-0002/build-2026-10-13T012227z/index.html` (and verified exported review package at `preview-export/lead-0002-pitstop-lagos/`) validated at 100/100 PASS (`validation-2026-10-13T012227z`, `READY_FOR_REVIEW`, `workflow_state: "VALIDATION_PASSED_READY_FOR_REVIEW"`, `PENDING` human review; not deployed), with the unresolved street address (`92A` vs `92b`) and telephone (`+234 807 749 8324` vs `+234 817 999 9005`) conflicts explicitly recorded and withheld until primary-source verification.
-**Implemented:** Phase 1–36 foundations, safe preview deployment, bounded public-data qualification, 5-tier evidence hierarchy and automatic conflict withholding, strict verified-fact template mapping, real-business draft validation, `LocalPipelineWorker` end-to-end job execution (`SCOUT` → `PREPARE_OUTREACH`), 7-state human review state machine (`APPROVED_FOR_PREVIEW` for `PREVIEW_DEPLOYMENT` vs `APPROVED` for `OUTREACH_PREPARATION`), operator workflow CLI (`ingest-lead`, `build`, `review`, `review-package`, `configure-preview`, `prepare-preview`, `outreach`, `check-workspace`), integrated cross-module handoffs, and Phase 37 reliability hardening (gap-free identifier allocation, content-aware idempotent record reuse, single-transaction multi-record writes, atomic local state writes, concurrent-insert and project-lock conflict refusal, no repeat publish on retried DEPLOY jobs, and storage-verified API readiness) across 192 passing unit tests.
+**Implemented:** Phase 1–36 foundations, safe preview deployment, bounded public-data qualification, 5-tier evidence hierarchy and automatic conflict withholding, strict verified-fact template mapping, real-business draft validation, `LocalPipelineWorker` end-to-end job execution (`SCOUT` → `PREPARE_OUTREACH`), 7-state human review state machine (`APPROVED_FOR_PREVIEW` for `PREVIEW_DEPLOYMENT` vs `APPROVED` for `OUTREACH_PREPARATION`), operator workflow CLI (`ingest-lead`, `build`, `review`, `review-package`, `configure-preview`, `prepare-preview`, `outreach`, `check-workspace`), integrated cross-module handoffs, and Phase 37 reliability hardening (gap-free identifier allocation, content-aware idempotent record reuse, single-transaction multi-record writes, atomic local state writes, concurrent-insert and project-lock conflict refusal, no repeat publish on retried DEPLOY jobs, and storage-verified API readiness), plus Phases 38-42 (approval and deployment controls, monitoring and operational controls, security hardening, integration readiness and reliable recovery, and real integration setup) across 344 passing unit tests.
 **Not implemented:** automated lead/project creation from real data, n8n activation, real external worker/provider integration, production deployment, external AI providers, outreach delivery, or automated messaging.
+
+**Integration status, stated as four separate things** (see `docs/INTEGRATION-SETUP.md`, and `python3 -m orchestration.cli preflight` for the live verdict): *code readiness* is verified - the whole suite runs locally with the standard library only; *configuration readiness* is verified for the files and flags this repository owns (`render.yaml` against the CLI it starts, n8n exports against the variables they read); *connectivity* is **not** verified - no Supabase/PostgreSQL instance, Render service, n8n runtime, or Vercel project was reachable from here, so `preflight` reports `connectivity: not_tested` rather than assuming the configuration is correct; and *a real preview deployment* has **not** been performed in this workspace - `assurance.preview_deployment` is `not_performed`, and the steps that would change that all require an operator with dashboard access.
 
 Phase 20 verified Calabar Kitchen's Ikeja main branch against public independent listings and its accessible website. The domain is `LIKELY_OFFICIAL` with high confidence for that branch, but no material, source-backed website defect was established. Calabar Kitchen remains `NOT_YET_QUALIFIED`; no lead, project, build, deployment, contact, or outreach record was created.
 
@@ -26,8 +28,14 @@ Phase 25 identified Pitstop Lagos (`lead-0002`) as the first qualified real busi
 ├── CHANGELOG.md                      # Human-readable change record
 ├── README.md                         # Project entry point
 ├── TASKS.md                          # Small, recoverable handoff/status ledger
+├── render.yaml                       # Render blueprint: API service, no auto-deploy, no DDL at build
+├── requirements.txt                  # The one external dependency: a PostgreSQL driver for the DB backend
 ├── config/
 │   └── system.settings.example.json  # Non-secret future settings template
+├── docs/
+│   └── INTEGRATION-SETUP.md          # Environment, migration, n8n, Vercel, Render, verification steps
+├── migrations/
+│   └── 0001_supabase_postgres_schema.sql  # Checksum-pinned relational schema; never edited in place
 ├── data/
 │   └── leads/.gitkeep                # Ignored local lead/review data; no tracked leads
 ├── jobs/
@@ -52,7 +60,17 @@ Phase 25 identified Pitstop Lagos (`lead-0002`) as the first qualified real busi
 
 ## Run and test
 
-The Scout, Research, Template, Builder, Validation, Deployment, Tracking, and Orchestration systems use Python's standard library only; no package installation is required. Preview deployment defaults to dry run; see [deployment/README.md](C:\Users\PC\Documents\ChatGPT\AI website Agent\deployment\README.md). n8n examples are inactive and do not start or replace an n8n installation.
+The Scout, Research, Template, Builder, Validation, Deployment, Tracking, and Orchestration systems use Python's standard library only; no package installation is required to run them or the tests. `requirements.txt` exists for one thing only: the PostgreSQL driver needed by the database backend. Preview deployment defaults to dry run; see [deployment/README.md](deployment/README.md). The n8n examples are inactive and do not start or replace an n8n installation.
+
+Three commands describe the workspace without changing it, in PowerShell and in bash alike (`py -3` on
+Windows, `python3` elsewhere):
+
+```powershell
+py -3 -m orchestration.cli preflight          # liveness, storage, workflow, n8n, provider - and what is only configured
+py -3 -m tracking.cli preflight-db            # which database, reachable?, migrated? writes nothing
+py -3 -m orchestration.cli check-n8n          # exported workflows: importable, required variables, starter placeholders
+py -3 -m unittest discover -s tests           # the whole local suite
+```
 
 ```powershell
 git status --short --branch
@@ -64,7 +82,7 @@ Do not push, deploy, send outreach, create accounts, or install services unless 
 
 ## Vercel preview prerequisite
 
-An operator must manually authenticate with Vercel and link this directory to the dedicated, already approved `ai-website-agent-preview` project before an executed preview can be attempted. This repository must not create that project or invent `.vercel/project.json`; it explicitly refuses any other linked name, including `grace-light-community-church`. Configure the dedicated project as static HTML (Framework Preset `Other`, Build Command override enabled and empty, output served from the staged root) without changing the church project.
+An operator must manually authenticate with Vercel and link this directory to the dedicated, already approved `ai-website-agent-preview` project before an executed preview can be attempted (`docs/INTEGRATION-SETUP.md` §5 lists the order, and `preflight` reports `project_linked` and whether the linked name is the isolated preview project). This repository must not create that project or invent `.vercel/project.json`; it explicitly refuses any other linked name, including `grace-light-community-church`. Configure the dedicated project as static HTML (Framework Preset `Other`, Build Command override enabled and empty, output served from the staged root) without changing the church project.
 
 After that manual setup, an executed preview additionally requires an **explicit human approval for that exact build**: generated artifacts and `PASS` validations are never authorization on their own. Record the decision, check what the server-side gate will answer, and only then execute:
 

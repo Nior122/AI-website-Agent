@@ -158,6 +158,26 @@ def sanitize_db_error(exc: BaseException | str, raw_url: str | None = None) -> s
     return msg
 
 
+def supabase_project_ref(host: str | None) -> str | None:
+    """The Supabase project reference carried by a hostname, when the hostname carries one.
+
+    Direct and session-pool hostnames name the project (`db.<ref>.supabase.co`); the transaction
+    pooler hostnames Supabase publishes (`aws-0-<region>.pooler.supabase.com`) do not. A `None` result
+    therefore means "this URL does not identify a project", never "there is no project" - the preflight
+    says so instead of guessing, because applying a schema to the wrong project is not undoable by hand.
+    """
+    if not host:
+        return None
+    labels = str(host).lower().strip().split(".")
+    if "supabase" not in labels:
+        return None
+    index = labels.index("supabase")
+    if index == 0:
+        return None
+    candidate = labels[index - 1]
+    return candidate if re.fullmatch(r"[a-z0-9]{14,32}", candidate) else None
+
+
 def is_production_mode(env: dict[str, str] | None = None) -> bool:
     source = env if env is not None else os.environ
     app_env = str(source.get("AI_WEBSITE_AGENT_ENV") or source.get("RENDER") or "").strip().lower()
@@ -373,6 +393,239 @@ class RelationalStateBackend:
     def _exec(self, cursor: Any, sql: str, params: tuple[Any, ...] = ()) -> Any:
         result = cursor.execute(sql, params)
         return result if result is not None and hasattr(result, "fetchall") else cursor
+
+    #: Tables this application owns. Reported on, never assumed to exist.
+    OWNED_TABLES = (
+        "schema_migrations", "leads", "research_evidence", "qualifications", "projects", "builds",
+        "validations", "reviews", "deployments", "outreach_packages", "jobs", "job_executions",
+        "workers", "project_locks", "system_kv", "build_artifacts",
+    )
+    #: Counted in a preflight so a database that already holds operational records is visible before
+    #: anything is applied to it. A fresh migration and a shared production database look identical
+    #: to `CREATE TABLE IF NOT EXISTS`, which is precisely why the counts are reported.
+    COUNTED_TABLES = ("leads", "projects", "jobs", "reviews", "deployments", "outreach_packages")
+
+    def identity(self) -> dict[str, Any]:
+        """Where this connection string points, with every secret removed.
+
+        ``redacted_url`` cannot tell two Supabase projects apart, so the identity names the host, port,
+        database, and the project reference embedded in the hostname. Those are the values an operator
+        compares against the Supabase dashboard before running the migration command.
+        """
+        parsed = urlparse(self.database_url)
+        host = (parsed.hostname or "").lower() or None
+        raw_path = parsed.path or ""
+        database = raw_path[1:] if raw_path.startswith("//") else raw_path.lstrip("/")
+        identity: dict[str, Any] = {
+            "dialect": self.dialect,
+            "scheme": parsed.scheme.lower(),
+            "host": host,
+            "port": parsed.port,
+            "database": database or None,
+            "url": self.redacted_url,
+            "supabase_project_ref": supabase_project_ref(host),
+            "is_local_host": host in {"127.0.0.1", "localhost", "::1", "0.0.0.0"},
+            "connect_timeout_seconds": self.connect_timeout,
+        }
+        if self.dialect == "sqlite":
+            identity["host"] = None
+            identity["port"] = None
+            identity["is_local_host"] = True
+        return identity
+
+    def _probe(self, cursor: Any, sql: str, params: tuple[Any, ...] = ()) -> tuple[list[Any], str | None]:
+        """Run one read-only probe; return ``(rows, fault)`` instead of raising.
+
+        Each question a preflight asks is independent: a connection that forbids ``information_schema``
+        or a database with no tables yet should produce one `unknown` field, not a crash that tempts the
+        operator to skip the preflight and run the migration blind.
+        """
+        try:
+            return list(self._exec(cursor, sql, params).fetchall() or []), None
+        except Exception as error:  # any DB-API fault is data for the report, never a traceback
+            return [], sanitize_db_error(error, self.database_url)
+
+    def preflight(self) -> dict[str, Any]:
+        """Identify the target database and report its migration state without running any DDL.
+
+        Read-only by construction: one connection, SELECTs only, then close. No table is created, no row
+        is written, and no local JSON fallback is possible from here. A fault is reported in
+        ``blockers`` with the credential already redacted, so the answer to "can the app reach the
+        database you intend it to" is a document an operator can act on.
+        """
+        report: dict[str, Any] = {
+            "status": "ready",
+            "checked_at": _now_iso(),
+            "ddl_executed": False,
+            "wrote_anything": False,
+            "identity": self.identity(),
+            "reachable": False,
+            "server_version": None,
+            "schema": {"present_tables": [], "missing_tables": list(self.OWNED_TABLES), "row_counts": {},
+                       "populated": None},
+            "migration": {
+                "version": MIGRATION_VERSION,
+                "file": MIGRATION_0001_PATH.name,
+                "expected_checksum": migration_0001_checksum(),
+                "recorded_checksum": None,
+                "applied": False,
+                "checksum_matches": False,
+                # `ensure_schema` is `CREATE TABLE IF NOT EXISTS` plus a keyed checksum row, and it
+                # re-verifies rather than rewrites: repeating it is safe, so say so explicitly.
+                "safe_to_repeat": True,
+            },
+            "blockers": [],
+            "pending": [],
+            "warnings": [],
+            "next_action": None,
+        }
+        try:
+            connection = self._connect()
+        except Exception as error:  # DatabasePersistenceError wraps driver faults, and so should this
+            # "Cannot reach it" and "reached it, something is wrong" send the operator to different
+            # places - a firewall or a wrong hostname versus a schema that was never applied.
+            report["status"] = "unreachable"
+            detail = sanitize_db_error(error, self.database_url)
+            # `_connect` already names the target it failed on. Prefixing it again buries the part an
+            # operator acts on ("Connection refused - is the server running?") under a repeated URL.
+            report["blockers"].append(
+                detail if self.redacted_url in detail else f"Could not connect to {self.redacted_url}: {detail}"
+            )
+            report["next_action"] = (
+                "Start PostgreSQL/Supabase and re-check the connection string, then run "
+                "`python3 -m tracking.cli preflight-db` again."
+            )
+            return report
+
+        try:
+            cursor = connection.cursor()
+            version_sql = "SELECT version()" if self.dialect == "postgres" else "SELECT sqlite_version()"
+            rows, fault = self._probe(cursor, version_sql)
+            if rows:
+                report["server_version"] = str(rows[0][0])
+            elif fault:
+                report["warnings"].append(f"Server version could not be read: {fault}")
+            report["reachable"] = True
+
+            table_sql = (
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema()"
+                if self.dialect == "postgres"
+                else "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+            rows, fault = self._probe(cursor, table_sql)
+            if fault:
+                report["warnings"].append(
+                    f"Table listing could not be read: {fault}. Existence is reported as unknown, not absent."
+                )
+                report["schema"]["present_tables"] = []
+                report["schema"]["missing_tables"] = []
+            else:
+                found = {str(row[0]) for row in rows}
+                report["schema"]["present_tables"] = sorted(found & set(self.OWNED_TABLES))
+                report["schema"]["missing_tables"] = sorted(set(self.OWNED_TABLES) - found)
+
+            report["migration"]["needs_migration"] = False
+            if "schema_migrations" in {str(row[0]) for row in rows} or not report["schema"]["missing_tables"]:
+                rows, fault = self._probe(
+                    cursor,
+                    f"SELECT checksum FROM schema_migrations WHERE version = {self._placeholder()}",
+                    (MIGRATION_VERSION,),
+                )
+                if fault:
+                    report["blockers"].append(f"Migration history could not be read: {fault}")
+                elif rows:
+                    recorded = rows[0][0]
+                    report["migration"]["applied"] = True
+                    report["migration"]["recorded_checksum"] = str(recorded) if recorded else None
+                    if not recorded:
+                        report["blockers"].append(
+                            f"Migration {MIGRATION_VERSION} is recorded without a checksum on "
+                            f"{self.redacted_url}; run `python3 -m tracking.cli migrate-db` to stamp it."
+                        )
+                    elif str(recorded) != report["migration"]["expected_checksum"]:
+                        report["migration"]["safe_to_repeat"] = False
+                        report["blockers"].append(
+                            f"Migration checksum mismatch for {MIGRATION_VERSION} on {self.redacted_url}: "
+                            f"recorded {recorded}, expected {report['migration']['expected_checksum']}. "
+                            "The applied schema is not the one this checkout ships; reconcile by hand "
+                            "rather than re-running the migration."
+                        )
+                    else:
+                        report["migration"]["checksum_matches"] = True
+                else:
+                    report["migration"]["needs_migration"] = True
+                    report["pending"].append(
+                        f"Migration {MIGRATION_VERSION} has not been applied on {self.redacted_url}."
+                    )
+                    report["next_action"] = (
+                        "Run `python3 -m tracking.cli migrate-db` to apply migration "
+                        f"{MIGRATION_VERSION}; it is additive and safe to repeat."
+                    )
+            else:
+                report["migration"]["needs_migration"] = True
+                report["pending"].append(
+                    "The schema is absent (no `schema_migrations` table): migration has not been applied here."
+                )
+                report["next_action"] = (
+                    "Confirm the identity above matches the intended Supabase project, then run "
+                    "`python3 -m tracking.cli migrate-db` to apply the schema."
+                )
+
+            for table in self.COUNTED_TABLES:
+                if table not in report["schema"]["present_tables"]:
+                    continue
+                rows, fault = self._probe(cursor, f"SELECT count(*) FROM {table}")
+                if fault:
+                    report["warnings"].append(f"Row count for {table} could not be read: {fault}")
+                elif rows:
+                    report["schema"]["row_counts"][table] = int(rows[0][0])
+            counts = report["schema"]["row_counts"]
+            if counts:
+                report["schema"]["populated"] = any(value > 0 for value in counts.values())
+                if report["schema"]["populated"]:
+                    report["warnings"].append(
+                        "This database already holds records ("
+                        + ", ".join(f"{name}={count}" for name, count in sorted(counts.items()) if count)
+                        + "). Migration is additive, but a shared or live database deserves a deliberate "
+                        "confirmation."
+                    )
+        finally:
+            try:
+                rollback = getattr(connection, "rollback", None)
+                if callable(rollback):
+                    rollback()
+            except Exception:
+                pass
+            try:
+                connection.close()
+            except Exception:
+                pass
+
+        unresolved = report["identity"]["supabase_project_ref"] is None and self.dialect == "postgres" and not report["identity"]["is_local_host"]
+        if unresolved:
+            report["warnings"].append(
+                "This hostname does not carry a Supabase project reference (a transaction-pooler host "
+                "such as aws-0-<region>.pooler.supabase.com does not), so `--expect-project-ref` cannot "
+                "confirm the project from the URL alone: verify the connection string against the "
+                "Supabase dashboard before migrating."
+            )
+        # "Blocked" and "not migrated yet" are different operator problems: one is a fault to fix, the
+        # other is a step to take. Collapsing them would send an operator off to debug a healthy database.
+        if not report["reachable"]:
+            report["status"] = "unreachable"
+        elif report["blockers"]:
+            report["status"] = "blocked"
+        elif report["migration"]["applied"] and report["migration"]["checksum_matches"]:
+            report["status"] = "ready"
+            if not report["next_action"]:
+                report["next_action"] = (
+                    "Schema verified; no DDL was executed by this command. Start the API with "
+                    "`python3 -m orchestration.cli serve` and check `python3 -m orchestration.cli preflight`."
+                )
+        else:
+            report["status"] = "needs_migration"
+        report["blockers"] = report["blockers"] + report["pending"]
+        return report
 
     def verify_schema(self) -> dict[str, Any]:
         """Verify that schema_migrations exists and matches the expected migration checksum without running DDL."""

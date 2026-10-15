@@ -8,7 +8,8 @@ from pathlib import Path
 import sys
 from typing import TextIO
 
-from .database import DatabasePersistenceError, MIGRATION_0001_PATH, MIGRATION_VERSION, RelationalStateBackend, configured_database_url
+from .database import (DatabasePersistenceError, MIGRATION_0001_PATH, MIGRATION_VERSION, RelationalStateBackend,
+                        configured_database_url, is_production_mode, supabase_project_ref)
 from .store import DEFAULT_STATE_PATH, PERMITTED_REVIEW_ACTIONS, REVIEW_DECISIONS, TrackingStore
 
 
@@ -87,6 +88,149 @@ def _validate_review_preconditions(
     if not context["assigned_build_id"] or not store.state["builds"].get(context["assigned_build_id"]):
         raise ValueError(f"Cannot record review for {project_id}: no valid assigned build exists.")
     return context
+
+
+def _postgres_driver_available() -> str | None:
+    """Name an installed PostgreSQL driver, or ``None``.
+
+    A schema migration over a URL the application cannot open is the one integration failure that looks
+    like a database problem and is really a missing dependency, so the preflight checks it before
+    anything tries to connect.
+    """
+    for module_name in ("psycopg", "psycopg2"):
+        try:
+            __import__(module_name)
+        except ImportError:
+            continue
+        return module_name
+    return None
+
+
+def _local_state_report() -> dict:
+    """The local side of persistence: where a JSON state file would live, and whether it may."""
+    path = Path(DEFAULT_STATE_PATH)
+    parent = path.parent
+    production = is_production_mode()
+    return {
+        "path": str(path),
+        "exists": path.is_file(),
+        "directory_present": parent.is_dir(),
+        "production_mode": production,
+        # Not a prediction, a policy statement: in production mode `_save()` raises rather than
+        # writing, so a missing database cannot be papered over with local state.
+        "json_fallback_allowed": not production,
+        "json_fallback_policy": (
+            "prohibited in production mode" if production else "permitted only outside production mode"
+        ),
+    }
+
+
+def _database_preflight(
+    database_url: str | None,
+    *,
+    expect_project_ref: str | None = None,
+    expect_database: str | None = None,
+) -> dict:
+    """Assemble the read-only answer to "which database would this app migrate, and is it ready".
+
+    The connection string is resolved exactly the way the application resolves it, so what is reported is
+    what the application would use, not what the operator hopes it uses.
+    """
+    report: dict = {"status": "not_configured", "ddl_executed": False, "backend": "local_json",
+                    "local_state": _local_state_report(), "blockers": [], "pending": [], "warnings": [],
+                    "next_action": None, "exit_code": 1}
+    try:
+        resolved_url = configured_database_url(database_url)
+    except DatabasePersistenceError as error:
+        report["status"] = "blocked"
+        report["blockers"].append(str(error))
+        report["next_action"] = (
+            "Production mode requires Supabase/PostgreSQL: set AI_WEBSITE_AGENT_DATABASE_URL or "
+            "DATABASE_URL to a postgresql:// connection string. Nothing was created or modified."
+        )
+        return report
+    if not resolved_url:
+        report["blockers"].append(
+            "No database URL is configured (AI_WEBSITE_AGENT_DATABASE_URL, DATABASE_URL, or "
+            "SUPABASE_DB_URL), so the application would use the single-process local JSON state file."
+        )
+        report["next_action"] = (
+            "For local development that is acceptable. For any shared, deployed, or production service, "
+            "set AI_WEBSITE_AGENT_ENV=production, AI_WEBSITE_AGENT_STORAGE_BACKEND=postgres, and "
+            "DATABASE_URL - production mode then refuses local JSON instead of falling back to it."
+        )
+        return report
+
+    backend = RelationalStateBackend(resolved_url, auto_migrate=False)
+    report["backend"] = backend.dialect
+    # `hard` holds what this command found wrong about the *target* itself. The probe's own blockers
+    # include "not migrated yet", which is a step to take rather than a fault to fix, and it has to stay
+    # `needs_migration` so an operator is not sent off debugging a healthy database.
+    hard: list[str] = []
+    probe = backend.preflight()
+    report.update(probe)
+    identity = probe["identity"]
+
+    if identity["dialect"] == "postgres" and _postgres_driver_available() is None:
+        hard.append(
+            "No PostgreSQL driver is installed in this environment (`psycopg` or `psycopg2`); the URL "
+            "cannot be opened from here. Run `pip install -r requirements.txt` in the environment that "
+            "will run the migration."
+        )
+        report["warnings"].append(
+            "Every database answer above is unverified in this environment because no connection was "
+            "possible; the schema is reported as unknown rather than absent."
+        )
+        report["status"] = "blocked"
+
+    if expect_project_ref:
+        expected = str(expect_project_ref).strip().lower()
+        found = identity.get("supabase_project_ref")
+        if found is None:
+            hard.append(
+                "--expect-project-ref was given but this hostname carries no project reference to "
+                "compare. Confirm the connection string against the Supabase dashboard instead of "
+                "migrating on assumption."
+            )
+        elif found != expected:
+            hard.append(
+                f"This URL points at Supabase project '{found}', not the expected '{expected}'. The "
+                "migration was not run."
+            )
+    if expect_database:
+        expected_db = str(expect_database).strip().lower()
+        found_db = (identity.get("database") or "").lower()
+        if found_db != expected_db:
+            hard.append(
+                f"This URL opens database '{found_db or '<none>'}', not the expected '{expected_db}'. "
+                "The migration was not run."
+            )
+
+    if hard:
+        report["blockers"] = hard + list(report["blockers"])
+        if report["status"] != "unreachable":
+            report["status"] = "blocked"
+            report["next_action"] = (
+                "Fix the identity or driver problem above before running any DDL; `migrate-db` refuses "
+                "to apply a schema while it is reported."
+            )
+    if report["status"] == "needs_migration" and identity["dialect"] == "postgres" and not identity["is_local_host"]:
+        report["next_action"] = (
+            "Verify the identity above against the Supabase dashboard, then run "
+            f"`python3 -m tracking.cli migrate-db --confirm-database {identity['database']}`; the "
+            "confirmation flag is required for a remote database and DDL is additive."
+        )
+    if report["status"] == "needs_migration" and identity["dialect"] == "sqlite":
+        report["next_action"] = "Run `python3 -m tracking.cli migrate-db --database-url <this url>` to create the schema."
+    report["exit_code"] = 0 if report["status"] == "ready" else 1
+    report["supabase_identification"] = (
+        "Supabase dashboard -> Connect -> Session pooler shows the project reference; the reference in "
+        "this URL is "
+        + (f"'{identity['supabase_project_ref']}'." if identity.get("supabase_project_ref") else
+           "not present in the hostname, so verify the reference in the dashboard against the connection "
+           "string you are about to paste.")
+    )
+    return report
 
 
 def run_cli(
@@ -205,6 +349,25 @@ def run_cli(
         action="store_true",
         help="Verify that the migration and its SHA-256 checksum are already applied without running DDL.",
     )
+    mig_parser.add_argument(
+        "--confirm-database",
+        default=None,
+        metavar="NAME",
+        help="Required to apply DDL to a database that is not on this machine: the database name read "
+             "from the URL by `preflight-db`. A stale DATABASE_URL in a shell cannot then migrate an "
+             "unintended Supabase project.",
+    )
+
+    preflight_parser = subparsers.add_parser(
+        "preflight-db",
+        help="Read-only check of which database this app would use, whether it is reachable, and whether "
+             "the migration is applied. Runs no DDL and writes nothing.",
+    )
+    preflight_parser.add_argument("--database-url", default=None, help="Database connection URL (defaults to DATABASE_URL env var).")
+    preflight_parser.add_argument("--expect-project-ref", default=None,
+                                 help="Fail unless the Supabase project reference in the URL host matches this value.")
+    preflight_parser.add_argument("--expect-database", default=None,
+                                 help="Fail unless the database name in the URL matches this value.")
 
     try:
         args = parser.parse_args(argv)
@@ -212,6 +375,12 @@ def run_cli(
         return int(exc.code) if isinstance(exc.code, int) else 1
 
     try:
+        if args.command == "preflight-db":
+            report = _database_preflight(args.database_url, expect_project_ref=args.expect_project_ref,
+                                         expect_database=args.expect_database)
+            out_stream.write(json.dumps(report, indent=2) + "\n")
+            return int(report.get("exit_code", 1))
+
         if args.command == "migrate-db":
             db_url = configured_database_url(args.database_url)
             if not db_url:
@@ -221,6 +390,31 @@ def run_cli(
                 verified = backend.verify_schema()
                 out_stream.write(json.dumps(verified, indent=2) + "\n")
                 return 0
+            # Applying DDL is the one irreversible-feeling step in this setup, and `CREATE TABLE IF NOT
+            # EXISTS` is quiet about landing in a database someone else owns. So the migration command
+            # reads the target first and requires the operator to name it back - exactly the identity a
+            # wrong-host mistake would have revealed. Local SQLite/loopback targets keep working as-is.
+            probe_backend = RelationalStateBackend(db_url, auto_migrate=False)
+            identity = probe_backend.identity()
+            if not identity["is_local_host"]:
+                discovered = identity["database"] or "<unknown>"
+                supplied = str(args.confirm_database or "").strip()
+                if not supplied:
+                    raise DatabasePersistenceError(
+                        f"Refusing to apply DDL to a remote database ({identity['host']}, "
+                        f"database '{discovered}'"
+                        + (f", Supabase project '{identity['supabase_project_ref']}'"
+                           if identity.get("supabase_project_ref") else "")
+                        + ") without confirmation. Re-run with "
+                        f"`--confirm-database {discovered}` after verifying this is the intended project "
+                        "in the Supabase dashboard, or use --verify-only to check without changing anything."
+                    )
+                if supplied.strip().lower() != discovered.lower():
+                    raise DatabasePersistenceError(
+                        f"Refusing to apply DDL: --confirm-database '{supplied}' does not match the "
+                        f"database named in the configured URL ('{discovered}')."
+                    )
+            preflight_state = probe_backend.preflight()
             backend = RelationalStateBackend(db_url, auto_migrate=True)
             verified = backend.verify_schema()
             out_stream.write(
@@ -232,6 +426,20 @@ def run_cli(
                         "checksum": verified["checksum"],
                         "dialect": backend.dialect,
                         "database": backend.redacted_url,
+                        # Recorded with the result so the audit trail says which target was changed and
+                        # whether it already held data.
+                        "target": {
+                            "host": identity["host"],
+                            "port": identity["port"],
+                            "database": identity["database"],
+                            "supabase_project_ref": identity["supabase_project_ref"],
+                        },
+                        "schema_before": {
+                            "migration_applied": preflight_state["migration"]["applied"],
+                            "missing_tables": preflight_state["schema"]["missing_tables"],
+                            "row_counts": preflight_state["schema"]["row_counts"],
+                        },
+                        "safe_to_repeat": True,
                     },
                     indent=2,
                 )

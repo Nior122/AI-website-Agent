@@ -2,8 +2,9 @@
 # Note on database migrations:
 #   Do NOT run schema migrations automatically inside `buildCommand` on every container build.
 #   Apply or verify `migrations/0001_supabase_postgres_schema.sql` explicitly via the controlled CLI:
-#     python3 -m tracking.cli migrate-db
-#     python3 -m tracking.cli migrate-db --verify-only
+#     python3 -m tracking.cli preflight-db --expect-project-ref <project-ref>   # read-only identity + state
+#     python3 -m tracking.cli migrate-db --confirm-database <database-name>      # DDL, remote targets only
+#     python3 -m tracking.cli migrate-db --verify-only                           # checksum check, no DDL
 services:
   - type: web
     name: ai-website-agent-api

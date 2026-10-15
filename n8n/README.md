@@ -38,6 +38,34 @@ When a live self-hosted n8n runtime (`n8n` CLI or Docker container) is not runni
 - **Loopback only.** Every HTTP node carries the API bearer token in a header, so a node addressed to a host outside this machine raises `N8nWorkflowTargetRefused` *before the request is built* - a copied or hand-edited export cannot walk the credential to another host. `allow_remote=True` is the explicit opt-out for an operator who means it.
 - **Faults are data.** A refused connection, a timeout, a non-2xx answer, and a body that is not a JSON object each become a structured output on the failing node (`error`, `error_kind`, `error_code`, `http_status`, `status: "FAILED"`) instead of a traceback, so the workflow's own IF branches reach their documented outcome node. The result also carries `execution_status` (`COMPLETED`/`FAILED`) and a collected `errors` list, and the validation step reports a missing or malformed workflow file as an actionable message. None of this retries, schedules, or activates anything.
 
+### Checking the workflow configuration before importing
+
+```bash
+python3 -m orchestration.cli check-n8n                      # all four exports
+python3 -m orchestration.cli check-n8n --workflow path/to.json
+python3 -m orchestration.cli preflight                      # the same section, with more context
+```
+
+`check-n8n` validates each file and reports the environment variables it reads, which of those this
+environment does not define, and which files still contain `REPLACE_WITH_*` starter placeholders. It sends
+no requests and executes no node. Two of its answers matter more than they look:
+
+- **An unset `AI_WEBSITE_AGENT_API_URL` is not a missing value, it is a wrong request.** The expression
+  renders to an empty string, so `POST {{ $env.AI_WEBSITE_AGENT_API_URL }}/jobs` becomes `POST /jobs` and
+  the failure reads like an API outage or a 404 on the wrong host. Set it to the loopback URL of the API
+  you mean (`http://127.0.0.1:8787`).
+- **`02-inspect-job.json` needs a manual edit in the n8n UI.** Its URL carries `REPLACE_WITH_JOB_ID`. The
+  repository copies are kept runnable as demonstrations - `tests/test_n8n_integration.py` runs 01 and 02
+  unmodified - so the placeholder is reported, never silently rewritten.
+
+| Variable | Where it is set | Purpose |
+| --- | --- | --- |
+| `AI_WEBSITE_AGENT_API_URL` | the environment n8n runs with | base URL every node calls; loopback |
+| `AI_WEBSITE_AGENT_API_TOKEN` | the environment n8n runs with | bearer token in each node's header; never stored in a workflow file |
+
+Both are read through `$env.` rather than an n8n credential record, so no secret is ever written into an
+exported JSON file; `validate_n8n_workflow_json()` refuses a workflow that embeds a literal token.
+
 ```bash
 python3 -m unittest discover -s tests -p "test_n8n_integration.py" -v
 ```

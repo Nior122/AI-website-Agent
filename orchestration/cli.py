@@ -25,11 +25,12 @@ def main(argv: list[str] | None = None) -> int:
             "serve", "recover-stale", "list-jobs", "check-workspace", "recover-workspace",
             "create-job", "run-job", "retry-job",
             # Operational controls: what is healthy, what is stuck, and what a human must clear.
-            "health", "attention", "inspect-job", "deployment-status", "check-alerts",
+            "health", "attention", "inspect-job", "deployment-status", "check-alerts", "preflight",
+            "check-n8n",
         ],
-        help="serve runs the API; health/attention/inspect-job/deployment-status/check-alerts report "
-             "operational state without changing it; recover-stale/recover-workspace restore recorded "
-             "state; create-job/run-job/retry-job act on the queue.",
+        help="serve runs the API; health/attention/inspect-job/deployment-status/check-alerts/preflight "
+             "report operational state without changing it; recover-stale/recover-workspace restore "
+             "recorded state; create-job/run-job/retry-job act on the queue.",
     )
     parser.add_argument("--state-path", default="data/tracking/state.json")
     parser.add_argument("--host", default=None, help="Bind host (defaults to AI_WEBSITE_AGENT_BIND_HOST or 127.0.0.1).")
@@ -44,12 +45,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--job-type", default=None, help="Job type for create-job (SCOUT, RESEARCH, QUALIFY, BUILD, VALIDATE, DEPLOY, PREPARE_OUTREACH).")
     parser.add_argument("--job-id", default=None, help="Idempotent job_id for create-job, run-job, or retry-job.")
     parser.add_argument("--lead-id", default=None, help="Optional lead_id for create-job.")
-    parser.add_argument("--project-id", default=None, help="Optional project_id for create-job.")
+    parser.add_argument("--project-id", default=None, help="Optional project_id for create-job; for preflight, include that project's durable deployment gate.")
     parser.add_argument("--build-id", default=None, help="Optional build_id for create-job.")
     parser.add_argument("--input-json", default="{}", help="JSON object string for job input.")
     parser.add_argument("--output-root", default="output", help="Output directory for LocalPipelineWorker BUILD jobs.")
     parser.add_argument("--export-root", default="preview-export", help="Directory review packages may be written under; the API refuses export paths outside it.")
     parser.add_argument("--repository-root", default=".", help="Workspace root used by health reports (defaults to the current directory).")
+    parser.add_argument("--workflow", action="append", default=None, metavar="PATH",
+                        help="check-n8n: a specific exported workflow file to validate; repeatable. Defaults to every n8n/workflows/*.json.")
     parser.add_argument("--status", default=None, help="list-jobs: only jobs in this status (e.g. FAILED, NEEDS_REVIEW, BLOCKED).")
     parser.add_argument("--attention-only", action="store_true", help="list-jobs: only jobs a human must clear (FAILED, NEEDS_REVIEW, BLOCKED).")
     parser.add_argument("--brief", action="store_true", help="list-jobs/attention: compact operator view instead of full records.")
@@ -68,6 +71,72 @@ def main(argv: list[str] | None = None) -> int:
             database_url=args.database_url,
         )
         return 0
+    if args.command == "check-n8n":
+        # Validation only, deliberately: this reports whether the exported workflows are importable and
+        # whether this machine supplies the variables they read. Executing a workflow graph would create
+        # jobs, so `create-job`/`run-job` remain the way to drive the pipeline.
+        from .n8n_runner import workflow_readiness
+
+        root = Path(args.repository_root)
+        if args.workflow:
+            paths = [Path(item) for item in args.workflow]
+        else:
+            directory = root / "n8n" / "workflows"
+            paths = sorted(directory.glob("*.json"))
+            if not paths:
+                print(json.dumps({"status": "blocked", "blockers": [
+                    f"No workflow JSON found in {directory}. Import the repository copies into n8n, or "
+                    "pass --workflow for an exported file."]}, indent=2))
+                return 1
+        report = workflow_readiness(paths)
+        blockers = [f"{item['file']}: {problem}" for item in report["workflows"] for problem in item["problems"]]
+        if report["missing_environment"]:
+            blockers.append(
+                "n8n reads these variables and this environment does not define them: "
+                + ", ".join(report["missing_environment"])
+            )
+        result = {
+            "status": "blocked" if blockers else "ready",
+            "workflows_checked": report["checked_count"],
+            "importable": report["importable_count"],
+            "missing_environment": report["missing_environment"],
+            "needs_manual_edit": report["workflows_needing_manual_edit"],
+            "requests_sent": report["requests_sent"],
+            "blockers": blockers,
+            "next_action": (
+                "Import the file in the n8n UI (Workflows -> Import from File), set the variables above in "
+                "the environment n8n runs with, edit any starter placeholder, and leave the workflow "
+                "inactive until an operator decides to activate it."
+            ),
+        }
+        print(json.dumps(result, indent=2))
+        return 1 if blockers else 0
+
+    if args.command == "preflight":
+        from .health import integration_preflight
+
+        from tracking.database import DatabasePersistenceError
+
+        store, storage_error = None, None
+        try:
+            store = TrackingStore(args.state_path, auto_bootstrap_workspace=False, database_url=args.database_url)
+        except DatabasePersistenceError as error:
+            # A production configuration with no reachable database fails closed at construction. The
+            # preflight's job is to say so in the report the operator asked for, with the next command to run.
+            storage_error = str(error)
+        report = integration_preflight(
+            store,
+            repository_root=args.repository_root,
+            host=args.host,
+            port=args.port,
+            allow_non_loopback=args.allow_non_loopback,
+            # Reuses the existing --project-id flag: for preflight it means "include this project's
+            # durable deployment-gate answer", which is the same project the other controls act on.
+            project_id=args.project_id,
+            storage_error=storage_error,
+        )
+        print(json.dumps(report, indent=2))
+        return int(report["exit_code"])
     if args.command == "health":
         store = TrackingStore(args.state_path, auto_bootstrap_workspace=False, database_url=args.database_url)
         # The operator command verifies storage actively, so "healthy" here means the source of truth

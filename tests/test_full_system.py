@@ -7,6 +7,7 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -27,17 +28,45 @@ from validation.quality_validator import validate_rendered_html
 FIXTURE = Path(__file__).parent / "fixtures" / "qualified_leads.json"
 
 
-def _workspace_store_copy(root: Path) -> TrackingStore:
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+#: The committed inputs `TrackingStore.recover_from_verified_exports` refuses to run without. A fresh
+#: checkout has no `data/tracking/state.json` (it is deliberately not in Git), so a test that wants the
+#: workspace's project records has to be able to rebuild them from these instead of reading a file that
+#: only exists after some other module happened to run first.
+_WORKSPACE_RECOVERY_INPUTS = (
+    Path("preview-export/lead-0002-pitstop-lagos/review-package.json"),
+    Path("preview-export/lead-0002-pitstop-lagos/index.html"),
+    Path("preview-export/lead-0002-pitstop-lagos/REVIEW_README.md"),
+    Path("tests/fixtures/fictional_test_business_lagos_fresh_kitchen.json"),
+)
+
+
+def _workspace_store_copy(root: Path, *, name: str = "state-workspace-copy.json") -> TrackingStore:
     """Read the workspace's recorded project state through a disposable copy.
 
     These tests must see the project-0002 build/validation records exactly as recorded, but building
     or verifying a review package persists `updated_at` and package digests onto those records. Going
     through the default state path would mutate real workspace data every time the suite runs, so the
     copy carries the writes. The build artifact itself is still read read-only from the repository.
+
+    The tracking state file is untracked on purpose, so on a fresh clone there is nothing to copy. The
+    records are then rebuilt inside this temporary root from the SHA-256-verified review package - the
+    same recovery the application performs - which keeps the test independent of module order and
+    guarantees it never writes into the workspace it is checking.
     """
-    temp_state = Path(root) / "state-workspace-copy.json"
-    temp_state.write_bytes(Path("data/tracking/state.json").read_bytes())
-    return TrackingStore(temp_state)
+    temp_state = Path(root) / name
+    workspace_state = Path("data/tracking/state.json")
+    if workspace_state.is_file():
+        temp_state.write_bytes(workspace_state.read_bytes())
+        return TrackingStore(temp_state)
+    for relative in _WORKSPACE_RECOVERY_INPUTS:
+        target = Path(root) / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(REPO_ROOT / relative, target)
+    store = TrackingStore(temp_state)
+    store.recover_from_verified_exports(repository_root=Path(root))
+    return store
 
 
 class FullSystemTests(unittest.TestCase):
@@ -695,9 +724,7 @@ class FullSystemTests(unittest.TestCase):
             validate_serve_target(pkg_dir_2, host="127.0.0.1")
 
         # Deployment safeguards on an isolated copy of the workspace tracking store
-        temp_state = self.root / "state-p32.json"
-        temp_state.write_bytes(Path("data/tracking/state.json").read_bytes())
-        iso_store = TrackingStore(temp_state)
+        iso_store = _workspace_store_copy(self.root, name="state-p32.json")
         iso_jobs = JobService(iso_store)
 
         # (a) Production target rejected in TrackingStore and JobService

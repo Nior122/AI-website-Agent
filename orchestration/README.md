@@ -105,18 +105,44 @@ pretending it is something it is not.
 
 The normalized relational schema (`leads`, `research_evidence`, `qualifications`, `projects`, `builds`, `validations`, `reviews`, `deployments`, `outreach_packages`, `jobs`, `job_executions`, `workers`, `project_locks`, `system_kv`, and `build_artifacts`) is defined in `migrations/0001_supabase_postgres_schema.sql`.
 
-Apply and verify the migration explicitly before starting or updating the production service (do **not** run database migrations automatically inside `render.yaml`'s `buildCommand` on every container build):
+Apply and verify the migration explicitly before starting or updating the production service (do **not** run database migrations automatically inside `render.yaml`'s `buildCommand` on every container build). `preflight-db` runs first: it opens one connection, issues `SELECT`s, writes nothing, and names the target - the database name, host, port, and the Supabase project reference in the hostname - because "the migration ran" and "the migration ran on the project you meant" are different claims. It also reports `row_counts`, so a database that already holds operational records is visible before DDL lands in it, and `schema_migrations` checksum conflicts come back as `blocked` (reconcile by hand) rather than `needs_migration` (run the command).:
 
 ```bash
 # Option A: Controlled Python CLI migration runner & checksum verification
 export DATABASE_URL="postgresql://postgres:<password>@db.<project-ref>.supabase.co:5432/postgres?sslmode=require"
-python3 -m tracking.cli migrate-db
-python3 -m tracking.cli migrate-db --verify-only
+python3 -m tracking.cli preflight-db --expect-project-ref <project-ref>   # read-only: identity, reachability, migration state
+python3 -m tracking.cli migrate-db --confirm-database postgres            # DDL on a remote DB requires naming it back
+python3 -m tracking.cli migrate-db --verify-only                          # no DDL, no confirmation needed
 
 # Option B: psql CLI + checksum verification
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0001_supabase_postgres_schema.sql
 python3 -m tracking.cli migrate-db --verify-only
 ```
+
+### 1b. One Readiness Command
+
+`python3 -m orchestration.cli preflight [--project-id <pid>]` answers the four questions an operator
+otherwise assembles from four places, without binding a socket, contacting a provider, or running DDL:
+
+- `api_liveness` - the bind `serve` would use, whether a token exists, and whether it is long enough for
+  that bind. It reproduces `serve`'s refusal so a weak credential is found here rather than at startup, and
+  it never copies the value into the report.
+- `storage_readiness` - `verify_storage()`'s answer, marked `verified: true` only when a database was
+  actually probed, plus the explicit statement that local JSON is prohibited in production mode.
+- `workflow_execution_readiness` - the recorded job/worker/project state, the combined human-actionable
+  backlog with its codes, and the job types reachable over HTTP (which never includes `DEPLOY`).
+- `automation_n8n` - each exported workflow's importability, the variables it reads, which of those are
+  unset, and which files still hold `REPLACE_WITH_*` starter placeholders (`requests_sent: false`).
+- `deployment_provider_configuration` - CLI availability, linked project, isolation of the target, and the
+  recorded outcomes, all marked configuration-only because nothing was executed.
+
+`assurance` names the four states explicitly (`code_readiness`, `configuration_readiness`, `connectivity`,
+`preview_deployment`), and `actions_not_performed` records that no network call, provider command, DDL, or
+state mutation happened. With `--project-id` it also quotes the durable deployment gate's own answer
+(`authorized`, `code`, `reason`) for that project; reading the gate does not change it. A store that cannot
+even be constructed (production mode, no `DATABASE_URL`) is reported as a blocker in the same document
+instead of a traceback. `python3 -m orchestration.cli check-n8n` is the same automation section on its own,
+for when only the workflow files need checking. Full procedure: `docs/INTEGRATION-SETUP.md`.
 
 ### 2. Environment Variables
 
@@ -138,7 +164,7 @@ python3 -m tracking.cli migrate-db --verify-only
 python3 -m orchestration.cli serve --host 0.0.0.0 --allow-non-loopback
 ```
 
-What the blueprint declares is checked against the code it starts, so the two cannot drift apart silently: every flag in `startCommand` exists in `orchestration/cli.py`, `healthCheckPath: /healthz` is the one route answered before any credential check, every `envVars` key is read somewhere in `orchestration/`, `tracking/`, or `deployment/`, secrets stay `sync: false` (never committed as values), `buildCommand` installs `requirements.txt` (which carries the PostgreSQL driver) and runs no DDL, and `autoDeploy` stays `false`. See `tests/test_phase41_integration_and_recovery.py` (`DeploymentTopologyTests`). Those are the assertions this environment can honestly make: no Render account, service, or live Supabase/PostgreSQL instance was contacted, so the blueprint has not been executed here. Starting it remains a deliberate operator action, including applying `python3 -m tracking.cli migrate-db` once and supplying `DATABASE_URL` plus a long `AI_WEBSITE_AGENT_API_TOKEN` in the Render dashboard.
+What the blueprint declares is checked against the code it starts, so the two cannot drift apart silently: every flag in `startCommand` exists in `orchestration/cli.py`, `healthCheckPath: /healthz` is the one route answered before any credential check, every `envVars` key is read somewhere in `orchestration/`, `tracking/`, or `deployment/`, secrets stay `sync: false` (never committed as values), `buildCommand` installs `requirements.txt` (which carries the PostgreSQL driver) and runs no DDL, and `autoDeploy` stays `false`. See `tests/test_phase41_integration_and_recovery.py` (`DeploymentTopologyTests`). Those are the assertions this environment can honestly make: no Render account, service, or live Supabase/PostgreSQL instance was contacted, so the blueprint has not been executed here. Starting it remains a deliberate operator action, including applying `python3 -m tracking.cli preflight-db` and then `migrate-db --confirm-database <database>` once, and supplying `DATABASE_URL` plus a long `AI_WEBSITE_AGENT_API_TOKEN` in the Render dashboard. The Render filesystem is ephemeral and `data/tracking/` is not in Git, so PostgreSQL is what makes a deployed service able to start at all; with the backend configured the store neither needs nor creates that directory (asserted in `tests/test_phase42_integration_setup_and_preflight.py`).
 
 In production mode (`AI_WEBSITE_AGENT_ENV=production` or `AI_WEBSITE_AGENT_STORAGE_BACKEND=postgres`), `TrackingStore` never falls back to temporary local JSON storage or SQLite if `DATABASE_URL` is missing or unreachable; it fails closed and reports `DatabasePersistenceError`. Durable `build_artifacts` rows persist and re-materialize `index.html`, `build.json`, `review-package.json`, `REVIEW_README.md`, and any relative local asset files in the build directory (verified by SHA-256 and guarded against path traversal) across container restarts.
 

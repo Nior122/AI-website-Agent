@@ -20,6 +20,7 @@ Two rules keep the verifier safe to point at a real workspace:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
 import socket
@@ -129,6 +130,90 @@ def validate_n8n_workflow_json(workflow_path: str | Path) -> dict[str, Any]:
     if re.search(r"Bearer\s+(?!\{\{\s*\$env\.AI_WEBSITE_AGENT_API_TOKEN\s*\}\})[A-Za-z0-9._-]+", raw_text):
         raise ValueError(f"Workflow {path} contains a hardcoded Bearer token instead of $env.AI_WEBSITE_AGENT_API_TOKEN.")
     return data
+
+
+def _iter_strings(value: Any, prefix: str = ""):
+    """Yield ``(dotted_field, string_value)`` for every string inside nested node parameters."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield from _iter_strings(item, f"{prefix}.{key}" if prefix else str(key))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            yield from _iter_strings(item, f"{prefix}[{index}]")
+    elif isinstance(value, str):
+        yield prefix, value
+
+
+#: A starter export that still contains an edit-before-import marker. Reported, never rewritten: the
+#: repository's own tests treat these files as runnable demonstrations.
+_UNRESOLVED_MARKER = re.compile(r"REPLACE_WITH_[A-Z0-9_]+")
+_ENV_REFERENCE = re.compile(r"\{\{\s*\$env\.([A-Z0-9_]+)\s*\}\}")
+
+
+def workflow_readiness(workflow_paths: list[str | Path] | tuple[str | Path, ...],
+                       *, env: dict[str, str] | None = None) -> dict[str, Any]:
+    """Report what an operator must do before each exported workflow can run here - no requests sent.
+
+    ``validate_n8n_workflow_json`` answers "is this file importable". This answers the setup questions an
+    operator actually has: which environment variables the file reads and whether they are set (an unset
+    `$env.AI_WEBSITE_AGENT_API_URL` silently renders to an empty string and produces a request to
+    `/jobs`, which reads like an API outage), and which files still carry `REPLACE_WITH_*` starter
+    placeholders that must be edited inside n8n. Nothing here activates a workflow.
+    """
+    environment = dict(os.environ if env is None else env)
+    files: list[dict[str, Any]] = []
+    missing_env: set[str] = set()
+    for raw_path in workflow_paths:
+        path = Path(raw_path)
+        entry: dict[str, Any] = {
+            "file": path.as_posix(),
+            "present": path.is_file(),
+            "importable": False,
+            "active_in_export": None,
+            "node_count": None,
+            "problems": [],
+            "required_environment": [],
+            "unresolved_placeholders": [],
+        }
+        if not entry["present"]:
+            entry["problems"].append(
+                f"{path} does not exist. Export the workflow from n8n into n8n/workflows/ or pass the "
+                "path of the downloaded JSON."
+            )
+            files.append(entry)
+            continue
+        try:
+            data = validate_n8n_workflow_json(path)
+        except ValueError as error:
+            entry["problems"].append(str(error))
+            files.append(entry)
+            continue
+        entry["importable"] = True
+        entry["active_in_export"] = data.get("active")
+        entry["node_count"] = len(data.get("nodes") or [])
+        names: set[str] = set()
+        for node in data.get("nodes") or []:
+            for field, text in _iter_strings(node.get("parameters") or {}, node.get("name", "?")):
+                for variable in _ENV_REFERENCE.findall(text):
+                    names.add(variable)
+                for marker in _UNRESOLVED_MARKER.findall(text):
+                    entry["unresolved_placeholders"].append({"field": field, "value": marker})
+        entry["required_environment"] = sorted(names)
+        missing = sorted(name for name in names if not environment.get(name))
+        entry["missing_environment"] = missing
+        missing_env.update(missing)
+        files.append(entry)
+    return {
+        "workflows": files,
+        "checked_count": len(files),
+        "importable_count": sum(1 for item in files if item["importable"]),
+        "missing_environment": sorted(missing_env),
+        "workflows_needing_manual_edit": sorted(item["file"] for item in files if item["unresolved_placeholders"]),
+        # The verifier used by `python3 -m orchestration.n8n_runner` refuses any node whose URL leaves
+        # this machine, because every node header carries the API bearer token.
+        "loopback_policy": "targets outside 127.0.0.1/localhost are refused before the request is built",
+        "requests_sent": False,
+    }
 
 
 def _lookup_path(obj: Any, dotted_path: str) -> Any:
