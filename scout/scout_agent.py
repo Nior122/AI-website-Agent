@@ -128,8 +128,11 @@ class OverpassRestaurantSource:
                     if response.status != 200: raise RuntimeError(f"Overpass returned HTTP {response.status}.")
                     payload = json.loads(response.read().decode("utf-8"))
                     elements = payload.get("elements", [])
-                    candidates = [_overpass_candidate(element) for element in elements[:limit]]
-                    return [candidate for candidate in candidates if candidate]
+                    mapped = [c for c in (_overpass_candidate(element) for element in elements) if c]
+                    # Order first, then truncate: taking the first N elements is what made every run
+                    # return the same businesses, because the API's order has nothing to do with priority.
+                    mapped.sort(key=_candidate_sort_key)
+                    return mapped[:limit]
             except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, RuntimeError) as error:
                 last_error = error
                 continue
@@ -139,8 +142,27 @@ class OverpassRestaurantSource:
 
 
 def _overpass_lagos_restaurants_query(limit: int) -> str:
-    # Bounded metropolitan Lagos box; out limit stops the public API response at five.
-    return f"[out:json][timeout:25];nwr[\"amenity\"=\"restaurant\"](6.40,3.20,6.70,3.60);out center {limit};"
+    """One bounded, read-only request over metropolitan Lagos restaurants.
+
+    The union is what makes the run useful rather than merely legal. A single ``amenity=restaurant``
+    query returns the same first ``limit`` elements of the box on every run, so discovery re-reported the
+    same handful of businesses and yielded nothing new to review; the pilot needed candidates matching
+    the actual business priority (publicly active on social media, no website on the record). Each clause
+    uses only documented ``key="value"`` existence filters - no negation, no regular expressions - and the
+    website-absence judgement is derived from the returned tags locally, because a missing OSM tag is
+    missing evidence, never a fact about the business. The window is wider than ``limit`` precisely so
+    that ranking can choose; the adapter still hands back at most ``limit`` candidates.
+    """
+    window = max(min(4 * limit, limit + 35), limit)
+    box = "(6.40,3.20,6.70,3.60)"
+    clauses = ";".join(
+        f'nwr["amenity"="restaurant"][{tag}]{box}' for tag in ('"contact:facebook"', '"contact:instagram"')
+    )
+    return (
+        f"[out:json][timeout:25];({clauses};nwr[\"amenity\"=\"restaurant\"]{box});"
+        f"out center {window};"
+    )
+
 
 
 def _overpass_candidate(element: dict[str, Any]) -> dict[str, Any] | None:
@@ -153,6 +175,22 @@ def _overpass_candidate(element: dict[str, Any]) -> dict[str, Any] | None:
     whatsapp = _text(tags.get("contact:whatsapp") or tags.get("whatsapp"))
     social = [url for url in (_url(tags.get("contact:instagram")), _url(tags.get("contact:facebook"))) if url]
     return {"candidate_id":f"osm-{kind}-{ident}","business_name":name,"niche":"Restaurants","city":"Lagos","country":"Nigeria","address":_text(tags.get("addr:full")) or _address(tags),"phone":phone,"email":email,"whatsapp":whatsapp,"website":website,"other_social_urls":social,"description":_text(tags.get("description")) or _text(tags.get("cuisine")),"source_url":f"https://www.openstreetmap.org/{kind}/{ident}","source_type":"OPENSTREETMAP_ELEMENT","data_classification":"REAL_PUBLIC_DATA","discovered_at":_now(),"raw_data":{"osm_type":kind,"osm_id":ident,"tags":tags}}
+
+
+def _candidate_sort_key(candidate: dict[str, Any]) -> tuple[int, int, int, str]:
+    """Order raw public candidates by the pilot's stated priority: socially active, no website on record.
+
+    A missing ``website`` tag ranks a candidate up but is recorded as ``none_known`` downstream, never as
+    "has no website"; contact details and a name only break ties. Nothing here invents a fact.
+    """
+    tags = (candidate.get("raw_data") or {}).get("tags") or {}
+    social = bool(candidate.get("other_social_urls")) or bool(tags.get("contact:facebook") or tags.get("contact:instagram"))
+    return (
+        0 if (social and not candidate.get("website")) else 1 if social else 2 if not candidate.get("website") else 3,
+        0 if candidate.get("phone") or candidate.get("whatsapp") or candidate.get("email") else 1,
+        0 if candidate.get("address") else 1,
+        str(candidate.get("candidate_id") or ""),
+    )
 
 
 def _address(tags: dict[str, Any]) -> str | None:
@@ -365,6 +403,12 @@ def _active_signals(lead: dict[str, Any]) -> list[str]:
     return [label for label, value in checks if value]
 
 
-def _lead_sort_key(lead: dict[str, Any]) -> tuple[int, int, str]:
+def _lead_sort_key(lead: dict[str, Any]) -> tuple[int, int, int, str]:
+    """Qualified first, then website opportunity, then how publicly active the business is, then name.
+
+    The online-presence term is the point: two equally qualified candidates should surface the one with
+    more evidence of an active audience first, because that is the profile the pilot is for.
+    """
     priority = {"qualified": 0, "needs_review": 1, "lower_priority": 2, "skipped": 3}
-    return (priority[lead["qualificationStatus"]], -lead["websiteOpportunityScore"], lead["normalizedBusinessName"] or "")
+    return (priority[lead["qualificationStatus"]], -lead["websiteOpportunityScore"], -lead["onlinePresenceScore"],
+            lead["normalizedBusinessName"] or "")

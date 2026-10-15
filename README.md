@@ -43,7 +43,7 @@ Phase 25 identified Pitstop Lagos (`lead-0002`) as the first qualified real busi
 ├── schemas/
 │   ├── lead.schema.json              # Initial persistent-lead contract
 │   └── scout-job.schema.json         # Recoverable Scout job-result contract
-├── scout/                            # Offline-first Scout Agent and CLI
+├── scout/                            # Default-offline Scout Agent; opt-in bounded live pilot
 ├── research/                         # Offline-first Research & Qualification Agent
 ├── builder/                          # Local qualified-lead → validated preview builder
 ├── validation/                       # Local static website QA and structured findings

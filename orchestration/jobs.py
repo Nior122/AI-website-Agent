@@ -48,6 +48,19 @@ NEXT_ACTIONS = {
         "Confirm the claiming worker is gone, run python3 -m orchestration.cli recover-stale, then "
         "inspect-job --history before retrying: the job never recorded a heartbeat."
     ),
+    "LIVE_DISCOVERY_NOT_ENABLED": "This deployment does not permit outbound discovery requests at all. Running a live "
+        "source is a machine-level decision: set AI_WEBSITE_AGENT_ALLOW_LIVE_DISCOVERY=1 where public read-only "
+        "lookups are approved (and install the same guard nowhere else), or run discovery from a terminal with "
+        "python3 -m scout.cli --source overpass --approve-live-lookups --dry-run instead of through a job.",
+    "LIVE_DISCOVERY_NOT_APPROVED": "Discovery against a live public source is opt-in. Re-create the job with "
+        "input.approve_live_lookups set to true only if the approved scope (Lagos restaurants, five candidates, "
+        "review-only) is what you intend to run; until then nothing was requested and nothing was written. "
+        "From a terminal: python3 -m scout.cli --source overpass --approve-live-lookups --dry-run.",
+    "SCOUT_SOURCE_UNKNOWN": "Name a source this repository actually has: 'fixture' (with input.source_file) or "
+        "'openstreetmap_overpass'. No other discovery provider is wired in, and none should be added by a job input.",
+    "SCOUT_INPUT_INVALID": "Correct the SCOUT job input: fixture runs need input.source_file, and request limits "
+        "must stay within 1-5 endpoint attempts. Discovery stays bounded on purpose; a wider run is a scope "
+        "decision for the operator, not a parameter to guess.",
     "OUTREACH_NOT_READY": "Complete the human preview review; outreach requires an APPROVED decision for OUTREACH_PREPARATION.",
     "PUBLISH_LEDGER_UNREADABLE": "Repair the publish ledger first: deployment-attempts.json for this build "
     "exists but cannot be parsed, so no attempt history can be trusted. Preserve the file, reconcile it by "

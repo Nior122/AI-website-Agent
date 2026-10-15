@@ -41,6 +41,22 @@ Supported authenticated endpoints (`Authorization: Bearer <token>`):
 - `POST /projects/:id/review-package` — exports and verifies a human-review package (`index.html`, `review-package.json`, `REVIEW_README.md`) for a `READY_FOR_REVIEW` project, leaving `review_status` at `"PENDING"`. `export_dir` is optional and must name a directory *inside* the handler's configured export root; anything else is `400 EXPORT_PATH_NOT_ALLOWED`.
 - `GET /projects/:id/review-package?export_dir=...` — verifies an exported review package against `TrackingStore`, under the same export-root confinement (verification reads files by path, so an unrestricted name would let a request inspect another project's evidence).
 
+### SCOUT job inputs
+
+A `SCOUT` job discovers and qualifies only - it never builds, deploys, or contacts anyone, and a real-data candidate is written as a `DISCOVERED` lead with public contact fields withheld from the lead book.
+
+| Input | Effect |
+| --- | --- |
+| absent or `source: "fixture"` | the offline default; `source_file` is then required (`SCOUT_INPUT_INVALID` if missing) |
+| `source: "openstreetmap_overpass"` | the one approved live pilot, capped at five candidates in Lagos for the restaurant niche; any other name is `SCOUT_SOURCE_UNKNOWN` |
+| `approve_live_lookups: true` | required with a live source, otherwise `LIVE_DISCOVERY_NOT_APPROVED` and no request is made |
+| `AI_WEBSITE_AGENT_ALLOW_LIVE_DISCOVERY=1` (environment of the worker, not a job input) | the deployment's own permission for outbound discovery, otherwise `LIVE_DISCOVERY_NOT_ENABLED`; a job created over HTTP or n8n must not be the only thing that consented |
+| `country` / `city` / `niche` / `lead_limit` | target for qualification; anything outside the approved pilot scope is refused by the adapter itself |
+| `endpoint`, `fallback_endpoints`, `timeout_seconds`, `max_requests` (1-5) | the polite request budget for one run |
+| `create_leads: false` | inspect candidates without touching `TrackingStore` (defaults to `true`) |
+
+Refusals are terminal for the attempt (`retryable: false`) and carry a runnable remedy through `NEXT_ACTIONS`, because "wait for a retry" is not an answer to a missing approval.
+
 Unauthenticated liveness probe (for Render load balancer health checks):
 
 - `GET /healthz` — returns `200 OK` with `{"status": "ok"}` and never exposes operational state, paths, or credentials. It is intentionally *liveness only*: it does not read the database, so it keeps answering while `GET /readiness` correctly reports `NOT_READY` because the source of truth is unreachable. `200 /healthz` is therefore never a statement that work can proceed.

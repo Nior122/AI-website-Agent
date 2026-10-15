@@ -162,24 +162,74 @@ class LocalPipelineWorker:
         from opportunities.service import assess_opportunity
         from outreach.service import OutreachService
         from research.research_agent import FixtureResearchSource, ResearchAgent
-        from scout.scout_agent import FixtureSource, Scout, Target
+        from scout.scout_agent import FixtureSource, OverpassRestaurantSource, Scout, Target
 
         store = context["tracking_store"]
         job_type = job["job_type"]
         job_input = job.get("input") or {}
 
         if job_type == "SCOUT":
-            source_file = job_input.get("source_file")
-            if not source_file:
-                return WorkerResult("FAILED", error="SCOUT job requires input.source_file.", retryable=False)
+            # Discovery used to be reachable only from a hand-made fixture file, so the one live source this
+            # repository owns - and the reason real candidates exist at all - could not be run by the queue,
+            # the API, or n8n. It stays opt-in: a job has to name the source AND carry the operator's
+            # approval, or no request leaves the machine.
+            source_kind = str(job_input.get("source") or "fixture").strip().lower()
+            requested_limit = int(job_input.get("lead_limit") or 5)
             target = Target(
                 country=str(job_input.get("country") or "Nigeria"),
                 city=str(job_input.get("city") or "Lagos"),
                 niche=str(job_input.get("niche") or "Restaurants"),
-                lead_limit=int(job_input.get("lead_limit") or 5),
+                lead_limit=requested_limit,
                 dry_run=bool(job.get("dry_run", True)),
             )
-            scout_res = Scout(target, [FixtureSource(Path(source_file))]).run()
+            if source_kind in {"openstreetmap_overpass", "overpass"}:
+                # A person typing `scout.cli --approve-live-lookups` is present and consenting. A job can be
+                # created by n8n or the HTTP API with nobody watching, so network lookup additionally has to
+                # be permitted by the deployment itself - otherwise "the queue asked" becomes the only
+                # approval on record, which is exactly the asymmetry this system refuses elsewhere.
+                if os.environ.get("AI_WEBSITE_AGENT_ALLOW_LIVE_DISCOVERY") != "1":
+                    return WorkerResult(
+                        "FAILED",
+                        error="Live discovery is not enabled for this deployment; set AI_WEBSITE_AGENT_ALLOW_LIVE_DISCOVERY=1 "
+                              "on the machine that is permitted to query public sources.",
+                        error_code="LIVE_DISCOVERY_NOT_ENABLED",
+                        retryable=False,
+                    )
+                if job_input.get("approve_live_lookups") is not True:
+                    return WorkerResult(
+                        "FAILED",
+                        error="SCOUT live discovery requires input.approve_live_lookups to be true; no request was made.",
+                        error_code="LIVE_DISCOVERY_NOT_APPROVED",
+                        retryable=False,
+                    )
+                timeout = job_input.get("timeout_seconds")
+                max_requests = job_input.get("max_requests")
+                if max_requests is not None and not 1 <= int(max_requests) <= 5:
+                    return WorkerResult("FAILED", error="SCOUT input.max_requests must be between 1 and 5.",
+                                        error_code="SCOUT_INPUT_INVALID", retryable=False)
+                overpass = OverpassRestaurantSource(
+                    **({"timeout_seconds": int(timeout)} if timeout is not None else {}),
+                    **({"max_requests": int(max_requests)} if max_requests is not None else {}),
+                )
+                if job_input.get("endpoint"):
+                    overpass.endpoint = str(job_input["endpoint"])
+                if job_input.get("fallback_endpoints"):
+                    overpass.fallback_endpoints = [str(value) for value in job_input["fallback_endpoints"]]
+                sources = [overpass]
+            elif source_kind == "fixture":
+                source_file = job_input.get("source_file")
+                if not source_file:
+                    return WorkerResult("FAILED", error="SCOUT job requires input.source_file when no live source is named.",
+                                        error_code="SCOUT_INPUT_INVALID", retryable=False)
+                sources = [FixtureSource(Path(source_file))]
+            else:
+                return WorkerResult(
+                    "FAILED",
+                    error=f"Unsupported SCOUT source '{source_kind}'. Permitted: fixture, openstreetmap_overpass.",
+                    error_code="SCOUT_SOURCE_UNKNOWN",
+                    retryable=False,
+                )
+            scout_res = Scout(target, sources).run()
             if scout_res.status != "completed":
                 return WorkerResult("FAILED", error="; ".join(scout_res.errors) or "Scout run failed.", retryable=False)
             lead_ids: list[str] = []

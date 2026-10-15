@@ -12,6 +12,14 @@ python -m scout.cli --dry-run --source-file tests/fixtures/scout_candidates.json
 
 The command writes the job result to standard output only. To save an inspected result locally, supply `--output data/leads/scout-dry-run.json`; that directory is ignored by Git.
 
+### Bounded live discovery, only when asked
+
+```powershell
+python -m scout.cli --dry-run --source overpass --approve-live-lookups --lead-limit 3 --output data/leads/scout-live-review.json
+```
+
+That flag is what permits one read-only Overpass request; without it the command refuses with exit code 2 before the source object exists, so an unapproved run cannot accidentally go out. `--max-requests` is accepted only between 1 and 5 and `out center` stays capped, which keeps a run polite to a shared public API. Optional `--endpoint` / `--fallback-endpoint` exist for the documented timeout-then-fallback behaviour. The live-run notice is written to standard error so the JSON document on stdout (or in `--output`) stays parseable. A source that fails yields status `failed` and exit code 1 - an empty funnel and a broken one are never reported the same way.
+
 Run tests with:
 
 ```powershell
@@ -27,7 +35,7 @@ python -m unittest discover -s tests -v
 - source and candidate counters; and
 - recoverable errors without discarding successful source results.
 
-`FixtureSource` is always safe for tests. `OverpassRestaurantSource` is the sole approved live pilot: a single read-only OpenStreetMap Overpass query for Lagos, Nigeria restaurants, capped at five named candidates and one request. It preserves each public OSM element URL and marks normalized records `REAL_PUBLIC_DATA`. It does not visit the business website, social profiles, or contact links, and it does not create a tracked lead/project or contact anyone.
+`FixtureSource` is always safe for tests. `OverpassRestaurantSource` is the sole approved live pilot: one read-only OpenStreetMap Overpass request for Lagos, Nigeria restaurants - a union of three documented tag clauses (Facebook handle, Instagram handle, all restaurants) over a bounded box, `out center` capped at twenty - from which at most five named candidates survive, chosen by priority rather than by arrival order, and no endpoint is retried beyond the request budget the run declared. It preserves each public OSM element URL and marks normalized records `REAL_PUBLIC_DATA`. It does not visit the business website, social profiles, or contact links, and it does not create a tracked lead/project or contact anyone.
 
 The live pilot is review-only. A missing `website` tag in OpenStreetMap means only `none_known` **in that source**—not proof that the business has no website. Any candidate needs evidence-led Research before becoming a usable lead. Local real-data review exports belong under ignored `data/leads/`; never put real data in test fixtures or commit it unintentionally.
 
