@@ -48,6 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--build-id", default=None, help="Optional build_id for create-job.")
     parser.add_argument("--input-json", default="{}", help="JSON object string for job input.")
     parser.add_argument("--output-root", default="output", help="Output directory for LocalPipelineWorker BUILD jobs.")
+    parser.add_argument("--export-root", default="preview-export", help="Directory review packages may be written under; the API refuses export paths outside it.")
     parser.add_argument("--repository-root", default=".", help="Workspace root used by health reports (defaults to the current directory).")
     parser.add_argument("--status", default=None, help="list-jobs: only jobs in this status (e.g. FAILED, NEEDS_REVIEW, BLOCKED).")
     parser.add_argument("--attention-only", action="store_true", help="list-jobs: only jobs a human must clear (FAILED, NEEDS_REVIEW, BLOCKED).")
@@ -62,6 +63,8 @@ def main(argv: list[str] | None = None) -> int:
             port=args.port,
             allow_non_loopback=args.allow_non_loopback,
             output_root=args.output_root,
+            export_root=args.export_root,
+            repository_root=args.repository_root,
             database_url=args.database_url,
         )
         return 0

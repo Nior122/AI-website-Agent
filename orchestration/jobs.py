@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from typing import Any, Protocol
 from uuid import uuid4
 
-from .observability import log_event, recorded_duration_seconds, sanitize_diagnostic
+from .observability import log_event, parse_timestamp, recorded_duration_seconds, sanitize_diagnostic
 
 
 #: Stable codes for the reasons a job cannot run. Codes are machine-readable and never
@@ -44,10 +44,18 @@ NEXT_ACTIONS = {
     "TRANSIENT_FAILURE": "The worker reported a transient fault; it will be requeued automatically until the attempt budget runs out.",
     "HUMAN_REVIEW_REQUIRED": "A human decision is required on the recorded output; retry only after the decision is recorded.",
     "HEARTBEAT_EXPIRED": "Check whether the worker is still alive; recover the job (recover-stale) before retrying.",
+    "HEARTBEAT_UNDATED": (
+        "Confirm the claiming worker is gone, run python3 -m orchestration.cli recover-stale, then "
+        "inspect-job --history before retrying: the job never recorded a heartbeat."
+    ),
     "OUTREACH_NOT_READY": "Complete the human preview review; outreach requires an APPROVED decision for OUTREACH_PREPARATION.",
+    "PUBLISH_LEDGER_UNREADABLE": "Repair the publish ledger first: deployment-attempts.json for this build "
+    "exists but cannot be parsed, so no attempt history can be trusted. Preserve the file, reconcile it by "
+    "hand, and only then re-run the deployment check.",
     "PUBLISH_STATE_UNCERTAIN": "Inspect the provider project for an accepted publish, then re-run deliberately with "
-    "resolve_uncertain_publish (--resolve-uncertain-publish on the deployment CLI). Never re-publish blind: a second "
-    "accepted publish is not undoable by this system.",
+    "resolve_uncertain_publish and a note (--resolve-uncertain-publish --resolve-note '...' on the deployment CLI), "
+    "which records who decided and why in the build's deployment-attempts.json before anything is sent. Never "
+    "re-publish blind: a second accepted publish is not undoable by this system.",
     "DEPLOYMENT_RECORD_FAILED": "Record the published preview against the project (TrackingStore.record_deployment) so the audit trail matches the provider.",
     "REAL_PREVIEW_TARGET_MISMATCH": "Use the project's configured isolated_preview_project as the deployment target.",
     "REAL_PREVIEW_TARGET_REQUIRED": "Configure an isolated preview target: python3 -m tracking.cli configure-preview <project_id> --project-name <slug>.",
@@ -338,21 +346,42 @@ class JobService:
         return job
 
     def recover_stale(self, *, older_than_seconds: int = 900, now: datetime | None = None) -> list[dict[str, Any]]:
+        """Move age-expired ``RUNNING`` jobs to ``NEEDS_REVIEW`` so a human decides the retry.
+
+        Age is measured from the newest timestamp the system actually recorded for the claim -
+        ``heartbeat_at``, else ``started_at``, else ``updated_at`` - because a worker interrupted between
+        claiming a job and writing its first heartbeat never sets ``heartbeat_at``. Aging only from the
+        heartbeat left such jobs ``RUNNING`` forever while ``GET /attention`` already reported them stale,
+        so monitoring and recovery disagreed about who owns the fix and no retry was possible (a RUNNING
+        job is not retryable). A RUNNING job with no usable timestamp at all is deliberately *not*
+        recovered: without recorded evidence there is no honest threshold to apply, so it stays visible in
+        the attention report instead of being guessed at.
+        """
         if getattr(self.store, "db_backend", None) is not None and hasattr(self.store, "refresh"):
             self.store.refresh()
         current = now or datetime.now(timezone.utc)
-        recovered = []
+        recovered: list[dict[str, Any]] = []
         for job in list(self.store.state["jobs"].values()):
-            if job["status"] != "RUNNING" or not job.get("heartbeat_at"):
+            if job.get("status") != "RUNNING":
                 continue
-            heartbeat = datetime.fromisoformat(job["heartbeat_at"].replace("Z", "+00:00"))
-            if (current - heartbeat).total_seconds() > older_than_seconds:
-                self._close_execution(job, "NEEDS_REVIEW", result=WorkerResult(
-                    "NEEDS_REVIEW", error="Worker heartbeat expired; inspect before retrying.",
-                    error_type="StaleLease", error_code="HEARTBEAT_EXPIRED",
-                ))
-                recovered.append(self._finish(job, "NEEDS_REVIEW", error="Worker heartbeat expired; inspect before retrying.",
-                                              code="HEARTBEAT_EXPIRED"))
+            basis = next((name for name in ("heartbeat_at", "started_at", "updated_at") if job.get(name)), None)
+            stamp = parse_timestamp(job.get(basis)) if basis else None
+            if stamp is None:
+                continue
+            age = (current - stamp).total_seconds()
+            if age <= older_than_seconds:
+                continue
+            code = "HEARTBEAT_EXPIRED" if basis == "heartbeat_at" else "HEARTBEAT_UNDATED"
+            message = (
+                "Worker heartbeat expired; inspect before retrying."
+                if code == "HEARTBEAT_EXPIRED"
+                else f"The job has been RUNNING for {int(age)}s since {basis} ({job.get(basis)}) without "
+                     "recording a heartbeat; the claiming worker is presumed gone."
+            )
+            self._close_execution(job, "NEEDS_REVIEW", result=WorkerResult(
+                "NEEDS_REVIEW", error=message, error_type="StaleLease", error_code=code,
+            ))
+            recovered.append(self._finish(job, "NEEDS_REVIEW", error=message, code=code))
         return recovered
 
     def retry(

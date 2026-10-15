@@ -18,7 +18,9 @@ from urllib.parse import unquote, urlparse, urlsplit
 from .authorization import (
     APPROVAL_FILENAME,
     DEPLOYMENT_ACTION,
+    UNRESOLVED_ATTEMPT_STATES,
     append_attempt,
+    append_resolution_attempt,
     artifact_sha256,
     classify_prior_attempt,
     read_attempts,
@@ -96,6 +98,8 @@ class VercelDeploymentProvider:
         approve_real_preview: bool = False,
         project_name: str | None = None,
         resolve_uncertain_publish: bool = False,
+        resolution_note: str | None = None,
+        resolved_by: str | None = None,
     ) -> DeploymentResult:
         created_at, build_path = _now(), build_path.resolve()
         manifest = _load_build_manifest(build_path); build_id = str(manifest.get("build_id") or "unknown-build")
@@ -143,8 +147,22 @@ class VercelDeploymentProvider:
                 if not proceed:
                     # An already-published artifact is a redundant request (FAILED); an unresolved
                     # attempt needs an operator to inspect the provider first (NEEDS_REVIEW).
+                    # An unreadable ledger and an unresolved publish both need a human before anything is
+                    # sent; a recorded duplicate publish is an ordinary failure of a redundant request.
                     return self._refuse(build_path, result, code, reason, prior=prior,
-                        status="NEEDS_REVIEW" if code == "PUBLISH_STATE_UNCERTAIN" else "FAILED")
+                        status="NEEDS_REVIEW" if code in {"PUBLISH_STATE_UNCERTAIN", "PUBLISH_LEDGER_UNREADABLE"}
+                        else "FAILED")
+                if resolve_uncertain_publish and prior is not None \
+                        and str(prior.get("deployment_status") or "") in UNRESOLVED_ATTEMPT_STATES:
+                    # `--resolve-uncertain-publish` promises an auditable retry, so the promise is kept
+                    # before the provider is contacted: who decided, what they were deciding about, and the
+                    # reason they gave go into the same append-only ledger. The annotation never restates
+                    # the publish outcome - `published` stays false and the uncertainty remains visible to
+                    # every read path until the provider state is actually confirmed.
+                    resolution = append_resolution_attempt(
+                        build_path, resolves=prior, resolved_by=resolved_by, note=resolution_note,
+                    )
+                    result.metadata["publish_resolution"] = resolution
             else:
                 project = _assert_project_linked(self.repository_root, target_project_name)
             result.vercel_project_id = project["projectId"]
@@ -214,7 +232,13 @@ class VercelDeploymentProvider:
             "prior_attempt": prior,
         })
         _write_manifest(build_path, result)
-        _append_attempt(build_path, result, status, denial_code=code, published=False)
+        try:
+            _append_attempt(build_path, result, status, denial_code=code, published=False)
+        except ValueError as error:
+            # A corrupt or unreadable ledger is reported on the refusal instead of being replaced, and the
+            # refusal still stands: nothing was published and the operator now sees both facts.
+            result.metadata["ledger_write_error"] = str(error)
+            _write_manifest(build_path, result)
         return result
 
 class NeedsReview(Exception): pass

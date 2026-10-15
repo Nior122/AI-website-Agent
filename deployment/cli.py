@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from .deployer import VercelDeploymentProvider
@@ -18,7 +19,8 @@ from .deployer import VercelDeploymentProvider
 DEFAULT_STATE_PATH = Path("data/tracking/state.json")
 
 
-def _authorization(store_path: Path | None, project_id: str | None, build_id: str | None) -> dict:
+def _authorization(store_path: Path | None, project_id: str | None, build_id: str | None,
+                   *, resolve_uncertain_publish: bool = False) -> dict:
     """Consult the durable tracking record; a missing store or project is itself a refusal."""
     if not project_id:
         return {
@@ -39,7 +41,8 @@ def _authorization(store_path: Path | None, project_id: str | None, build_id: st
     from tracking.store import TrackingStore
 
     store = TrackingStore(Path(store_path))
-    gate = store.authorize_preview_deployment(project_id, build_id=build_id)
+    gate = store.authorize_preview_deployment(project_id, build_id=build_id,
+                                             resolve_uncertain_publish=resolve_uncertain_publish)
     gate.pop("approval", None)
     return gate
 
@@ -54,13 +57,31 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--project-id", default=None, help="Tracking project id; required with --execute to verify the human approval.")
     parser.add_argument("--state-path", type=Path, default=DEFAULT_STATE_PATH, help="TrackingStore state file used for the authorization check.")
     parser.add_argument("--build-id", default=None, help="Assert the intended build id; a mismatch with the assigned build is refused.")
-    parser.add_argument("--resolve-uncertain-publish", action="store_true", help="Record an operator resolution of an interrupted publish so a retry may proceed.")
+    parser.add_argument("--resolve-uncertain-publish", action="store_true",
+                        help="Proceed past an unresolved publish attempt. Requires --resolve-note and records "
+                             "the decision (who, when, what was checked) in the build's "
+                             "deployment-attempts.json before the provider is contacted; it never restates "
+                             "the publish outcome and publishes nothing by itself.")
+    parser.add_argument("--resolve-note", default=None,
+                        help="What you checked and why retrying is safe; stored with the resolution record. "
+                             "Required with --resolve-uncertain-publish so the decision is not anonymous.")
+    parser.add_argument("--resolved-by", default=None,
+                        help="Operator identifier attributed to the resolution (default: "
+                             "$AI_WEBSITE_AGENT_OPERATOR_ID). Never treated as verified identity.")
     args = parser.parse_args(argv)
+    if args.resolve_note and not args.resolve_uncertain_publish:
+        parser.error("--resolve-note only applies with --resolve-uncertain-publish; a note with no recorded "
+                     "resolution would be dropped, so nothing was done.")
+    if args.resolve_uncertain_publish and not (args.resolve_note or "").strip():
+        parser.error("--resolve-uncertain-publish requires --resolve-note: proceeding past an unresolved "
+                     "publish is only auditable if the reason is recorded with it, and the attempt ledger "
+                     "is where the next operator looks. Nothing was published or recorded.")
 
     authorization: dict | None = None
     if args.execute:
         try:
-            authorization = _authorization(args.state_path, args.project_id, str(args.build_id) if args.build_id else None)
+            authorization = _authorization(args.state_path, args.project_id, str(args.build_id) if args.build_id else None,
+                                          resolve_uncertain_publish=args.resolve_uncertain_publish)
         except (ValueError, OSError) as error:
             print(json.dumps({"authorized": False, "code": "AUTHORIZATION_UNVERIFIABLE", "reason": str(error)}, indent=2))
             return 1
@@ -80,6 +101,8 @@ def main(argv: list[str] | None = None) -> int:
         approve_real_preview=args.approve_real_preview,
         project_name=args.project_name,
         resolve_uncertain_publish=args.resolve_uncertain_publish,
+        resolution_note=args.resolve_note,
+        resolved_by=args.resolved_by or os.environ.get("AI_WEBSITE_AGENT_OPERATOR_ID"),
     )
     payload = result.to_dict()
     if authorization is not None:

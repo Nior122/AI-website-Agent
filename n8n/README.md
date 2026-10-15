@@ -33,7 +33,10 @@ The API binds only to `127.0.0.1`/`localhost` (refusing public `0.0.0.0` binds) 
 
 ## Local Verification When n8n Binary Is Not Installed
 
-When a live self-hosted n8n runtime (`n8n` CLI or Docker container) is not running in the local environment, `orchestration/n8n_runner.py` (`N8nWorkflowRunner`) validates the exported n8n workflow JSON schema and executes the exact node graph against the live loopback `orchestration.api` HTTP server:
+When a live self-hosted n8n runtime (`n8n` CLI or Docker container) is not running in the local environment, `orchestration/n8n_runner.py` (`N8nWorkflowRunner`) validates the exported n8n workflow JSON schema and executes the exact node graph against the live loopback `orchestration.api` HTTP server. Two rules govern that verifier:
+
+- **Loopback only.** Every HTTP node carries the API bearer token in a header, so a node addressed to a host outside this machine raises `N8nWorkflowTargetRefused` *before the request is built* - a copied or hand-edited export cannot walk the credential to another host. `allow_remote=True` is the explicit opt-out for an operator who means it.
+- **Faults are data.** A refused connection, a timeout, a non-2xx answer, and a body that is not a JSON object each become a structured output on the failing node (`error`, `error_kind`, `error_code`, `http_status`, `status: "FAILED"`) instead of a traceback, so the workflow's own IF branches reach their documented outcome node. The result also carries `execution_status` (`COMPLETED`/`FAILED`) and a collected `errors` list, and the validation step reports a missing or malformed workflow file as an actionable message. None of this retries, schedules, or activates anything.
 
 ```bash
 python3 -m unittest discover -s tests -p "test_n8n_integration.py" -v

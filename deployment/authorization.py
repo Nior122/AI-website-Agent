@@ -32,6 +32,12 @@ APPROVED_DECISION = "APPROVED_FOR_PREVIEW"
 UNRESOLVED_ATTEMPT_STATES = {"PREPARING", "DEPLOYING", "PUBLISH_UNCERTAIN"}
 TERMINAL_ATTEMPT_STATES = {"DEPLOYED", "FAILED", "NEEDS_REVIEW", "PENDING", "BLOCKED"}
 
+#: An operator's explicit decision about an unresolved publish is recorded in the same ledger as the
+#: attempt itself. It is an *annotation*: it states that a human chose how to proceed and who they were,
+#: never that the provider accepted or rejected the publish. Read paths that ask "what did the provider
+#: last report" must skip it (`latest_publish_attempt`), so resolving can never erase the uncertainty.
+UNCERTAIN_RESOLUTION_STATE = "UNCERTAIN_PUBLISH_RESOLVED"
+
 _SAFE_REASON = re.compile(r"[^\x20-\x7e]")
 
 
@@ -253,37 +259,129 @@ def verify_approval(build_dir: Path, *, manifest: dict[str, Any] | None = None) 
 
 
 def append_attempt(build_dir: Path, attempt: dict[str, Any]) -> list[dict[str, Any]]:
-    """Append one publish attempt; history is never rewritten."""
+    """Append one publish attempt; history is never rewritten.
+
+    A ledger that exists but cannot be parsed is refused rather than replaced: silently dropping the
+    unreadable entries would destroy the only record of an in-flight or interrupted publish.
+    """
     build_dir = Path(build_dir)
     build_dir.mkdir(parents=True, exist_ok=True)
     path = build_dir / ATTEMPTS_FILENAME
-    history: list[dict[str, Any]] = []
-    if path.is_file():
-        try:
-            parsed = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(parsed, list):
-                history = [item for item in parsed if isinstance(item, dict)]
-        except (OSError, json.JSONDecodeError):
-            history = []
+    history, problem = load_attempts(build_dir)
+    if problem:
+        raise ValueError(
+            f"Refusing to append to the publish ledger because {problem} Preserve the file and reconcile "
+            "the attempts by hand; overwriting it would erase the evidence of an unresolved publish."
+        )
     history.append(dict(attempt))
     path.write_text(json.dumps(history, indent=2) + "\n", encoding="utf-8")
     return history
 
 
-def read_attempts(build_dir: Path) -> list[dict[str, Any]]:
+def load_attempts(build_dir: Path) -> tuple[list[dict[str, Any]], str | None]:
+    """Return ``(entries, problem)`` for one build's publish ledger.
+
+    ``problem`` is ``None`` when the ledger is absent or parseable. A file that exists but cannot be read
+    is *not* the same as "no attempt was recorded": treating it that way would let a damaged audit trail
+    masquerade as a clean slate and license a blind republish.
+    """
     path = Path(build_dir) / ATTEMPTS_FILENAME
     if not path.is_file():
-        return []
+        return [], None
     try:
-        parsed = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
-    return [item for item in parsed if isinstance(item, dict)] if isinstance(parsed, list) else []
+        raw = path.read_text(encoding="utf-8")
+    except OSError as error:
+        return [], f"{path} exists but could not be read ({error.__class__.__name__})."
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as error:
+        return [], f"{path} is not valid JSON ({error.msg} at line {error.lineno})."
+    if not isinstance(parsed, list):
+        return [], f"{path} must contain a JSON list of attempt records, got {type(parsed).__name__}."
+    return [item for item in parsed if isinstance(item, dict)], None
+
+
+def read_attempts(build_dir: Path) -> list[dict[str, Any]]:
+    attempts, _problem = load_attempts(build_dir)
+    return attempts
 
 
 def latest_attempt(build_dir: Path) -> dict[str, Any] | None:
     history = read_attempts(build_dir)
     return history[-1] if history else None
+
+
+def is_resolution_annotation(attempt: dict[str, Any]) -> bool:
+    return str(attempt.get("deployment_status") or "") == UNCERTAIN_RESOLUTION_STATE
+
+
+def is_bookkeeping_entry(attempt: dict[str, Any]) -> bool:
+    """True for ledger lines that record a local decision rather than a provider outcome.
+
+    Two kinds exist: an operator resolution annotation, and a gate refusal (``denial_code`` is set when
+    the publish was blocked before anything was sent). Neither says anything about what the provider did,
+    so neither may be read as the end of an in-flight publish. Treating a refusal as a terminal result was
+    a real bypass: the refusal written for an uncertain attempt became "the latest attempt", the next run
+    saw a resolved history, and the publish was retried with no ``--resolve-uncertain-publish`` at all.
+    """
+    return is_resolution_annotation(attempt) or bool(attempt.get("denial_code"))
+
+
+def is_publish_report(attempt: dict[str, Any]) -> bool:
+    return not is_bookkeeping_entry(attempt)
+
+
+def latest_publish_attempt(build_dir: Path) -> dict[str, Any] | None:
+    """Last ledger entry that reports what the provider was asked or answered.
+
+    Operator resolutions and gate refusals are skipped: an uncertain publish stays uncertain in every
+    "what is the current state" answer until the provider state is actually confirmed.
+    """
+    for attempt in reversed(read_attempts(build_dir)):
+        if is_publish_report(attempt):
+            return attempt
+    return None
+
+
+def operator_resolutions(build_dir: Path, *, limit: int = 5) -> list[dict[str, Any]]:
+    """Most recent operator decisions recorded against this build's publish attempts."""
+    resolutions = [attempt for attempt in read_attempts(build_dir) if is_resolution_annotation(attempt)]
+    return list(reversed(resolutions[-limit:]))
+
+
+def append_resolution_attempt(
+    build_dir: Path,
+    *,
+    resolves: dict[str, Any] | None,
+    resolved_by: str | None,
+    note: str | None,
+) -> dict[str, Any]:
+    """Record an operator's explicit decision to proceed past an unresolved publish attempt.
+
+    The entry says who decided, what they were deciding about, and that nothing has been confirmed with
+    the provider. It never restates the publish outcome.
+    """
+    resolves = resolves or {}
+    safe_note = _SAFE_REASON.sub(" ", " ".join(str(note or "").split())).strip()[:400]
+    record: dict[str, Any] = {
+        "deployment_status": UNCERTAIN_RESOLUTION_STATE,
+        "resolves_attempt": resolves.get("attempt"),
+        "resolves_status": resolves.get("deployment_status"),
+        "deployment_id": resolves.get("deployment_id"),
+        "build_id": resolves.get("build_id"),
+        "lead_id": resolves.get("lead_id"),
+        "artifact_sha256": resolves.get("artifact_sha256"),
+        "vercel_project_id": resolves.get("vercel_project_id"),
+        "resolved_by": _SAFE_REASON.sub(" ", " ".join(str(resolved_by or "unknown").split())).strip()[:120] or "unknown",
+        "resolution_note": safe_note or "No operator note was supplied.",
+        # Explicit, and deliberately not derived from the operator's intent: recording a resolution is
+        # not evidence about the provider.
+        "published": False,
+        "provider_state_verified": False,
+        "created_at": _now_iso(),
+    }
+    append_attempt(build_dir, record)
+    return record
 
 
 def classify_prior_attempt(
@@ -299,10 +397,20 @@ def classify_prior_attempt(
     the same project is a duplicate request. An attempt whose terminal state was never recorded may
     have reached the provider, so it is refused until an operator resolves it explicitly.
     """
-    attempt = latest_attempt(build_dir)
+    attempts, problem = load_attempts(build_dir)
+    if problem:
+        return (
+            False,
+            "PUBLISH_LEDGER_UNREADABLE",
+            f"{problem} The publish history cannot be trusted, so no new publish is authorized: repair or "
+            f"reconcile {ATTEMPTS_FILENAME} for this build first.",
+            None,
+        )
+    attempt = next((item for item in reversed(attempts) if is_publish_report(item)), None)
     if not attempt:
         return (True, "NO_PRIOR_ATTEMPT", "", None)
     state = str(attempt.get("deployment_status") or "")
+    resolutions = [item for item in attempts if is_resolution_annotation(item)]
     same_artifact = bool(artifact_sha) and attempt.get("artifact_sha256") == artifact_sha
     same_target = bool(project_id) and attempt.get("vercel_project_id") == project_id
     if state == "DEPLOYED" and same_artifact and same_target:
@@ -314,13 +422,30 @@ def classify_prior_attempt(
             f"{ATTEMPTS_FILENAME} and the project review history instead.",
             attempt,
         )
-    if state in UNRESOLVED_ATTEMPT_STATES and not resolve_uncertain_publish:
+    if state in UNRESOLVED_ATTEMPT_STATES:
+        where = (f"attempt {attempt.get('attempt')} of deployment {attempt.get('deployment_id') or '<unknown>'} "
+                 f"for project {attempt.get('vercel_project_id') or '<unknown>'}")
+        prior = (f" {len(resolutions)} operator resolution(s) are already recorded against this build; "
+                 "re-reading them is cheaper than guessing." if resolutions else "")
+        if resolve_uncertain_publish:
+            # Proceeding is allowed, and the decision is what makes it auditable: the caller records an
+            # annotation naming the operator and their stated reason before anything is sent.
+            return (
+                True,
+                "PRIOR_ATTEMPT_RESOLUTION_RECORDED",
+                f"Proceeding past the unresolved attempt ({where}). The resolution must be recorded in "
+                f"{ATTEMPTS_FILENAME} with the operator id and note before the provider is contacted{prior}",
+                attempt,
+            )
         return (
             False,
             "PUBLISH_STATE_UNCERTAIN",
-            f"The previous publish attempt ended in state '{state}' without a recorded result, so the provider may "
-            "already have accepted it. Inspect the preview project, then re-run with "
-            "--resolve-uncertain-publish to record a deliberate retry.",
+            f"The previous publish attempt ({where}, recorded {attempt.get('created_at')}) ended in state "
+            f"'{state}' without a recorded result, so the provider may already have accepted it{prior}. "
+            f"Read {ATTEMPTS_FILENAME} and check the preview project in the provider console, then either "
+            "record the true outcome in the project history or re-run with --resolve-uncertain-publish "
+            "--resolve-note '<what you checked and why retrying is safe>'; that records your decision and "
+            "still publishes nothing by itself.",
             attempt,
         )
     return (True, "PRIOR_ATTEMPT_RESOLVED", "", attempt)
@@ -336,13 +461,26 @@ def publish_outcome(build_dir: Path) -> dict[str, Any]:
     provider, so it can be called from a health endpoint without side effects.
     """
     build_dir = Path(build_dir)
-    attempts = read_attempts(build_dir)
+    attempts, ledger_problem = load_attempts(build_dir)
     manifest = _read_json(build_dir / "deployment.json")
+    resolutions = [attempt for attempt in attempts if is_resolution_annotation(attempt)]
+    # "What did the provider last report" ignores operator resolutions and gate refusals on purpose: they
+    # record local decisions, so they can neither resolve a publish nor close an unresolved one.
     latest = attempts[-1] if attempts else None
+    publish_latest = next((item for item in reversed(attempts) if is_publish_report(item)), None)
+    publish_state = str((publish_latest or {}).get("deployment_status") or "")
     state = str((latest or {}).get("deployment_status") or "")
     published = [attempt for attempt in attempts if attempt.get("deployment_status") == "DEPLOYED"]
+    shadowed_by_refusal = bool(publish_latest) and publish_latest is not latest
     outcome: tuple[str, str, str]
-    if published:
+    if ledger_problem:
+        outcome = (
+            "EVIDENCE_UNREADABLE",
+            "PUBLISH_LEDGER_UNREADABLE",
+            f"{ledger_problem} This is reported instead of 'no publish attempted': the history has to be "
+            "repaired before any publish decision can be made.",
+        )
+    elif published:
         last = published[-1]
         matches_manifest = bool(manifest) and str((manifest or {}).get("deployment_status")) == "DEPLOYED"
         outcome = (
@@ -351,14 +489,18 @@ def publish_outcome(build_dir: Path) -> dict[str, Any]:
             "A successful publish was recorded for this build. Confirming the live URL is a separate, "
             "manual step: this report does not contact the provider.",
         )
-    elif state in UNRESOLVED_ATTEMPT_STATES:
+    elif publish_state in UNRESOLVED_ATTEMPT_STATES:
+        noted = (f" {len(resolutions)} resolution(s) are recorded for this build (most recent: "
+                 f"{(resolutions[-1] or {}).get('resolved_by')}). ") if resolutions else " "
+        if shadowed_by_refusal:
+            noted += (" A later refusal was logged; it did not clear this attempt. ")
         outcome = (
             "UNCERTAIN",
             "PUBLISH_STATE_UNCERTAIN",
-            f"The last attempt is recorded as '{state}' with no terminal result, so the provider may have "
-            "accepted the publish. Inspect the preview project, then re-run the deployment with "
-            "--resolve-uncertain-publish (resolve_uncertain_publish) recorded deliberately - never "
-            "re-publish blindly.",
+            f"The last provider-facing attempt is recorded as '{publish_state}' with no terminal result, so the provider may have "
+            f"accepted the publish.{noted}Verify the preview project with the provider, then either record the "
+            "confirmed outcome or re-run the deployment with --resolve-uncertain-publish plus --resolve-note, "
+            "which records that operator decision before publishing. Never re-publish blindly.",
         )
     elif state:
         outcome = (
@@ -383,6 +525,16 @@ def publish_outcome(build_dir: Path) -> dict[str, Any]:
         )
     state_evidence = {
         "attempt_count": len(attempts),
+        "ledger_readable": ledger_problem is None,
+        "latest_publish_attempt": publish_latest,
+        "ledger_problem": ledger_problem,
+        "resolution_count": len(resolutions),
+        "latest_resolution": {
+            key: (resolutions[-1] or {}).get(key)
+            for key in ("resolves_attempt", "resolved_by", "resolution_note", "created_at", "published",
+                        "provider_state_verified")
+            if (resolutions[-1] or {}).get(key) is not None
+        } if resolutions else None,
         "latest_attempt": {
             key: (latest or {}).get(key)
             for key in ("attempt", "deployment_status", "deployment_id", "build_id", "deployment_url",

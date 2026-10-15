@@ -24,7 +24,7 @@ A completed build, a `PASS` validation, an approved *plan*, or a UI/n8n conditio
 | `output/<lead>/<build>/deployment-approval.json` | The approved decision for exactly one build, validation, artifact SHA-256, and action, with a self digest. Written by `tracking.cli review`/`TrackingStore.record_review`; revoked automatically by `REJECTED`, `CHANGES_REQUESTED`, an explicit hold, a superseding build, and by the recording of the deployment it authorized (one approval, one publish). |
 | `output/<lead>/<build>/deployment-attempts.json` | Append-only ledger of publish attempts: `DEPLOYING` before the provider is invoked, then the terminal state. Refusals are recorded too, with `published: false`. |
 
-`deployment/authorization.py` implements both, and `verify_approval()` returns a specific machine-readable code for every refusal: `APPROVAL_MISSING`, `APPROVAL_UNREADABLE`, `APPROVAL_TAMPERED`, `APPROVAL_REVOKED`, `APPROVAL_INVALID_DECISION`, `APPROVAL_WRONG_ACTION`, `APPROVAL_BUILD_MISMATCH`, `APPROVAL_LEAD_MISMATCH`, `APPROVAL_VALIDATION_MISMATCH`, `VALIDATION_NOT_PASSED`, `APPROVAL_ARTIFACT_STALE`, `BUILD_ID_UNRECORDED`, plus the ledger verdicts `DEPLOYMENT_ALREADY_RECORDED` and `PUBLISH_STATE_UNCERTAIN`. Both files are build-local artifacts under the ignored `output/` tree and contain no credentials.
+`deployment/authorization.py` implements both, and `verify_approval()` returns a specific machine-readable code for every refusal: `APPROVAL_MISSING`, `APPROVAL_UNREADABLE`, `APPROVAL_TAMPERED`, `APPROVAL_REVOKED`, `APPROVAL_INVALID_DECISION`, `APPROVAL_WRONG_ACTION`, `APPROVAL_BUILD_MISMATCH`, `APPROVAL_LEAD_MISMATCH`, `APPROVAL_VALIDATION_MISMATCH`, `VALIDATION_NOT_PASSED`, `APPROVAL_ARTIFACT_STALE`, `BUILD_ID_UNRECORDED`, plus the ledger verdicts `DEPLOYMENT_ALREADY_RECORDED`, `PUBLISH_STATE_UNCERTAIN` and `PUBLISH_LEDGER_UNREADABLE`. Both files are build-local artifacts under the ignored `output/` tree and contain no credentials.
 
 Because `TrackingStore.authorize_preview_deployment(project_id)` answers the same question from the durable record (project ownership, assigned build, PASS validation, stage, approval binding, artifact presence, prior attempts), every entry point can report the identical reason before touching the provider. It reports authorization; it never grants it.
 
@@ -47,7 +47,7 @@ python -m deployment.cli --build output/<lead-id>/<build-id> --execute --project
 
 `--execute` now requires `--project-id` (plus `--state-path`, default `data/tracking/state.json`) so the command can consult the durable tracking record before anything is staged. `deploy-check` is read-only: it prints the same gate verdict the publish boundary will reach, with the exact blocking code and the review command that resolves it, and publishes nothing. If the gate refuses, `deployment.cli` exits `1` with `provider_cli_invoked: false` and no `deployment.json` is written.
 
-`--build-id <id>` asserts which build you believe you are deploying; a mismatch with the project's assigned build is refused instead of silently deploying the newest artifact. `--resolve-uncertain-publish` is the only override for an interrupted publish, and it merely records a deliberate operator resolution — it never fakes a result.
+`--build-id <id>` asserts which build you believe you are deploying; a mismatch with the project's assigned build is refused instead of silently deploying the newest artifact. `--resolve-uncertain-publish` (with `--resolve-note`) is the only override for an interrupted publish: it records a deliberate, attributed operator decision in the build's attempt ledger before the provider is contacted, and it never fakes a result or restates the publish outcome - see *Resolving an uncertain publish* below.
 
 After a successful execution, the recording half stays in the store: the worker calls `TrackingStore.record_deployment`, which consumes the approval (the capability becomes `REVOKED` with the reason `approval consumed by recorded deployment ...`) so the same build cannot be published twice without a new human decision.
 
@@ -70,6 +70,23 @@ Do not use `--prod`, `vercel domains`, or an account upgrade as part of this wor
 `PENDING → PREPARING → DEPLOYING → DEPLOYED`; failures end as `FAILED`; review-gated or unauthorized builds end as `NEEDS_REVIEW`.
 
 A publish that stops answering mid-flight is **not** recorded as a failure. If the provider CLI times out or returns no verifiable result, the attempt ends as `PUBLISH_UNCERTAIN`: the preview may already exist, so the next attempt is refused with `PUBLISH_STATE_UNCERTAIN` until an operator inspects the Vercel project and either records the real outcome or re-runs with `--resolve-uncertain-publish`. Recovery therefore never guesses, never double-publishes, and never assumes that an interrupted call did nothing.
+
+The refusal names the evidence rather than restating a generic warning: the attempt number, deployment id, target project, and the recorded time, plus both ways out. `deploy-check` reports the same condition and points at the resolution command instead of the approval command when the blockage is the publish state.
+
+### Resolving an uncertain publish (explicit, recorded, not standing permission)
+
+```bash
+python3 -m deployment.cli --build output/<lead-id>/<build-id> --execute --project-id <project_id> \
+  --resolve-uncertain-publish --resolve-note "Provider project list shows no deployment for this artifact hash; retrying once." \
+  --resolved-by chioma@example.com
+```
+
+- `--resolve-note` is **required** with `--resolve-uncertain-publish`; an anonymous "just retry it" is refused before anything changes, and `--resolve-note` without the flag is refused too (a note that would be silently dropped is a worse outcome than an error). `--resolved-by` defaults to `$AI_WEBSITE_AGENT_OPERATOR_ID`; an attribution string is a claim about who typed it, never verified identity.
+- Before the provider is contacted, one entry is appended to `deployment-attempts.json`: `deployment_status: "UNCERTAIN_PUBLISH_RESOLVED"`, the attempt and status it resolves, `resolved_by`, `resolution_note`, `created_at`, and `published: false` / `provider_state_verified: false`. It records a *decision*, not an outcome. If the ledger cannot be written, the publish does not proceed.
+- The entry is an annotation, so read paths skip it: `publish_outcome()` still answers `UNCERTAIN` / `PUBLISH_STATE_UNCERTAIN` (with `resolution_count` and `latest_resolution` alongside it), `latest_publish_attempt()` still returns the unresolved provider-facing entry, and a *later* run is refused again unless the flag is given again. A resolution is never standing permission.
+- The gate refusal that an uncertain publish produces (`NEEDS_REVIEW` plus a `denial_code` entry in the same ledger) is bookkeeping, not a terminal publish result, so it cannot clear the uncertainty. An earlier build read "the latest line in the ledger" and would let the next run republish freely; both `classify_prior_attempt()` and `publish_outcome()` now decide from the last entry that actually reports what the provider was asked.
+- A `deployment-attempts.json` that exists but does not parse is reported as `PUBLISH_LEDGER_UNREADABLE` and refuses the publish: damaged history is never treated as "nothing attempted", and appending refuses rather than replacing the file.
+- The worker path is the same boundary: a `DEPLOY` job input of `{"resolve_uncertain_publish": true, "resolve_note": "...", "resolved_by": "..."}` records the annotation first, and the durable `authorize_preview_deployment()` pre-check only steps aside for that explicit flag - it never records or publishes anything itself.
 
 `PENDING` (dry run) is a verification record, not a deployment: it never advances a project stage and `TrackingStore.record_deployment` refuses to store anything but `DEPLOYED`. A retried job whose build is already `DEPLOYED` returns `ALREADY_DEPLOYED_REPEAT_SKIPPED` and does not call the provider again.
 

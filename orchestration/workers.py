@@ -1,5 +1,6 @@
 """Provider-neutral worker registry, routing, leases, execution audit, and mock worker."""
 from __future__ import annotations
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
@@ -546,7 +547,8 @@ class LocalPipelineWorker:
                 # publish; a real publish may only proceed for the assigned, PASS-validated build that
                 # an explicit human approval still covers. The provider re-verifies this itself, so this
                 # check only produces a clearer refusal earlier - it is not the boundary.
-                gate = store.authorize_preview_deployment(project_id, build_id=build_id)
+                gate = store.authorize_preview_deployment(project_id, build_id=build_id,
+                                                         resolve_uncertain_publish=bool(job_input.get("resolve_uncertain_publish")))
                 if gate.get("skip_publish"):
                     return WorkerResult(
                         "COMPLETED",
@@ -583,6 +585,10 @@ class LocalPipelineWorker:
             }
             if not dry_run:
                 deploy_kwargs["resolve_uncertain_publish"] = bool(job_input.get("resolve_uncertain_publish"))
+                # A worker-driven resolution is attributed to the operator named in the job or in the
+                # environment; it is recorded as a claim, never as verified identity.
+                deploy_kwargs["resolution_note"] = job_input.get("resolve_note")
+                deploy_kwargs["resolved_by"] = job_input.get("resolved_by") or os.environ.get("AI_WEBSITE_AGENT_OPERATOR_ID")
             dep_res = provider.deploy(build_dir, **deploy_kwargs)
             dep_out = {
                 **dep_res.to_dict(),

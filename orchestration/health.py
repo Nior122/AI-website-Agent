@@ -23,7 +23,7 @@ from typing import Any
 from tracking.database import is_production_mode, sanitize_db_error
 
 from .jobs import ATTENTION_STATUSES, NEXT_ACTIONS, OPERATOR_ATTENTION_STATUSES, next_action_for
-from .observability import recorded_age_seconds, sanitize_diagnostic, url_host
+from .observability import recorded_age_seconds, redact_local_paths, sanitize_diagnostic, url_host
 
 #: A RUNNING job with no heartbeat newer than this is reported as needing operator attention.
 #: It matches the default ``recover-stale`` threshold so the report and the recovery command agree.
@@ -87,7 +87,8 @@ def job_attention_items(store, *, now: datetime | None = None, limit: int = ATTE
     """
     jobs = [job for job in (store.state.get("jobs") or {}).values() if isinstance(job, dict)]
     items: list[dict] = []
-    counts = {"running": 0, "stale_running": 0, "needs_review": 0, "blocked": 0, "failed": 0, "retry_exhausted": 0}
+    counts = {"running": 0, "stale_running": 0, "undated_running": 0, "needs_review": 0, "blocked": 0,
+              "failed": 0, "retry_exhausted": 0}
     for job in jobs:
         status = str(job.get("status") or "UNKNOWN")
         attempts = int(job.get("attempts") or 0)
@@ -97,11 +98,14 @@ def job_attention_items(store, *, now: datetime | None = None, limit: int = ATTE
         if status == "RUNNING":
             counts["running"] += 1
             age = recorded_age_seconds(job.get("heartbeat_at") or job.get("started_at"), now=now)
-            if age is not None and age > STALE_RUNNING_SECONDS:
-                counts["stale_running"] += 1
+            if age is None:
+                # Nothing recorded when the claim happened, so no staleness threshold can be applied
+                # honestly - and recovery must not guess. That is exactly why the job belongs here: an
+                # invisible RUNNING job would never be looked at, while `recover-stale` refuses it.
+                counts["undated_running"] += 1
                 items.append({
-                    "kind": "stale_job",
-                    "code": "HEARTBEAT_EXPIRED",
+                    "kind": "undated_job",
+                    "code": "HEARTBEAT_UNDATED",
                     "job_id": job.get("job_id"),
                     "job_type": job.get("job_type"),
                     "project_id": job.get("project_id"),
@@ -109,12 +113,40 @@ def job_attention_items(store, *, now: datetime | None = None, limit: int = ATTE
                     "build_id": job.get("build_id"),
                     "execution_id": job.get("execution_id"),
                     "status": status,
-                    "message": f"No heartbeat recorded for {age}s (last: {job.get('heartbeat_at') or job.get('started_at')}).",
+                    "message": "RUNNING with no recorded heartbeat, started_at, or updated_at, so its age "
+                               "cannot be established from the ledger.",
+                    "attempts": attempts,
+                    "max_attempts": maximum,
+                    "age_seconds": None,
+                    "recorded_at": None,
+                    "next_action": NEXT_ACTIONS["HEARTBEAT_UNDATED"],
+                })
+                continue
+            if age > STALE_RUNNING_SECONDS:
+                counts["stale_running"] += 1
+                # The same code choice `recover_stale` makes, from the same evidence: a job whose worker
+                # never reached its first heartbeat is a different investigation from one that stopped
+                # beating mid-run, and the next step an operator is told to take differs too.
+                stale_code = "HEARTBEAT_EXPIRED" if job.get("heartbeat_at") else "HEARTBEAT_UNDATED"
+                items.append({
+                    "kind": "stale_job",
+                    "code": stale_code,
+                    "job_id": job.get("job_id"),
+                    "job_type": job.get("job_type"),
+                    "project_id": job.get("project_id"),
+                    "lead_id": job.get("lead_id"),
+                    "build_id": job.get("build_id"),
+                    "execution_id": job.get("execution_id"),
+                    "status": status,
+                    "message": (f"No heartbeat recorded for {age}s (last: {job.get('heartbeat_at') or job.get('started_at')})."
+                                if job.get("heartbeat_at") else
+                                f"RUNNING for {age}s since it was claimed at {job.get('started_at')} with no "
+                                "heartbeat ever recorded, so the worker is presumed to have died on claim."),
                     "attempts": attempts,
                     "max_attempts": maximum,
                     "age_seconds": age,
                     "recorded_at": job.get("heartbeat_at") or job.get("started_at"),
-                    "next_action": NEXT_ACTIONS["HEARTBEAT_EXPIRED"],
+                    "next_action": NEXT_ACTIONS[stale_code],
                 })
             continue
         # A failure with attempt budget left is the system's own business: it is still listed by
@@ -222,6 +254,16 @@ def project_attention_items(store, *, limit: int = ATTENTION_LIMIT) -> list[dict
     return items[:limit]
 
 
+def _relative_path(value: Any, root: Path) -> str | None:
+    """Repository-relative form of a recorded path, or just its file name when it lies outside the workspace."""
+    if not value:
+        return None
+    try:
+        return Path(str(value)).resolve().relative_to(Path(root).resolve()).as_posix()
+    except (OSError, ValueError):
+        return Path(str(value)).name
+
+
 def deployment_report(store, *, repository_root: Path | str = ".", include_evidence: bool = True) -> dict:
     """Classify every project's publish state from recorded evidence only.
 
@@ -283,8 +325,29 @@ def deployment_report(store, *, repository_root: Path | str = ".", include_evide
                 "code": ledger_state["code"],
                 "attempt_count": ledger_state.get("attempt_count"),
                 "latest_attempt": latest,
-                "next_action": ledger_state.get("next_action"),
+                # `redact_local_paths` here, not in `publish_outcome`: the same report is printed by the CLI
+                # and served over HTTP, and a network answer must not map the host filesystem. The
+                # repository-relative `ledger_path` below carries the actionable location in both surfaces.
+                "next_action": redact_local_paths(ledger_state.get("next_action")),
+                # Naming the file an operator has to read, in repository-relative form: this report is also
+                # served over HTTP, where an absolute path would map the host filesystem.
+                "ledger_path": _relative_path(ledger_state.get("ledger"), root),
             })
+            # An operator decision is reported alongside the unresolved publish, never instead of it:
+            # "someone decided to retry" is not the same fact as "the provider accepted the publish".
+            if ledger_state.get("resolution_count"):
+                entry["operator_resolution_count"] = ledger_state["resolution_count"]
+                resolution = ledger_state.get("latest_resolution")
+                if isinstance(resolution, dict):
+                    entry["latest_operator_resolution"] = {
+                        key: (url_host(value) if key.endswith("deployment_url") else
+                              sanitize_diagnostic(value) if key in ("resolution_note",) else value)
+                        for key, value in resolution.items()
+                    }
+            if ledger_state.get("ledger_readable") is False:
+                # The problem text names a file; keep it repository-relative so a monitoring answer
+                # describes the workspace without mapping the host filesystem.
+                entry["ledger_problem"] = redact_local_paths(ledger_state.get("ledger_problem"))
         else:
             entry["state"] = "NOT_ATTEMPTED" if not deployment else "SUPERSEDED"
             entry["code"] = "NO_PUBLISH_RECORD" if not deployment else "DEPLOYMENT_SUPERSEDED_BY_NEW_BUILD"
@@ -297,8 +360,14 @@ def deployment_report(store, *, repository_root: Path | str = ".", include_evide
             attention.append(entry)
     # Execution records that already reported an uncertain publish, even when no local build
     # directory survives to read a ledger from.
+    reported_projects = {item.get("project_id") for item in attention}
     for execution in (store.state.get("executions") or {}).values():
         if not isinstance(execution, dict):
+            continue
+        # Every execution that reported an uncertain publish belongs here. Stopping after the first one
+        # would understate the work an operator has to do, and a project whose build directory survives
+        # is already covered by its ledger entry above.
+        if execution.get("project_id") in reported_projects:
             continue
         if str(execution.get("error_code") or "") in {"PUBLISH_STATE_UNCERTAIN", "PUBLISH_UNCERTAIN"}:
             attention.append({
@@ -313,7 +382,7 @@ def deployment_report(store, *, repository_root: Path | str = ".", include_evide
                 "next_action": NEXT_ACTIONS["PUBLISH_STATE_UNCERTAIN"],
                 "provider_contacted": True,
             })
-            break
+            reported_projects.add(execution.get("project_id"))
     return {
         "status": "degraded" if attention else "healthy",
         "outcomes": outcomes,

@@ -17,6 +17,7 @@ from deployment.authorization import (
     approval_path,
     artifact_sha256,
     read_approval,
+    latest_publish_attempt,
     read_attempts,
     revoke_approval,
     verify_approval,
@@ -1340,7 +1341,8 @@ class TrackingStore:
         result.update(extra)
         return result
 
-    def authorize_preview_deployment(self, project_id: str, *, build_id: str | None = None, action: str = PREVIEW_DEPLOYMENT_ACTION) -> dict:
+    def authorize_preview_deployment(self, project_id: str, *, build_id: str | None = None, action: str = PREVIEW_DEPLOYMENT_ACTION,
+                                     resolve_uncertain_publish: bool = False) -> dict:
         """Answer 'may this exact build be published right now?' for every server-side entry point.
 
         This is the durable audit-side half of the deployment gate: it reads project ownership,
@@ -1511,7 +1513,10 @@ class TrackingStore:
             "validation": {"validation_id": validation_id, "status": "PASS"},
         })
         attempts = read_attempts(build_dir)
-        latest_attempt = attempts[-1] if attempts else None
+        # The gate reads the last entry that reports what the provider was told. An operator resolution is
+        # an annotation on that history, never proof that the publish finished, so it must not be able to
+        # flip this check from refusal to permission by being the most recent line in the ledger.
+        latest_attempt = latest_publish_attempt(build_dir)
         extra = {
             "build_id": assigned,
             "validation_id": validation_id,
@@ -1529,14 +1534,27 @@ class TrackingStore:
         }
         if not authorized:
             return self._authorization_result(False, code, reason, **extra)
-        if latest_attempt and str(latest_attempt.get("deployment_status") or "") in {"PREPARING", "DEPLOYING", "PUBLISH_UNCERTAIN"}:
+        publish_state_uncertain = str((latest_attempt or {}).get("deployment_status") or "") in {
+            "PREPARING", "DEPLOYING", "PUBLISH_UNCERTAIN"}
+        if publish_state_uncertain and not resolve_uncertain_publish:
             return self._authorization_result(
                 False, "PUBLISH_STATE_UNCERTAIN",
                 f"The previous publish attempt ended in state '{latest_attempt.get('deployment_status')}' without a "
-                "recorded result; the provider may already have accepted it. Inspect the preview project, then retry "
-                "with an explicit resolution (deployment CLI --resolve-uncertain-publish).",
+                "recorded result; the provider may already have accepted it. Inspect the preview project with the "
+                "provider, then re-run the deployment with --resolve-uncertain-publish --resolve-note '<what you "
+                "checked>'. A resolution recorded earlier is not standing permission: the flag is required for each "
+                "attempt precisely so an uncertain publish is never retried by assumption.",
                 **extra,
             )
+        resolution_caveat = ""
+        if publish_state_uncertain:
+            # Reached only from an explicit operator decision (`--resolve-uncertain-publish`, or the same
+            # flag in a DEPLOY job's input). This gate does not publish and does not record anything: the
+            # publish step re-verifies the approval, writes the resolution into the attempt ledger, and
+            # refuses on its own if that record cannot be written. Without this branch the flag would be
+            # unreachable from the CLI and the worker, and the documented recovery path would dead-end.
+            resolution_caveat = (" Re-running deliberately: the publish step records your resolution in "
+                                 "deployment-attempts.json before contacting the provider.")
         if already_deployed:
             return self._authorization_result(
                 True, "ALREADY_DEPLOYED",
@@ -1548,7 +1566,8 @@ class TrackingStore:
         return self._authorization_result(
             True, "APPROVED_FOR_DEPLOYMENT",
             f"Build {assigned} is explicitly approved for {action} and may be published to preview."
-            + ((" Reviewer notes: " + notes) if notes else ""),
+            + ((" Reviewer notes: " + notes) if notes else "") + resolution_caveat,
+            publish_state_uncertain=publish_state_uncertain,
             **extra,
         )
 

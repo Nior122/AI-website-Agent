@@ -378,13 +378,23 @@ def run_cli(
                     "Nothing was published by this check. It only reports what a real deployment would be allowed to do."
                 ),
                 "prior_attempts": gate.get("prior_attempts"),
+                # A blocked publish has different causes and different fixes; naming the wrong command
+                # here would send an operator off to re-approve a build whose real problem is an
+                # unresolved provider answer.
                 "next_command": (
                     None
                     if gate.get("authorized")
-                    else "python3 -m tracking.cli review "
-                         f"{args.project_id} --decision APPROVED_FOR_PREVIEW --action PREVIEW_DEPLOYMENT "
-                         "--notes \"...\" --confirm "
-                         f"{args.project_id}:{gate.get('build_id')}:APPROVED_FOR_PREVIEW"
+                    else (
+                        "python3 -m deployment.cli --build <build directory> --execute --project-id "
+                        f"{args.project_id} --resolve-uncertain-publish --resolve-note \"<what you checked "
+                        "with the provider and why retrying is safe>\" (records the decision, then retries "
+                        "once)"
+                        if gate.get("code") == "PUBLISH_STATE_UNCERTAIN"
+                        else "python3 -m tracking.cli review "
+                             f"{args.project_id} --decision APPROVED_FOR_PREVIEW --action PREVIEW_DEPLOYMENT "
+                             "--notes \"...\" --confirm "
+                             f"{args.project_id}:{gate.get('build_id')}:APPROVED_FOR_PREVIEW"
+                    )
                 ),
             })
             out_stream.write(json.dumps(payload, indent=2) + "\n")

@@ -1,25 +1,114 @@
 """Local verifier and graph runner for exported n8n workflow JSON files.
 
-Because the sandbox environment does not have a live n8n binary/Node.js runtime
-installed, this runner parses the actual exported n8n workflow JSON definitions
-(`nodes`, `connections`, `parameters`, and `={{ ... }}` expressions) and
-executes their HTTP requests over loopback (`127.0.0.1`) against the running
-`orchestration.api` server.
+Because this environment has no live n8n binary/Node.js runtime, the runner parses the actual exported
+n8n workflow JSON definitions (`nodes`, `connections`, `parameters`, and `={{ ... }}` expressions) and
+executes their HTTP requests over loopback (`127.0.0.1`) against the running `orchestration.api` server.
+It is a *verifier*, not an n8n host: nothing is scheduled, activated, or retried here.
+
+Two rules keep the verifier safe to point at a real workspace:
+
+- **Loopback only.** Every HTTP node carries the API bearer token in a header, so a workflow that names
+  a non-loopback host is refused before any request is made - a copied or hand-edited export can never
+  walk the credential off the machine. `allow_remote=True` exists for an operator who deliberately wants
+  that and is explicit about it.
+- **Failures are answers, not crashes.** A refused connection, a timeout, an HTTP error status, and a
+  body that is not JSON each become a structured output on the failing node (`error`, `error_kind`,
+  `error_code`, `http_status`, `status: "FAILED"`), so the workflow's own IF branches reach their
+  documented outcome node instead of the run dying with a traceback. The collected problems are also
+  reported once on the result as `execution_status` / `errors`.
 """
 from __future__ import annotations
 
 import json
 from pathlib import Path
 import re
+import socket
 from typing import Any, Callable
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
+
+#: Hosts a workflow may address. The runner sends the API bearer token with every request, so anything
+#: outside the machine is a policy refusal rather than a runtime failure.
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
+
+#: Seconds a single workflow HTTP node waits before the run records a timeout.
+N8N_REQUEST_TIMEOUT_SECONDS = 15
+
+
+class N8nWorkflowTargetRefused(ValueError):
+    """A workflow node addresses a host this local verifier must not contact."""
+
+
+def _target_host(url: str) -> str:
+    try:
+        parsed = urlsplit(str(url))
+    except ValueError as error:  # unparseable URL is a workflow-authoring error, said plainly
+        raise N8nWorkflowTargetRefused(f"Workflow URL is not parseable: {url!r}.") from error
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise N8nWorkflowTargetRefused(
+            f"Workflow URL must be an absolute http(s) URL addressed to this machine, got {url!r}. "
+            "Set AI_WEBSITE_AGENT_API_URL to something like http://127.0.0.1:8787."
+        )
+    return parsed.hostname
+
+
+def _assert_loopback_target(url: str, *, allow_remote: bool) -> str:
+    host = _target_host(url)
+    if not allow_remote and host not in LOOPBACK_HOSTS:
+        raise N8nWorkflowTargetRefused(
+            f"Refusing to run a workflow node against non-loopback host {host!r}: this local verifier "
+            "sends the API bearer token with every request. Point AI_WEBSITE_AGENT_API_URL at "
+            "http://127.0.0.1:<port>, or pass allow_remote=True deliberately."
+        )
+    if parsed_port := urlsplit(str(url)).port:
+        if not (1 <= parsed_port <= 65535):
+            raise N8nWorkflowTargetRefused(f"Workflow URL has an invalid port: {parsed_port}.")
+    return host
+
+
+def _describe_failure(error: Exception, *, method: str, url: str, timeout_seconds: int) -> dict[str, Any]:
+    """Turn a transport-level exception into the structured answer a workflow can branch on."""
+    parsed = urlsplit(str(url))
+    target = f"{parsed.netloc}{parsed.path}"
+    hint = ""
+    if isinstance(error, HTTPError):
+        kind = "http_error"
+        message = f"{method} {target} returned HTTP {error.code}."
+        hint = "Read the response 'error'/'error_code' fields; they name the workflow condition to fix."
+    elif isinstance(error, (socket.timeout, TimeoutError)):
+        kind = "timeout"
+        message = f"{method} {target} did not answer within {timeout_seconds}s."
+        hint = ("The API may be busy or wedged - check GET /healthz and the worker log before re-running; "
+                "never assume the request had no effect when it mutates state.")
+    elif isinstance(error, URLError):
+        kind = "connection_failed"
+        reason = getattr(error, "reason", error)
+        message = f"{method} {target} could not reach the API: {reason}."
+        hint = ("Start the API (python3 -m orchestration.cli serve) and confirm AI_WEBSITE_AGENT_API_URL "
+                "names that port; a refused connection means nothing was executed.")
+    else:
+        kind = "invalid_response"
+        message = f"{method} {target} returned a response this verifier could not read: {error}."
+        hint = "The API must answer with a JSON object; a proxy or error page in front of it is a configuration problem."
+    detail = {"error": message, "error_kind": kind, "status": "FAILED", "method": method, "url": target}
+    if hint:
+        detail["next_action"] = hint
+    return detail
 
 
 def validate_n8n_workflow_json(workflow_path: str | Path) -> dict[str, Any]:
     """Validate that an exported n8n workflow file has valid nodes, connections, and no embedded secrets."""
     path = Path(workflow_path)
-    data = json.loads(path.read_text(encoding="utf-8"))
+    if not path.is_file():
+        raise ValueError(
+            f"n8n workflow file not found: {path}. Export it from n8n into n8n/workflows/ or pass the "
+            "path of the downloaded JSON; the repository copies are the importable starting point."
+        )
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise ValueError(f"n8n workflow {path} is not valid JSON: {error.msg} at line {error.lineno}.") from error
     if not isinstance(data, dict) or not data.get("name") or not isinstance(data.get("nodes"), list):
         raise ValueError(f"Invalid n8n workflow file: {path}")
     if data.get("active") is not False:
@@ -211,6 +300,8 @@ class N8nWorkflowRunner:
         *,
         env: dict[str, str],
         node_hooks: dict[str, Callable[[dict[str, Any]], None]] | None = None,
+        allow_remote: bool = False,
+        timeout_seconds: int = N8N_REQUEST_TIMEOUT_SECONDS,
     ) -> None:
         self.workflow_path = Path(workflow_path)
         self.workflow = validate_n8n_workflow_json(self.workflow_path)
@@ -218,6 +309,10 @@ class N8nWorkflowRunner:
         self.connections = self.workflow.get("connections") or {}
         self.env = dict(env)
         self.node_hooks = dict(node_hooks or {})
+        # An operator may opt into a remote target explicitly; the default refuses it because each
+        # request carries the API bearer token.
+        self.allow_remote = bool(allow_remote)
+        self.timeout_seconds = max(1, int(timeout_seconds))
 
     def execute(
         self,
@@ -227,6 +322,7 @@ class N8nWorkflowRunner:
     ) -> dict[str, Any]:
         node_outputs: dict[str, dict[str, Any]] = {}
         trace: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
         current_node_name = self._find_trigger_node()
         current_json: dict[str, Any] = dict(trigger_data or {})
 
@@ -256,6 +352,12 @@ class N8nWorkflowRunner:
                 "branch_index": branch_index if ntype == "n8n-nodes-base.if" else None,
                 "output": out_json,
             })
+            if isinstance(out_json, dict) and out_json.get("error_kind"):
+                errors.append({"node": current_node_name, **{
+                    key: out_json.get(key)
+                    for key in ("error", "error_kind", "error_code", "http_status", "method", "url")
+                    if out_json.get(key) is not None
+                }})
             if current_node_name in self.node_hooks:
                 self.node_hooks[current_node_name](out_json)
 
@@ -271,6 +373,11 @@ class N8nWorkflowRunner:
             "execution_id": execution_id,
             "visited_nodes": [step["node"] for step in trace],
             "terminal_node": trace[-1]["node"] if trace else None,
+            # A failed node is reported, not raised: the workflow's own outcome nodes still decide what
+            # an operator sees, and `execution_status` keeps "the run completed" distinct from
+            # "every step succeeded".
+            "execution_status": "FAILED" if errors else "COMPLETED",
+            "errors": errors,
             "final_output": current_json,
             "node_outputs": node_outputs,
             "trace": trace,
@@ -365,18 +472,45 @@ class N8nWorkflowRunner:
             else:
                 parsed_body = json.loads(str(rendered_body))
             body_bytes = json.dumps(parsed_body).encode("utf-8")
+        # Policy first: the host check happens before the request is built, so a refused target never
+        # sees a header set containing the API credential.
+        _assert_loopback_target(url, allow_remote=self.allow_remote)
         req = Request(url, data=body_bytes, headers=headers, method=method)
         try:
-            with urlopen(req, timeout=15) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-        except HTTPError as err:
-            err_body = err.read().decode("utf-8", errors="replace")
-            try:
-                parsed_err = json.loads(err_body)
-            except json.JSONDecodeError:
-                parsed_err = {"error": err_body}
-            parsed_err["http_status"] = err.code
-            return parsed_err
+            with urlopen(req, timeout=self.timeout_seconds) as resp:
+                raw = resp.read()
+        except (HTTPError, URLError, socket.timeout, TimeoutError, OSError) as error:
+            detail = _describe_failure(error, method=method, url=url, timeout_seconds=self.timeout_seconds)
+            if isinstance(error, HTTPError):
+                detail["http_status"] = error.code
+                body_text = error.read().decode("utf-8", errors="replace")
+                try:
+                    parsed_err = json.loads(body_text)
+                except json.JSONDecodeError:
+                    parsed_err = {"error": body_text.strip() or detail["error"]}
+                if isinstance(parsed_err, dict):
+                    # Keep the API's own explanation (error, error_code, detail) and add the transport facts.
+                    parsed_err.setdefault("error", detail["error"])
+                    detail = {**detail, **parsed_err}
+                    detail["error_kind"] = "http_error"
+            return detail
+        if not raw.strip():
+            detail = {
+                "error": f"{method} {urlsplit(url).netloc}{urlsplit(url).path} answered with an empty body.",
+                "error_kind": "empty_response", "status": "FAILED", "method": method,
+            }
+            return detail
+        try:
+            parsed = json.loads(raw.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as error:
+            # A 2xx that is not readable JSON is a failed answer, not a success with odd formatting.
+            detail = _describe_failure(error, method=method, url=url, timeout_seconds=self.timeout_seconds)
+            detail["http_status"] = 200
+            return detail
+        if not isinstance(parsed, dict):
+            return {"error": "API response was not a JSON object.", "error_kind": "invalid_response",
+                    "status": "FAILED", "response": parsed}
+        return parsed
 
     def _run_if_node(
         self,
