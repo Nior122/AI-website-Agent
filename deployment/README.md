@@ -65,13 +65,22 @@ This is preview-only. It calls Vercel CLI without `--prod`, captures only an HTT
 
 If `.vercel/project.json` is missing, points to another project, or `vercel whoami` cannot confirm an authenticated session, stop before `--execute`. The operator—not the application or an agent—must:
 
-1. Run `vercel login` and complete authentication interactively.
+1. Run `vercel login` and complete authentication interactively. On Windows PowerShell the whole local
+   sequence is `npm install --global vercel@latest`, `vercel login`, `vercel whoami`,
+   `vercel link --project ai-website-agent-preview`, then `Get-Content .\.vercel\project.json`;
+   `docs/INTEGRATION-SETUP.md` §5 states it with its flags and explains why `vercel login` has no `--token`
+   flag (so a token is never part of this workflow) and why `--github`/`--gitlab`/`--oob` are deprecated.
 2. Create/configure the dedicated `ai-website-agent-preview` project manually, not through this application. For this static fixture, set Framework Preset to `Other`, enable the Build Command override and leave it empty, and serve the staged root. Do not apply those settings to `grace-light-community-church`.
-3. Run `vercel link`, selecting that already approved dedicated preview project. This creates ignored local `.vercel/project.json`; never hand-write its IDs. Confirm its non-secret `projectName` is `ai-website-agent-preview`.
+3. Run `vercel link`, selecting that already approved dedicated preview project. This creates ignored local `.vercel/project.json`; never hand-write its IDs. Confirm its non-secret `projectName` is `ai-website-agent-preview` **and** that its `projectId` matches the Project ID shown under Vercel **Settings → General** (also printed by `vercel project inspect ai-website-agent-preview`): the code verifies the name, not the id, so that comparison is the operator's, and it is the only step that would catch a correct name bound to a different project.
 4. Run `vercel whoami` to confirm the intended account without copying credentials into the repository.
 5. Regenerate the fictional build, record the human approval (`tracking.cli review <project_id> --decision APPROVED_FOR_PREVIEW --action PREVIEW_DEPLOYMENT ...`), and run `python -m deployment.cli --build output/<lead-id>/<build-id> --execute --project-id <project_id>`.
 
-Do not use `--prod`, `vercel domains`, or an account upgrade as part of this workflow.
+Do not use `--prod`, `vercel domains`, or an account upgrade as part of this workflow. The executed command is exactly
+`vercel deploy <staged payload> --yes --project <projectId>` (`deployment/deployer.py:198`) and `--prod` appears
+nowhere in this repository, so a publish cannot promote the project's production alias; verify the
+deployment-specific URL with `vercel curl / --deployment <url>`. `_preview_url()` only checks the
+`https://*.vercel.app` shape, so the dashboard's Preview/Production badge - not this repository - is what
+confirms the environment.
 
 `python3 -m orchestration.cli preflight --project-id <project_id>` reports the same configuration an
 operator would otherwise discover by trial: whether the Vercel CLI is on `PATH` here, whether a project is

@@ -182,6 +182,100 @@ vercel login
 vercel link --project ai-website-agent-preview     # writes .vercel/project.json
 ```
 
+Windows PowerShell equivalent — the complete sequence an operator runs **on the machine that will publish**
+(this workspace has no `vercel` binary and cannot reach `vercel.com`, so it cannot be run here):
+
+```powershell
+# 0. One-time: the CLI needs Node.js. Check what is installed before and after.
+node --version
+npm install --global vercel@latest
+vercel --version
+
+# 1. Authenticate the CLI. This opens the browser sign-in; there is nothing to paste into a chat,
+#    a file, or a commit. `vercel login` deliberately has no --token flag, and its old --github /
+#    --gitlab / --bitbucket / --oob flags are deprecated, so plain `vercel login` is the whole step.
+vercel login
+vercel whoami                    # proof, not assumption: prints the signed-in account
+
+# 2. Link THIS checkout to the existing project. --yes skips prompts; --team is needed only if the
+#    account belongs to more than one team. Nothing here creates or renames a project.
+Set-Location C:\path\to\AI-website-Agent
+vercel link --project ai-website-agent-preview
+vercel link --project ai-website-agent-preview --yes --team <TEAM_ID_OR_SLUG>   # only if in a team
+
+# 3. Read back what the link command wrote. It must exist, and projectName must match exactly.
+Get-Content .\.vercel\project.json
+#    { "projectId": "prj_...", "orgId": "team_...|user_...", "projectName": "ai-website-agent-preview" }
+vercel project inspect ai-website-agent-preview     # the provider's own view of the same project
+
+# 4. Then, and only then, the repository's read-only gate - see steps below in this section.
+py -3 -m orchestration.cli deployment-status
+py -3 -m tracking.cli deploy-check project-0003 --build-id <build-id>
+```
+
+`vercel login` writes its own credential into the CLI's global config, not into this repository, and
+`vercel link` is the only acceptable author of `.vercel/project.json` (Vercel adds `.vercel` to
+`.gitignore` itself; this repository already ignores it, confirmed by `git check-ignore .vercel`).
+
+**The project ID is verified by reading it in two places, never by assuming it.** In the Vercel dashboard:
+open the project → **Settings → General** → the `Project ID` shown for that project (a `prj_…` value,
+copyable there; the same value `vercel project inspect ai-website-agent-preview` prints from the CLI).
+Compare it character-for-character with the `projectId` in the `.vercel/project.json` that `vercel link`
+just wrote. Two things follow, and both are stated so nobody over-reads the code:
+
+- `deployment/deployer.py` checks the linked **name** (`projectName == EXPECTED_PREVIEW_PROJECT`) and the
+  shape of the target project slug; it does **not** compare the linked `projectId` against any recorded
+  expectation. So the name check cannot catch a correct name attached to a different project - the id
+  comparison above is a human step, and it is cheap.
+- The id actually used becomes part of the record only after an executed publish: `deployment.json` and
+  the `deployment-attempts.json` ledger store the `vercel_project_id` of the call, and
+  `orchestration.cli deployment-status` reports the linked state read from this checkout (`project_linked`,
+  `linked_project_name`).
+
+**Confirmed by the operator on 2026-10-15** for `ai-website-agent-preview`, recorded here as the settings the
+publish depends on. These are operator statements about their dashboard, not facts this workspace verified:
+`vercel` is absent here and connections to `vercel.com` / `api.vercel.com` do not complete, so nothing below
+was re-read from the provider.
+
+| Setting | Operator-confirmed value | Why this repository cares |
+| --- | --- | --- |
+| Project | `ai-website-agent-preview` | must equal `EXPECTED_PREVIEW_PROJECT`, or every publish refuses |
+| Project domain | `ai-website-agent-preview.vercel.app` | the project's **production** alias; it is deliberately *not* accepted as proof that a given build was deployed |
+| Production branch | `main` | a push to `main` is the one push that would deploy to production; work happens on the Arena branch, so it must not receive an unreviewed merge |
+| Preview branches | all unassigned Git branches | so branch pushes (including this Arena branch) would otherwise create preview deployments outside the review gate |
+| Ignored Build Step | "Don't build anything" | this is what stops Git-triggered deployments from building; it is a *Git* control, and `deployment.cli` publishes with a direct `vercel deploy` of a staged payload, which Vercel documents as working "whether your project is connected to Git or not" |
+
+Credential-free way to confirm the last two rows actually hold, from anywhere with `gh` access:
+
+```bash
+gh api repos/<owner>/<repo>/commits/<sha>/check-runs --jq '.total_count'   # 0 = no deployment attributed to that commit
+gh api repos/<owner>/<repo>/commits/<sha>/status     --jq '.statuses | length'
+```
+
+**Publishing is preview-only, by construction, and here is the exact command.** `deployment/deployer.py:198`
+runs
+
+```
+vercel deploy <staged-payload-directory> --yes --project <projectId>
+```
+
+with **no `--prod`** - and `--prod` appears nowhere in `deployment/`, `orchestration/`, or the n8n exports, so
+there is no flag combination in this repository that promotes a deployment to production. Vercel's own
+semantics do the rest: `vercel deploy` without `--prod` creates a **preview** deployment and leaves the
+production alias pointing at whatever it already points at. Read the URL the provider prints for *that*
+deployment rather than the project alias, and verify it with the provider's own tools (they also handle
+deployment protection):
+
+```bash
+vercel curl / --deployment <deployment-url-from-the-command-output>
+vercel logs --deployment <deployment-id> --level error
+```
+
+One honest limit, so nobody mistakes a shape check for a guarantee: `_preview_url()` accepts any
+`https://*.vercel.app` host, which is how it rejects a non-Vercel or `http://` target but **not** how it
+distinguishes a preview URL from the project's production alias. The dashboard's deployment badge, and the
+fact that the deployer never passes `--prod`, are what make a publish preview-only.
+
 `deployment/deployer.py` compares the linked `projectName` with the expected preview project and refuses a
 mismatch, so a link to the production project is a refusal, not a publish. `requirements.txt` and the Vercel
 CLI are only needed in the environment that will publish — not in the sandbox that runs the tests.
@@ -330,7 +424,7 @@ answers it from records rather than from hope, and `python3 -m orchestration.cli
 | 1 | The build exists and validation passed for **that** build | `python3 -m tracking.cli snapshot <project_id>` | `latestBuild.status COMPLETED`, `latestValidation.status PASS`, `artifact_exists true` |
 | 2 | A human approval is recorded for **that exact build** | `python3 -m tracking.cli deploy-check <project_id> --build-id <build-id>` | `authorized true`, `code APPROVED_FOR_DEPLOYMENT`, and the `build_id`/`validation_id` in the answer are the ones you are publishing |
 | 3 | The authorization capability is intact and not revoked | same `deploy-check` (it verifies the build-local capability and artifact digest) | no `APPROVAL_REVOKED`, `APPROVAL_TAMPERED`, or `APPROVAL_ARTIFACT_STALE` |
-| 4 | The provider is configured **and authenticated** in the machine that will publish | `python3 -m orchestration.cli deployment-status`, then `vercel whoami --non-interactive` in the publishing machine | `configuration.cli_available true`, `project_linked true`, `linked_project_name` equal to the expected preview project, and `whoami` naming the account that owns it |
+| 4 | The provider is configured **and authenticated** in the machine that will publish | `vercel whoami` in the publishing machine (see §5's PowerShell sequence), then `python3 -m orchestration.cli deployment-status` here | `configuration.cli_available true`, `project_linked true`, `linked_project_name` equal to the expected preview project, `whoami` naming the account that owns it, and the `projectId` in `.vercel/project.json` matching the value under Settings → General |
 | 5 | The target is the intended preview project | `python3 -m orchestration.cli preflight --project-id <project_id>` | `deployment_provider_configuration.expected_preview_project` equals the linked name; no `--prod` path exists in this repository |
 | 6 | The operator has explicitly authorised a real preview deployment | - | a human decision, recorded nowhere else; the commands refuse without it |
 
@@ -393,7 +487,11 @@ have been done:
 2. Install `requirements.txt` in the environment that will migrate or publish (`psycopg` for PostgreSQL,
    the Vercel CLI for publishing).
 3. In n8n: import, set the two variables, edit `02-inspect-job.json`, keep workflows inactive.
-4. `vercel link` to the dedicated preview project.
+4. Authenticate the CLI and `vercel link` to the dedicated preview project (§5's PowerShell block). The
+   project itself already exists and its Git settings were confirmed by the operator on 2026-10-15:
+   production branch `main`, preview deployments for all unassigned branches, Ignored Build Step
+   "Don't build anything". Verifying those in the dashboard, and keeping the merge to `main` under
+   control, stays with the operator - nothing in this repository can read or change them.
 5. Record the human review decision for the project you intend to publish
    (`python3 -m tracking.cli review <pid> --decision APPROVED_FOR_PREVIEW --action PREVIEW_DEPLOYMENT
    --build-id <build-id> --notes "..." --confirm <token>`).
