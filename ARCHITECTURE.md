@@ -109,6 +109,14 @@ Reaching this source is an explicit decision at each level. `python -m scout.cli
 
 Real candidates are marked `REAL_PUBLIC_DATA` and exported locally to ignored `data/leads/` review files. They do not automatically enter `TrackingStore`, create a project, trigger Research, create an outreach package, or contact a business. A human must review and explicitly authorize any next stage. Test fixtures remain separately marked `TEST_FIXTURE`.
 
+## Bounded live website research
+
+`research.live_source.PublicWebsiteResearchSource` is the live `ResearchSource` the Phase 3 design reserved. It reads only the URLs already recorded on the candidate - the business's own website, plus a social profile only if a host is explicitly allowlisted - so it cannot be turned into a crawler by a job input, and it fetches at most `maxPagesPerCandidate` pages within a per-run request budget. `robots.txt` is consulted before the page, redirects and retries are capped, the response is byte-capped and only HTML is interpreted, no credential is sent, and a login wall or block ends the attempt without being reinterpreted as a fact about the business.
+
+Consent is deliberately split from the request: live research runs only when `AI_WEBSITE_AGENT_ALLOW_LIVE_RESEARCH=1` *and* `research.allowLiveResearch: true` in the deployment's local settings file, and a caller must still ask for it (`--source live`, or `input.live_research` on a `RESEARCH` job). The n8n pipeline deliberately does not pass that field, because a workflow that requests its own permission would reproduce exactly the failure mode the deployment gate exists to prevent.
+
+Observations are the existing `website_observation` vocabulary, so `_evaluate_website` remains the single place where evidence becomes a website classification: a page that could not be read yields `UNKNOWN` with the retrieval status and reason recorded as our limitation, never `NO_WEBSITE`. The source makes no decision and imports no builder, reviewer, deployer, or sender; `QUALIFY` and everything after it remain separate jobs.
+
 ## Website opportunity handoff
 
 `opportunities.assess_opportunity()` is the single Scout-to-builder qualification handoff. It produces a score, reasons, evidence, priority, normalized website status, and a content brief split into `verified`, `unknown`, and `suggested` information. Existing website evidence maps to `WEBSITE_POOR`, `WEBSITE_OUTDATED`, `WEBSITE_BASIC`, or `WEBSITE_MODERN`; missing website data from a listing maps only to `WEBSITE_UNKNOWN`.

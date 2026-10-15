@@ -52,6 +52,13 @@ NEXT_ACTIONS = {
         "source is a machine-level decision: set AI_WEBSITE_AGENT_ALLOW_LIVE_DISCOVERY=1 where public read-only "
         "lookups are approved (and install the same guard nowhere else), or run discovery from a terminal with "
         "python3 -m scout.cli --source overpass --approve-live-lookups --dry-run instead of through a job.",
+    "LIVE_RESEARCH_NOT_ENABLED": "Live research is refused by the deployment, not by this job: set "
+        "AI_WEBSITE_AGENT_ALLOW_LIVE_RESEARCH=1 and research.allowLiveResearch to true in "
+        "config/system.settings.local.json on a machine approved for public-page research, or run the fixture "
+        "path with input.evidence_file. No request was made.",
+    "RESEARCH_INPUT_INVALID": "Give the RESEARCH job something to read: input.evidence_file for the offline "
+        "fixture path, or input.live_research together with a permitted deployment. Research never fetches a "
+        "URL that is not already recorded on the candidate, and it never builds, reviews, deploys, or sends.",
     "LIVE_DISCOVERY_NOT_APPROVED": "Discovery against a live public source is opt-in. Re-create the job with "
         "input.approve_live_lookups set to true only if the approved scope (Lagos restaurants, five candidates, "
         "review-only) is what you intend to run; until then nothing was requested and nothing was written. "

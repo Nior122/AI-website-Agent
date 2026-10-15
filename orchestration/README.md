@@ -41,6 +41,18 @@ Supported authenticated endpoints (`Authorization: Bearer <token>`):
 - `POST /projects/:id/review-package` — exports and verifies a human-review package (`index.html`, `review-package.json`, `REVIEW_README.md`) for a `READY_FOR_REVIEW` project, leaving `review_status` at `"PENDING"`. `export_dir` is optional and must name a directory *inside* the handler's configured export root; anything else is `400 EXPORT_PATH_NOT_ALLOWED`.
 - `GET /projects/:id/review-package?export_dir=...` — verifies an exported review package against `TrackingStore`, under the same export-root confinement (verification reads files by path, so an unrestricted name would let a request inspect another project's evidence).
 
+### RESEARCH job inputs
+
+A `RESEARCH` job reads evidence for one lead and writes the research record plus a qualification handoff. It cannot build, review, deploy, or send anything, and a failed or blocked live attempt is reported as such rather than becoming a finding about the business.
+
+| Input | Effect |
+| --- | --- |
+| `evidence_file` | offline fixture evidence; still the default and the only thing a job needs for a repeatable run |
+| `live_research: true` | adds `PublicWebsiteResearchSource`, which fetches only the website URL already recorded on the lead - refused with `LIVE_RESEARCH_NOT_ENABLED` unless the worker's environment *and* `config/system.settings.local.json` permit live research, so no request was made in the refused case |
+| neither | `RESEARCH_INPUT_INVALID`, with the remedy spelled out |
+
+A completed live job also reports `output.live_research` - requests used against the budget and one entry per attempted URL with its retrieval status - so an operator can see what was deliberately left alone (for example `NOT_FETCHED_PLATFORM_RESTRICTED` for a social profile) as well as what was read.
+
 ### SCOUT job inputs
 
 A `SCOUT` job discovers and qualifies only - it never builds, deploys, or contacts anyone, and a real-data candidate is written as a `DISCOVERED` lead with public contact fields withheld from the lead book.

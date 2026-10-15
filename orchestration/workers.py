@@ -352,13 +352,48 @@ class LocalPipelineWorker:
                     "sourceUrls": list(lead.get("source_urls") or []),
                 }
             evidence_file = job_input.get("evidence_file")
-            if not candidate or not evidence_file:
-                return WorkerResult("FAILED", error="RESEARCH job requires candidate and input.evidence_file.", retryable=False)
-            res = ResearchAgent([FixtureResearchSource(Path(evidence_file))]).run(candidate)
+            if not candidate:
+                return WorkerResult("FAILED", error="RESEARCH job requires a candidate or a lead with a recorded candidate.", retryable=False)
+            # A job may ask for live research but cannot authorize it: the settings path is fixed to this
+            # repository's local file, and the environment permit is the deployment's to grant. So a job
+            # input, an n8n node, or an HTTP request can never widen what leaves the machine on its own.
+            live_requested = job_input.get("live_research") is True
+            live_source = None
+            if live_requested:
+                from research.live_source import DEFAULT_SETTINGS_PATH, LiveResearchPolicy, PublicWebsiteResearchSource
+
+                policy = LiveResearchPolicy.load(self.repository_root / DEFAULT_SETTINGS_PATH)
+                if not policy.enabled:
+                    return WorkerResult(
+                        "FAILED",
+                        error=policy.refusal_reason() or "live research is not permitted for this deployment; no request was made.",
+                        error_code="LIVE_RESEARCH_NOT_ENABLED",
+                        retryable=False,
+                    )
+                live_source = PublicWebsiteResearchSource(policy)
+            sources: list = []
+            if evidence_file:
+                sources.append(FixtureResearchSource(Path(evidence_file)))
+            if live_source is not None:
+                sources.append(live_source)
+            if not sources:
+                return WorkerResult(
+                    "FAILED",
+                    error="RESEARCH job requires input.evidence_file, or input.live_research with live research permitted for this deployment.",
+                    error_code="RESEARCH_INPUT_INVALID",
+                    retryable=False,
+                )
+            res = ResearchAgent(sources).run(candidate)
             if res.status != "completed":
+                failure_code = None
+                if live_source is not None:
+                    from research.live_source import classify_research_failure
+
+                    failure_code = classify_research_failure(res.errors) or "RESEARCH_FAILED"
                 return WorkerResult(
                     "FAILED",
                     error="; ".join(res.errors) or "Research failed.",
+                    error_code=failure_code,
                     output={"lead_id": job.get("lead_id"), "outcome": "RESEARCH_FAILED"},
                     retryable=bool(job_input.get("retryable", False)),
                 )
@@ -387,6 +422,7 @@ class LocalPipelineWorker:
                 summary=f"Researched lead {ingested['lead_id']} ({ingested['qualification_status']}).",
                 output={
                     "lead_id": ingested["lead_id"],
+                    **({"live_research": live_source.summary()} if live_source is not None else {}),
                     "qualification_id": ingested.get("latest_qualification_id"),
                     "qualification_status": ingested["qualification_status"],
                     "research_qualification_status": r_qual,
