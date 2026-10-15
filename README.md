@@ -106,7 +106,7 @@ Real-business (`REAL_PUBLIC_DATA`) builds are **disabled by default** (`NEEDS_RE
    python3 -m tracking.cli check-workspace
    ```
 
-`orchestration.system_health(store, registry)` reports local subsystem state without contacting services. `readiness_for(store, jobs, job_id, registry)` checks whether a specific job has valid prerequisites and an available capable worker. Both are safe for local diagnostics and do not expose secrets.
+`orchestration.system_health(store, registry)` reports local subsystem state without contacting services. For operations, `python3 -m orchestration.cli health|attention|inspect-job|deployment-status|check-alerts` - and the matching authenticated `GET /health`, `GET /attention`, `GET /jobs/:id/history`, `GET /deployment-status` - report liveness separately from readiness, per-attempt job history, why a stage failed (stable code plus a sanitized message and the safe next action), which projects need a person, and whether a deployment outcome is recorded, uncertain, superseded, or never attempted. `attention --brief` exits `1` when work needs a human, so it is safe to schedule. `readiness_for(store, jobs, job_id, registry)` checks whether a specific job has valid prerequisites and an available capable worker. Both are safe for local diagnostics and do not expose secrets.
 
 ### Running the n8n HTTP orchestration bridge
 

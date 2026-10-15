@@ -23,6 +23,7 @@ Supported authenticated endpoints (`Authorization: Bearer <token>`):
 - `GET /health` — returns health status, job status counts, project counts, and worker availability.
 - `GET /jobs` — lists jobs (optional `?status=` and `?job_type=` query filters).
 - `GET /jobs/:id` — retrieves a single job record including `status`, `attempts`, `output`, `error`, and `next_job_types`.
+- `GET /jobs/:id/history` — the job record plus every recorded execution attempt for it (`attempt_number`, worker, start/completion, recorded duration, outcome, sanitized error type/message, `error_code`, and a `trace` of lead/project/build/validation/deployment ids) together with `retry_eligibility`: remaining attempt budget, whether `reset_attempts` is required, and the next action.
 - `POST /jobs` — submits an idempotent job (`run: true` optional to execute immediately via `LocalPipelineWorker`).
 - `POST /jobs/:id/run` — executes a `QUEUED` job via `LocalPipelineWorker` (returns existing record if already `COMPLETED`).
 - `POST /jobs/:id/next` — creates (and optionally runs with `run: true`) the next stage jobs (`next_job_types`) from a `COMPLETED` parent job.
@@ -32,13 +33,17 @@ Supported authenticated endpoints (`Authorization: Bearer <token>`):
 - `GET /projects/:id` — returns `TrackingStore.snapshot(project_id)`.
 - `POST /projects/:id/review` — records one explicit human review decision (`decision`, `notes`, `reviewer`, and `confirm=<project_id>:<assigned_build_id>:<DECISION>`). A stale or misrouted confirmation is refused with `409` before anything is written, the reviewer string is recorded verbatim with `identity_verified: false`, and the response carries the resulting `deployment_authorization`. Recording a decision never publishes anything.
 - `GET /projects/:id/deployment-authorization` — read-only view of the server-side publish gate for the assigned build (or `?build_id=` to assert one): `authorized`, a machine-readable `code` (`APPROVAL_MISSING`, `APPROVED_FOR_DEPLOYMENT`, `ALREADY_DEPLOYED` with `skip_publish: true`, `REVIEW_REJECTED`, `REVIEW_CHANGES_REQUESTED`, `VALIDATION_NOT_PASSED`, `PUBLISH_STATE_UNCERTAIN`, `REAL_ISOLATED_TARGET_REQUIRED`, …) and an actionable `reason`. It never deploys and never mutates state.
+- `GET /attention` — the operator backlog from `operator_attention()`: stale-running jobs, blocked/failed/exhausted jobs, projects awaiting a human decision or sent back by review, and deployment outcomes that need manual resolution - each with a stable code, the sanitized recorded message, and the safe next action.
+- `GET /deployment-status` — recorded publish state per project (`VERIFIED_RECORDED`, `UNCERTAIN`, `FAILED`, `RECORDED_UNCONFIRMED`, `SUPERSEDED`, `NOT_ATTEMPTED`) plus deployment *configuration* (CLI on `PATH`, project link, isolated target). It reads the ledger and configuration only and always reports `provider_contacted: false` / `live_url_checked: false`, so a configuration check cannot be mistaken for verification of a live site; `?project_id=` narrows the attention list.
+- `POST /jobs/:id/retry` refuses an ineligible retry with `409`, `error_code: RETRY_NOT_ELIGIBLE`, and the recorded eligibility explanation rather than a generic error.
+
 - `GET /projects/:id/artifact` — retrieves (and re-materializes from durable storage if local temporary files were removed) the SHA-256-verified `index.html`, `html_sha256`, `html_bytes`, and `review_package` for a project's assigned build.
 - `POST /projects/:id/review-package` — exports and verifies a human-review package (`index.html`, `review-package.json`, `REVIEW_README.md`) for a `READY_FOR_REVIEW` project, leaving `review_status` at `"PENDING"`.
 - `GET /projects/:id/review-package?export_dir=...` — verifies an exported review package against `TrackingStore`.
 
 Unauthenticated liveness probe (for Render load balancer health checks):
 
-- `GET /healthz` — returns `200 OK` with `{"status": "ok"}` and never exposes operational state, paths, or credentials.
+- `GET /healthz` — returns `200 OK` with `{"status": "ok"}` and never exposes operational state, paths, or credentials. It is intentionally *liveness only*: it does not read the database, so it keeps answering while `GET /readiness` correctly reports `NOT_READY` because the source of truth is unreachable. `200 /healthz` is therefore never a statement that work can proceed.
 
 ## Cloud Deployment Configuration (Render + Supabase PostgreSQL)
 
@@ -89,3 +94,18 @@ In production mode (`AI_WEBSITE_AGENT_ENV=production` or `AI_WEBSITE_AGENT_STORA
   1. **Self-hosted n8n on a persistent local machine / home server / low-cost VPS volume** calling the Render HTTP API over HTTPS.
   2. **Containerized n8n backed by PostgreSQL (`DB_TYPE=postgresdb`)** using a dedicated schema (e.g., `DB_POSTGRESDB_SCHEMA=n8n`) in the same Supabase PostgreSQL instance plus a fixed `N8N_ENCRYPTION_KEY` secret so n8n workflows and credentials survive container restarts.
   3. **Operator-triggered CLI runner (`python3 -m orchestration.cli run-workflow ...`)** for zero-cost deterministic execution without running an always-on n8n instance.
+
+## Operational Monitoring and Controls
+
+- `python3 -m orchestration.cli health` - the full report: liveness, application, source of truth (with `verification: verified|configuration_only`), workflow execution, workers, deployment outcomes and provider configuration, and configuration presence. Readiness separates `blocking` (storage or persistence cannot be trusted -> `NOT_READY`, exit `1`) from `degradations` (no capable worker, missing local build artifacts, an operator backlog - still serving).
+- `python3 -m orchestration.cli attention [--brief]` - jobs and projects a human must clear, with ages derived only from recorded timestamps. Exit `1` when anything needs attention, so it is safe to schedule from cron.
+- `python3 -m orchestration.cli inspect-job --job-id <id> [--history]` - one job, its related lead/project/build records, and with `--history` every execution attempt plus retry eligibility. Read-only; exit `1` unless the job completed.
+- `python3 -m orchestration.cli list-jobs [--status FAILED] [--attention-only] [--brief]` - filterable listing; `--brief` projects the operator fields (status, code, attempts, recorded retries, age, next action) instead of dumping raw state.
+- `python3 -m orchestration.cli deployment-status` - recorded publish outcome per project plus provider configuration. Exit `1` only when a project outcome needs resolution, never merely because no provider link exists.
+- `python3 -m orchestration.cli check-alerts [--notify]` - the critical subset of the same attention data (uncertain publish, expired or stale leases, exhausted retries, a store that cannot authorize). `--notify` emits one structured `CRITICAL` log event per alert through `LogAlertSink`. Exit `1` when any critical condition exists. No external channel is contacted and no lead or customer is ever messaged: `WebhookAlertSink` is the documented integration point and delivers only through a `transport` callable the operator injects, so no credential lives in this repository.
+
+There is intentionally no reset, purge, or state-erasing command. `recover-stale` and `recover-workspace` reconcile recorded state; a retry re-evaluates every prerequisite; and no monitoring, alert, or read endpoint can grant an approval or bypass the deployment authorization gate - they read state only.
+
+Each executed attempt (including the service, CLI, and API paths, not only leased worker claims) is written to the pre-existing `executions` ledger with attempt number, worker, start/completion, recorded duration, outcome, sanitized error type and message, and a stable `error_code`; a blocked job records no attempt because nothing started. Failures carry both a machine-readable code and a sanitized message plus `next_action`, and the previous code survives a retry as `last_error_code`.
+
+Structured events are emitted with `orchestration.observability.log_event()`: one JSON object per line to stderr (filtered by `AI_WEBSITE_AGENT_LOG_LEVEL`, default `WARNING`) and appended to `AI_WEBSITE_AGENT_LOG_DIR/operations.jsonl` when that directory is configured. Every line carries `timestamp`, `severity`, `operation`, a stable `code`, the identifiers needed to trace it (`job_id`, `lead_id`, `project_id`, `build_id`, `validation_id`, `deployment_id`, `execution_id`, `worker_id`, `attempt`), and a sanitized `detail`. `redact()` removes bearer/authorization values, named secrets, `sk-` keys, JWTs, and complete connection-string userinfo before anything is persisted or returned, and messages are length-bounded. Duplicate alert suppression is in-process by design: a long-lived caller should pass its own `seen` set, and no second copy of workflow state is kept for monitoring.

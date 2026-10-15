@@ -326,6 +326,76 @@ def classify_prior_attempt(
     return (True, "PRIOR_ATTEMPT_RESOLVED", "", attempt)
 
 
+def publish_outcome(build_dir: Path) -> dict[str, Any]:
+    """Classify what the recorded publish evidence for one build directory actually says.
+
+    An operator asking "is my preview live?" needs the difference between *verified*,
+    *uncertain*, *failed* and *never attempted* - those are not interchangeable, and only the first
+    one means the provider accepted the artifact. The classification reads the append-only attempt
+    ledger (and the deployment manifest the provider writes on success) and never contacts a
+    provider, so it can be called from a health endpoint without side effects.
+    """
+    build_dir = Path(build_dir)
+    attempts = read_attempts(build_dir)
+    manifest = _read_json(build_dir / "deployment.json")
+    latest = attempts[-1] if attempts else None
+    state = str((latest or {}).get("deployment_status") or "")
+    published = [attempt for attempt in attempts if attempt.get("deployment_status") == "DEPLOYED"]
+    outcome: tuple[str, str, str]
+    if published:
+        last = published[-1]
+        matches_manifest = bool(manifest) and str((manifest or {}).get("deployment_status")) == "DEPLOYED"
+        outcome = (
+            "VERIFIED_RECORDED" if matches_manifest or last.get("deployment_url") else "RECORDED_UNCONFIRMED",
+            "PROVIDER_URL_RECORDED" if last.get("deployment_url") else "OUTCOME_RECORDED_WITHOUT_URL",
+            "A successful publish was recorded for this build. Confirming the live URL is a separate, "
+            "manual step: this report does not contact the provider.",
+        )
+    elif state in UNRESOLVED_ATTEMPT_STATES:
+        outcome = (
+            "UNCERTAIN",
+            "PUBLISH_STATE_UNCERTAIN",
+            f"The last attempt is recorded as '{state}' with no terminal result, so the provider may have "
+            "accepted the publish. Inspect the preview project, then re-run the deployment with "
+            "--resolve-uncertain-publish (resolve_uncertain_publish) recorded deliberately - never "
+            "re-publish blindly.",
+        )
+    elif state:
+        outcome = (
+            "FAILED",
+            str((latest or {}).get("denial_code") or f"DEPLOYMENT_{state}"),
+            "The last recorded attempt did not publish. Read the attempt error and correct the cause before "
+            "retrying; a repeat publish requires a new build and deployment id.",
+        )
+    elif manifest:
+        outcome = (
+            "RECORDED_UNCONFIRMED",
+            "MANIFEST_WITHOUT_ATTEMPT",
+            "A deployment manifest exists but no attempt was recorded in the ledger, so the publish history is "
+            "incomplete. Reconcile the project record with the provider before relying on it.",
+        )
+    else:
+        outcome = (
+            "NOT_ATTEMPTED",
+            "NO_PUBLISH_RECORD",
+            "No publish has been attempted for this build. A dry-run check verifies the payload only; deploying "
+            "requires the recorded human approval and an explicit --execute run.",
+        )
+    state_evidence = {
+        "attempt_count": len(attempts),
+        "latest_attempt": {
+            key: (latest or {}).get(key)
+            for key in ("attempt", "deployment_status", "deployment_id", "build_id", "deployment_url",
+                        "denial_code", "error", "created_at", "completed_at")
+            if (latest or {}).get(key) is not None
+        } if latest else None,
+        "ledger": str(build_dir / ATTEMPTS_FILENAME),
+        "manifest_present": bool(manifest),
+        "provider_contacted": False,
+    }
+    return {"state": outcome[0], "code": outcome[1], "next_action": outcome[2], **state_evidence}
+
+
 def _now_iso() -> str:
     from datetime import datetime, timezone
 

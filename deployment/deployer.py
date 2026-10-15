@@ -16,6 +16,7 @@ import subprocess
 from urllib.parse import unquote, urlparse, urlsplit
 
 from .authorization import (
+    APPROVAL_FILENAME,
     DEPLOYMENT_ACTION,
     append_attempt,
     artifact_sha256,
@@ -382,6 +383,39 @@ def urlparse_https(url: str) -> bool:
     return parsed.scheme == "https" and host.endswith(".vercel.app") and host != "vercel.app"
 
 def _deployment_id_from_url(url: str) -> str | None: return url.removeprefix("https://").split(".")[0] or None
+def provider_configuration(repository_root: Path) -> dict:
+    """Report whether the publish provider is *configured*, without invoking it.
+
+    Health reporting must distinguish "the operator has a CLI, a link and a target" from "the
+    provider accepted a publish". Only the first is observable from local files, so that is all this
+    function inspects: the ledger and the CLI are consulted by a real deployment run instead.
+    """
+    root = Path(repository_root)
+    command = _vercel_command()
+    link: dict = {}
+    link_error = None
+    link_path = root / ".vercel" / "project.json"
+    if link_path.is_file():
+        try:
+            loaded = json.loads(link_path.read_text(encoding="utf-8"))
+            link = loaded if isinstance(loaded, dict) else {}
+        except (OSError, json.JSONDecodeError) as error:
+            link_error = f"{type(error).__name__}: Vercel project link could not be read."
+    target = str(link.get("project_name") or link.get("name") or "")
+    return {
+        "provider": "vercel",
+        "cli_command": command if shutil.which(command) is not None else None,
+        "cli_available": shutil.which(command) is not None,
+        "project_linked": bool(link) and link_error is None,
+        "link_error": link_error,
+        "linked_project_name": target or None,
+        "expected_preview_project": EXPECTED_PREVIEW_PROJECT,
+        "target_is_isolated": bool(target) and target != EXPECTED_PREVIEW_PROJECT,
+        "approval_capability_present": any(root.glob(f"output/*/*/{APPROVAL_FILENAME}")),
+        "note": "Configuration only: no provider command was executed and no network call was made.",
+    }
+
+
 def _safe_error(output: str) -> str: return re.sub(r"(?i)(token|secret|password)\s*[:=]\s*\S+", r"\1=[REDACTED]", output).strip()[-1000:]
 def _write_manifest(build_path: Path, result: DeploymentResult) -> None: (build_path / "deployment.json").write_text(json.dumps(result.to_dict(), indent=2) + "\n", encoding="utf-8")
 def _now() -> str: return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")

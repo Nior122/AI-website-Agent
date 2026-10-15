@@ -1,14 +1,37 @@
 """Non-secret local health and readiness reports; no network calls are made.
 
-`system_health()` only inspects already-loaded state and configuration, so it never opens a
-database connection. Connectivity is verified explicitly by `verify_storage()`, which the API
-readiness endpoint uses so an unreachable database is reported as NOT_READY instead of READY.
+The reports answer three different questions, and an operator must never have to infer which one
+they are looking at:
+
+* **Liveness** - this process is executing and can produce a report.
+* **Readiness** - the source of truth is reachable and writable, so work can be trusted; verified
+  by :func:`verify_storage`, which is the only function here that touches the database.
+* **Operational state** - what the recorded jobs, projects and deployment attempts say: what is
+  running, what is blocked, and what needs a human.
+
+Everything else is derived from already-loaded state and local files, so ``system_health()`` never
+opens a database connection or contacts a provider. Reports carry codes, sanitized messages and the
+safe next action, and never carry credentials, connection strings or record content.
 """
 from __future__ import annotations
+
 import os
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from tracking.database import is_production_mode, sanitize_db_error
+
+from .jobs import ATTENTION_STATUSES, NEXT_ACTIONS, OPERATOR_ATTENTION_STATUSES, next_action_for
+from .observability import recorded_age_seconds, sanitize_diagnostic, url_host
+
+#: A RUNNING job with no heartbeat newer than this is reported as needing operator attention.
+#: It matches the default ``recover-stale`` threshold so the report and the recovery command agree.
+STALE_RUNNING_SECONDS = 900
+#: How many attention items a report carries; the totals stay accurate regardless.
+ATTENTION_LIMIT = 40
+#: Upper bound on build directories inspected for publish evidence in one report.
+DEPLOYMENT_SCAN_LIMIT = 200
 
 
 def storage_report(store) -> dict:
@@ -51,26 +74,548 @@ def verify_storage(store) -> dict:
     return report
 
 
-def system_health(store, registry=None, *, repository_root=Path(".")):
-    workers=list((store.state.get("workers") or {}).values())
-    available=[w for w in workers if w.get("enabled") and w.get("status")=="IDLE" and w.get("health_status")=="AVAILABLE"]
-    linked=(Path(repository_root)/".vercel"/"project.json").is_file()
-    local_state=store.check_local_state(repository_root=Path(repository_root)) if hasattr(store,"check_local_state") else {"status":"HEALTHY"}
-    storage=storage_report(store)
-    jobs=list((store.state.get("jobs") or {}).values())
+def _checked_at(now: datetime | None = None) -> str:
+    reference = now or datetime.now(timezone.utc)
+    return reference.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def job_attention_items(store, *, now: datetime | None = None, limit: int = ATTENTION_LIMIT) -> tuple[list[dict], dict]:
+    """Jobs whose recorded state says a human must act, plus accurate totals.
+
+    Ages and durations are only reported when the job actually recorded the timestamp they come
+    from; a missing ``heartbeat_at`` yields ``None`` instead of an assumed value.
+    """
+    jobs = [job for job in (store.state.get("jobs") or {}).values() if isinstance(job, dict)]
+    items: list[dict] = []
+    counts = {"running": 0, "stale_running": 0, "needs_review": 0, "blocked": 0, "failed": 0, "retry_exhausted": 0}
+    for job in jobs:
+        status = str(job.get("status") or "UNKNOWN")
+        attempts = int(job.get("attempts") or 0)
+        maximum = int(job.get("max_attempts") or 0)
+        exhausted = maximum > 0 and attempts >= maximum
+        code = str(job.get("error_code") or job.get("last_error_code") or "")
+        if status == "RUNNING":
+            counts["running"] += 1
+            age = recorded_age_seconds(job.get("heartbeat_at") or job.get("started_at"), now=now)
+            if age is not None and age > STALE_RUNNING_SECONDS:
+                counts["stale_running"] += 1
+                items.append({
+                    "kind": "stale_job",
+                    "code": "HEARTBEAT_EXPIRED",
+                    "job_id": job.get("job_id"),
+                    "job_type": job.get("job_type"),
+                    "project_id": job.get("project_id"),
+                    "lead_id": job.get("lead_id"),
+                    "build_id": job.get("build_id"),
+                    "execution_id": job.get("execution_id"),
+                    "status": status,
+                    "message": f"No heartbeat recorded for {age}s (last: {job.get('heartbeat_at') or job.get('started_at')}).",
+                    "attempts": attempts,
+                    "max_attempts": maximum,
+                    "age_seconds": age,
+                    "recorded_at": job.get("heartbeat_at") or job.get("started_at"),
+                    "next_action": NEXT_ACTIONS["HEARTBEAT_EXPIRED"],
+                })
+            continue
+        # A failure with attempt budget left is the system's own business: it is still listed by
+        # `job_system`, `list-jobs --status FAILED`, and the API filters. Operator attention means a
+        # state that will not resolve without a human, or a permanent failure.
+        if status not in OPERATOR_ATTENTION_STATUSES and not (
+            status == "FAILED" and (exhausted or job.get("requires_operator_action"))
+        ) and not job.get("requires_operator_action"):
+            continue
+        if status == "NEEDS_REVIEW":
+            counts["needs_review"] += 1
+        elif status == "BLOCKED":
+            counts["blocked"] += 1
+        elif status == "FAILED":
+            counts["failed"] += 1
+        if exhausted and status == "FAILED":
+            counts["retry_exhausted"] += 1
+        items.append({
+            "kind": "job",
+            "code": code or status,
+            "job_id": job.get("job_id"),
+            "job_type": job.get("job_type"),
+            "project_id": job.get("project_id"),
+            "lead_id": job.get("lead_id"),
+            "build_id": job.get("build_id"),
+            "execution_id": job.get("execution_id"),
+            "status": status,
+            "message": sanitize_diagnostic(job.get("error")),
+            "attempts": attempts,
+            "max_attempts": maximum,
+            "retries_recorded": int(job.get("retry_count") or 0),
+            "retry_exhausted": exhausted,
+            "retry_eligible": status != "CANCELLED",
+            "requires_reset_attempts": exhausted,
+            "age_seconds": recorded_age_seconds(job.get("completed_at") or job.get("updated_at"), now=now),
+            "recorded_at": job.get("completed_at") or job.get("updated_at"),
+            "next_action": job.get("next_action") or next_action_for(code or None) or (
+                NEXT_ACTIONS["RETRY_LIMIT_REACHED"] if exhausted else None
+            ),
+        })
+    items.sort(key=lambda item: (0 if item["kind"] == "stale_job" else 1, str(item.get("recorded_at") or "")), reverse=False)
+    counts["total"] = len(items)
+    return items[:limit], counts
+
+
+def project_attention_items(store, *, limit: int = ATTENTION_LIMIT) -> list[dict]:
+    """Projects whose recorded stage, validation or review state stops the pipeline."""
+    items: list[dict] = []
+    for project in (store.state.get("projects") or {}).values():
+        if not isinstance(project, dict):
+            continue
+        project_id = project.get("project_id")
+        build = (store.state.get("builds") or {}).get(project.get("assigned_build_id")) or {}
+        validation = (store.state.get("validations") or {}).get(project.get("latest_validation_id")) or {}
+        deployment = (store.state.get("deployments") or {}).get(project.get("latest_deployment_id")) or {}
+        stage = str(project.get("current_stage") or "")
+        review = str(project.get("review_status") or "PENDING")
+
+        def add(code: str, message: str, action: str, *, kind: str = "project") -> None:
+            items.append({
+                "kind": kind,
+                "code": code,
+                "project_id": project_id,
+                "lead_id": project.get("lead_id"),
+                "build_id": build.get("build_id"),
+                "validation_id": validation.get("validation_id"),
+                "deployment_id": deployment.get("deployment_id"),
+                "status": stage or review,
+                "stage": stage,
+                "review_status": review,
+                "message": message,
+                "recorded_at": project.get("updated_at"),
+                "age_seconds": recorded_age_seconds(project.get("updated_at")),
+                "next_action": action,
+            })
+
+        if build and str(build.get("status") or "") == "FAILED":
+            add("BUILD_FAILED", f"The assigned build {build.get('build_id')} is recorded as FAILED.",
+                "Rebuild the site (BUILD job) and re-validate before deploying.")
+        elif validation and str(validation.get("status") or "") not in {"", "PASS"}:
+            add("VALIDATION_NOT_PASSED",
+                f"Validation {validation.get('validation_id')} recorded {validation.get('status')} for the assigned build.",
+                "Correct the findings, rebuild, and re-validate; a non-PASS validation never authorizes deployment.")
+        if review in {"REJECTED", "CHANGES_REQUESTED"}:
+            notes = str(project.get("review_notes") or "").strip()
+            add(f"REVIEW_{review}",
+                f"The last human decision for build {build.get('build_id')} was {review.replace('_', ' ').lower()}"
+                + (f"; notes: {notes[:400]}" if notes else "; no notes recorded"),
+                "Apply the reviewer's notes, rebuild and re-validate, then re-review; "
+                f"notes: {project.get('review_notes') or 'none recorded'}.")
+        elif stage == "READY_FOR_REVIEW" and review not in {"APPROVED", "APPROVED_FOR_PREVIEW"}:
+            add("AWAITING_HUMAN_REVIEW",
+                f"Build {build.get('build_id')} is awaiting a human decision (review_status {review or 'PENDING'}).",
+                "Review the draft, then record the decision: python3 -m tracking.cli review "
+                f"{project_id} --decision <APPROVED|REJECTED|CHANGES_REQUESTED> --notes \"...\" "
+                f"--confirm {project_id}:{build.get('build_id')}:<decision>.")
+        elif stage in {"AWAITING_APPROVAL", "BLOCKED", "FAILED"}:
+            add(f"STAGE_{stage}", f"Project is recorded at stage {stage}.",
+                "Inspect the blocking job and clear it before continuing the pipeline.")
+        if deployment and deployment.get("build_id") and deployment.get("build_id") != project.get("assigned_build_id"):
+            add("DEPLOYMENT_SUPERSEDED_BY_NEW_BUILD",
+                f"Recorded deployment {deployment.get('deployment_id')} covers build {deployment.get('build_id')}, not the assigned build.",
+                "Deploy the current assigned build; the published preview is stale.")
+    items.sort(key=lambda item: str(item.get("recorded_at") or ""))
+    return items[:limit]
+
+
+def deployment_report(store, *, repository_root: Path | str = ".", include_evidence: bool = True) -> dict:
+    """Classify every project's publish state from recorded evidence only.
+
+    ``VERIFIED_RECORDED`` means a successful publish with a URL was recorded for the *currently
+    assigned* build. ``UNCERTAIN`` means an attempt ended without a terminal result - the provider
+    may or may not have accepted it - which is deliberately not reported as failed or succeeded.
+    Nothing here contacts the provider, so a live URL check is never implied.
+    """
+    root = Path(repository_root)
+    outcomes: dict[str, int] = {}
+    attention: list[dict] = []
+    scanned = 0
+    for project in (store.state.get("projects") or {}).values():
+        if not isinstance(project, dict):
+            continue
+        build = (store.state.get("builds") or {}).get(project.get("assigned_build_id")) or {}
+        deployment = (store.state.get("deployments") or {}).get(project.get("latest_deployment_id")) or {}
+        entry: dict[str, Any] = {
+            "project_id": project.get("project_id"),
+            "lead_id": project.get("lead_id"),
+            "build_id": build.get("build_id"),
+            "deployment_id": deployment.get("deployment_id"),
+            "deployment_status": deployment.get("deployment_status"),
+            "deployment_url_host": url_host(deployment.get("deployment_url")),
+            "dry_run": deployment.get("dry_run"),
+            "recorded_at": deployment.get("created_at"),
+            "provider_contacted": False,
+        }
+        if deployment.get("deployment_status") == "DEPLOYED" and deployment.get("build_id") == project.get("assigned_build_id"):
+            state, code = "VERIFIED_RECORDED", "PROVIDER_URL_RECORDED" if deployment.get("deployment_url") else "OUTCOME_RECORDED_WITHOUT_URL"
+            entry["state"] = state
+            entry["code"] = code
+            outcomes[state] = outcomes.get(state, 0) + 1
+            continue
+        ledger_state = None
+        output_location = build.get("output_location")
+        if include_evidence and output_location and scanned < DEPLOYMENT_SCAN_LIMIT:
+            scanned += 1
+            try:
+                from deployment.authorization import publish_outcome
+
+                build_dir = Path(output_location).parent
+                if not build_dir.is_absolute():
+                    build_dir = root / build_dir
+                if build_dir.is_dir():
+                    ledger_state = publish_outcome(build_dir)
+            except Exception as error:  # A missing/unreadable ledger is reported, never guessed around.
+                ledger_state = {"state": "EVIDENCE_UNREADABLE", "code": "PUBLISH_LEDGER_UNREADABLE",
+                                "next_action": sanitize_diagnostic(error)}
+        if ledger_state:
+            latest = ledger_state.get("latest_attempt") or None
+            if isinstance(latest, dict):
+                latest = {
+                    key: (url_host(value) if key.endswith("deployment_url") else sanitize_diagnostic(value) if key == "error" else value)
+                    for key, value in latest.items()
+                }
+            entry.update({
+                "state": ledger_state["state"],
+                "code": ledger_state["code"],
+                "attempt_count": ledger_state.get("attempt_count"),
+                "latest_attempt": latest,
+                "next_action": ledger_state.get("next_action"),
+            })
+        else:
+            entry["state"] = "NOT_ATTEMPTED" if not deployment else "SUPERSEDED"
+            entry["code"] = "NO_PUBLISH_RECORD" if not deployment else "DEPLOYMENT_SUPERSEDED_BY_NEW_BUILD"
+            entry["next_action"] = NEXT_ACTIONS.get("PUBLISH_STATE_UNCERTAIN") if entry["state"] == "UNCERTAIN" else (
+                "Deploy the current assigned build through an authorized, executed DEPLOY job." if entry["state"] == "SUPERSEDED"
+                else "Run a deployment check first: python3 -m deployment.cli --project-id <id> (dry run, publishes nothing)."
+            )
+        outcomes[entry["state"]] = outcomes.get(entry["state"], 0) + 1
+        if entry["state"] in {"UNCERTAIN", "FAILED", "RECORDED_UNCONFIRMED", "EVIDENCE_UNREADABLE", "SUPERSEDED"}:
+            attention.append(entry)
+    # Execution records that already reported an uncertain publish, even when no local build
+    # directory survives to read a ledger from.
+    for execution in (store.state.get("executions") or {}).values():
+        if not isinstance(execution, dict):
+            continue
+        if str(execution.get("error_code") or "") in {"PUBLISH_STATE_UNCERTAIN", "PUBLISH_UNCERTAIN"}:
+            attention.append({
+                "kind": "execution",
+                "project_id": execution.get("project_id"),
+                "job_id": execution.get("job_id"),
+                "execution_id": execution.get("execution_id"),
+                "state": "UNCERTAIN",
+                "code": str(execution.get("error_code")),
+                "message": execution.get("error_message"),
+                "recorded_at": execution.get("completed_at"),
+                "next_action": NEXT_ACTIONS["PUBLISH_STATE_UNCERTAIN"],
+                "provider_contacted": True,
+            })
+            break
+    return {
+        "status": "degraded" if attention else "healthy",
+        "outcomes": outcomes,
+        "attention": attention[:ATTENTION_LIMIT],
+        "attention_count": len(attention),
+        "build_directories_scanned": scanned,
+        "evidence_sources": ["recorded deployment state", "per-build publish attempt ledger"],
+        "live_url_checked": False,
+        "reason": None,
+    }
+
+
+def provider_section(store, repository_root: Path, *, include_evidence: bool = True) -> dict:
+    """Deployment section for ``system_health``: provider configuration plus recorded outcomes."""
+    try:
+        from deployment.deployer import provider_configuration
+
+        configuration = provider_configuration(Path(repository_root))
+    except Exception as error:  # A missing provider package must degrade the report, not break it.
+        configuration = {"provider": "vercel", "cli_available": False, "project_linked": False,
+                         "error": sanitize_diagnostic(error)}
+    report = deployment_report(store, repository_root=repository_root, include_evidence=include_evidence)
+    linked = bool(configuration.get("project_linked"))
+    report.update({
+        "configuration": configuration,
+        # Preserved from the earlier report: a project link is required before a publish can be
+        # authorized, so an unlinked workspace is degraded regardless of recorded history.
+        "status": "degraded" if (not linked or report["attention"]) else "healthy",
+        "reason": None if linked else "No approved Vercel project link.",
+    })
+    return report
+
+
+def configuration_section(store, repository_root: Path) -> dict:
+    """Presence-only view of the operational configuration (names, never values)."""
+    from .observability import log_file_path
+
+    values = {key: os.environ.get(key) for key in (
+        "AI_WEBSITE_AGENT_ENV", "AI_WEBSITE_AGENT_API_TOKEN", "AI_WEBSITE_AGENT_STORAGE_BACKEND",
+        "AI_WEBSITE_AGENT_API_URL", "AI_WEBSITE_AGENT_LOG_DIR",
+    )}
+    missing = sorted(name for name, value in values.items() if name not in {
+        "AI_WEBSITE_AGENT_ENV", "AI_WEBSITE_AGENT_LOG_DIR", "AI_WEBSITE_AGENT_API_URL"
+    } and not str(value or "").strip())
+    database_configured = getattr(store, "db_backend", None) is not None or any(
+        str(os.environ.get(name) or "").strip() for name in ("DATABASE_URL", "AI_WEBSITE_AGENT_DATABASE_URL", "SUPABASE_DB_URL")
+    )
+    state_path = Path(getattr(store, "path", Path(repository_root) / "data/tracking/state.json"))
+    report = {
+        "status": "healthy",
+        "environment": str(values.get("AI_WEBSITE_AGENT_ENV") or "development"),
+        "production_mode": is_production_mode(),
+        "api_token_configured": bool(str(values.get("AI_WEBSITE_AGENT_API_TOKEN") or "").strip()),
+        "database_configured": database_configured,
+        "state_path_writable_parent": bool(state_path.parent.is_dir() and os.access(state_path.parent, os.W_OK)) or state_path.parent == Path("."),
+        "operational_log_enabled": log_file_path() is not None,
+        "checks": {
+            "secrets_reported": False,
+            "note": "Only presence of configuration is reported; values are never read into a report.",
+        },
+    }
+    if report["production_mode"] and (missing or not database_configured):
+        report["status"] = "degraded"
+        report["missing"] = missing if database_configured else sorted([*missing, "DATABASE_URL"])
+    return report
+
+
+def operator_attention(store, *, now: datetime | None = None, repository_root: Path | str = ".",
+                       include_deployment: bool = True, include_deployment_evidence: bool = True,
+                       limit: int = ATTENTION_LIMIT) -> dict:
+    """The single source for "what needs an operator", used by health, API, CLI and alerts.
+
+    It reports only what is recorded: job codes and messages, project stage/review/validation state,
+    publish outcomes backed by an attempt ledger, and stale heartbeats.
+    """
+    job_items, counts = job_attention_items(store, now=now, limit=limit)
+    project_items = project_attention_items(store, limit=limit)
+    deployment_attention: list[dict] = []
+    if include_deployment:
+        deployment_attention = deployment_report(
+            store, repository_root=repository_root, include_evidence=include_deployment_evidence
+        ).get("attention", [])
+    for item in deployment_attention:
+        item.setdefault("kind", "deployment")
+    items = [*job_items, *project_items, *deployment_attention][:limit]
+    grouped: dict[str, int] = {}
+    for item in items:
+        grouped[str(item.get("kind"))] = grouped.get(str(item.get("kind")), 0) + 1
+    projects = sorted({str(item.get("project_id")) for item in items if item.get("project_id")})
+    return {
+        "checked_at": _checked_at(now),
+        "requires_attention": bool(items),
+        "counts": {**counts, "jobs": counts["total"], "projects": len(project_items),
+                   "deployments": len(deployment_attention), "by_kind": grouped},
+        "projects": projects,
+        "items": items,
+        "meaning": "Attention means a recorded state that a human must clear; the system will not retry it on its own.",
+    }
+
+
+def workflow_execution_report(store, *, now: datetime | None = None) -> dict:
+    """Workflow health from the job records and execution ledger the system already keeps."""
+    jobs = [job for job in (store.state.get("jobs") or {}).values() if isinstance(job, dict)]
+    by_status: dict[str, int] = {}
+    oldest_running: dict[str, Any] | None = None
+    oldest_pending: dict[str, Any] | None = None
+    recent_failures: list[dict] = []
+    for job in jobs:
+        status = str(job.get("status") or "UNKNOWN")
+        by_status[status] = by_status.get(status, 0) + 1
+        entry = {
+            "job_id": job.get("job_id"),
+            "job_type": job.get("job_type"),
+            "project_id": job.get("project_id"),
+            "age_seconds": recorded_age_seconds(job.get("started_at") if status == "RUNNING" else job.get("created_at"), now=now),
+            "recorded_at": job.get("started_at") if status == "RUNNING" else job.get("created_at"),
+        }
+        if status == "RUNNING":
+            if oldest_running is None or (entry["age_seconds"] or 0) > (oldest_running.get("age_seconds") or 0):
+                oldest_running = entry
+        elif status in {"PENDING", "QUEUED"}:
+            if oldest_pending is None or (entry["age_seconds"] or 0) > (oldest_pending.get("age_seconds") or 0):
+                oldest_pending = entry
+        if status in ATTENTION_STATUSES and job.get("error_code"):
+            recent_failures.append({
+                "job_id": job.get("job_id"), "status": status, "code": job.get("error_code"),
+                "recorded_at": job.get("completed_at") or job.get("updated_at"),
+            })
+    executions = [record for record in (store.state.get("executions") or {}).values() if isinstance(record, dict)]
+    recent_failures.sort(key=lambda item: str(item.get("recorded_at") or ""))
+    attention = sorted(status for status in by_status if status in ATTENTION_STATUSES)
+    return {
+        "status": "degraded" if attention else "healthy",
+        "jobs": len(jobs),
+        "by_status": by_status,
+        "attention": attention,
+        "executions_recorded": len(executions),
+        "oldest_running": oldest_running,
+        "oldest_pending": oldest_pending,
+        "recent_failures": recent_failures[-5:],
+        "note": "Counts and ages come from recorded timestamps only; a missing timestamp is reported as null.",
+    }
+
+
+def worker_section(store, now: datetime | None = None) -> dict:
+    workers = [worker for worker in (store.state.get("workers") or {}).values() if isinstance(worker, dict)]
+    available = [w for w in workers if w.get("enabled") and w.get("status") == "IDLE" and w.get("health_status") == "AVAILABLE"]
+    degraded = [w for w in workers if str(w.get("health_status") or "") not in {"", "AVAILABLE"}]
+    section = {
+        "status": "healthy" if available else "degraded",
+        "available_workers": len(available),
+        "registered_workers": len(workers),
+        "degraded_workers": len(degraded),
+        "heartbeat_threshold_seconds": STALE_RUNNING_SECONDS,
+    }
+    if not workers:
+        section["reason"] = "No worker has registered; queued jobs will not be executed until one starts."
+    return section
+
+
+def n8n_section(repository_root: Path) -> dict:
+    """Report the automation platform's wiring from local files and configuration only."""
+    directory = Path(repository_root) / "n8n" / "workflows"
+    workflows = sorted(path.name for path in directory.glob("*.json")) if directory.is_dir() else []
+    active = False
+    for name in workflows:
+        try:
+            if '"active": true' in (directory / name).read_text(encoding="utf-8"):
+                active = True
+                break
+        except OSError:
+            continue
+    return {
+        "status": "available" if active else "unavailable",
+        "reason": None if active else "Not activated or connected by this repository.",
+        "workflows_shipped": len(workflows),
+        "activation": "active" if active else "inactive",
+        "callback_api_configured": bool(str(os.environ.get("AI_WEBSITE_AGENT_API_URL") or "").strip()),
+    }
+
+
+def system_health(store, registry=None, *, repository_root=Path("."), verify_build_evidence: bool = True,
+                  storage: dict | None = None):
+    """Compose the full operational report; no network and no database connection.
+
+    ``verify_build_evidence=False`` skips reading per-build publish ledgers. The readiness probe uses
+    that cheaper form so a load balancer polling readiness does not turn into a filesystem scan;
+    ``GET /health`` and the CLI commands report the full evidence.
+
+    ``storage`` accepts a :func:`verify_storage` result so a caller that has actively verified the
+    database reports the truth. Without it the storage section is explicitly configuration-only:
+    ``source_of_truth.verification`` says so, because an unprobed backend is never claimed healthy.
+    """
+    now = datetime.now(timezone.utc)
+    root = Path(repository_root)
+    verified = storage is not None
+    storage = storage if verified else storage_report(store)
+    local_state = store.check_local_state(repository_root=root) if hasattr(store, "check_local_state") else {"status": "HEALTHY"}
+    jobs = list((store.state.get("jobs") or {}).values())
     job_counts: dict[str, int] = {}
     for job in jobs:
         status = str(job.get("status") or "UNKNOWN")
         job_counts[status] = job_counts.get(status, 0) + 1
     attention = sorted(status for status in job_counts if status in {"FAILED", "NEEDS_REVIEW", "BLOCKED"})
-    state_available = isinstance(store.state, dict) and storage["status"] == "healthy"
-    return {"application":{"status":"healthy" if state_available else "degraded"},"source_of_truth":{"status":"healthy" if state_available else "unavailable","storage":storage,"local_state":local_state},"job_system":{"status":"degraded" if attention else "healthy","jobs":len(jobs),"by_status":job_counts,"attention":attention},"worker_system":{"status":"healthy" if available else "degraded","available_workers":len(available)},"n8n":{"status":"unavailable","reason":"Not activated or connected by this repository."},"deployment":{"status":"healthy" if linked else "degraded","reason":None if linked else "No approved Vercel project link."},"configuration":{"status":"healthy"}}
+    probed_or_local = verified or getattr(store, "db_backend", None) is None
+    state_available = isinstance(store.state, dict) and storage["status"] == "healthy" and probed_or_local
+    configuration = configuration_section(store, root)
+    workers = worker_section(store, now)
+    deployment = provider_section(store, root, include_evidence=verify_build_evidence)
+    workflow = workflow_execution_report(store, now=now)
+
+    blocking: list[dict] = []
+    degradations: list[dict] = []
+    if not probed_or_local and storage["status"] == "healthy":
+        degradations.append({
+            "code": "STORAGE_NOT_PROBED",
+            "message": "A remote storage backend is configured but this report did not verify it.",
+            "next_action": "Use GET /readiness or: python3 -m orchestration.cli health (both verify the backend actively).",
+        })
+    if storage["status"] != "healthy":
+        blocking.append({
+            "code": "STORAGE_UNAVAILABLE",
+            "message": storage["error"] or "The configured storage backend is not usable.",
+            "next_action": "Verify the database connection configuration and re-check: python3 -m orchestration.cli health",
+        })
+    if not isinstance(store.state, dict):
+        blocking.append({"code": "STATE_UNLOADED", "message": "No state object is available to this process.",
+                        "next_action": "Start the API against a verified workspace (python3 -m orchestration.cli check-workspace)."})
+    if local_state.get("status") != "HEALTHY":
+        if not local_state.get("state_file_exists"):
+            blocking.append({"code": "STATE_NOT_PERSISTED", "message": "Neither a database backend nor a state file is available.",
+                            "next_action": "Configure a database backend or run recovery before accepting work."})
+        else:
+            degradations.append({
+                "code": "LOCAL_BUILD_ARTIFACTS_MISSING",
+                "message": f"{len(local_state.get('missing_build_artifacts') or [])} recorded build artifact(s) are absent from this workspace.",
+                "next_action": "Recover them from durable storage: python3 -m orchestration.cli recover-workspace",
+            })
+    if workers["status"] != "healthy":
+        degradations.append({"code": workers.get("reason") and "NO_AVAILABLE_WORKER" or "WORKER_CAPACITY",
+                            "message": workers.get("reason") or "No registered worker is currently available.",
+                            "next_action": "Start a worker (python3 -m orchestration.cli serve) or check worker health."})
+    if attention:
+        degradations.append({"code": "JOBS_AWAITING_OPERATOR", "message": f"Job statuses needing review: {', '.join(attention)}.",
+                            "next_action": "python3 -m orchestration.cli attention"})
+    if deployment.get("status") != "healthy":
+        degradations.append({"code": "DEPLOYMENT_STATE", "message": deployment.get("reason")
+                            or f"{deployment.get('attention_count', 0)} project(s) need a deployment outcome review.",
+                            "next_action": "python3 -m orchestration.cli deployment-status"})
+
+    readiness_status = "NOT_READY" if blocking else ("DEGRADED" if degradations else "READY")
+    return {
+        "checked_at": _checked_at(now),
+        "liveness": {"status": "ALIVE", "note": "Produced in-process: proves execution, not readiness."},
+        "application": {"status": "healthy" if state_available else "degraded"},
+        "readiness": {
+            "status": readiness_status,
+            "blocking": blocking,
+            "degradations": degradations,
+            "note": "Liveness, readiness and storage health are separate: an alive process is not necessarily ready to serve work.",
+        },
+        "source_of_truth": {
+            # "unverified" is reserved for a configured remote backend nobody probed: an alive process
+            # must never imply the source of truth was reached.
+            "status": ("healthy" if state_available else
+                       ("unverified" if probed_or_local is False and storage["status"] == "healthy" else "unavailable")),
+            "storage": storage,
+            "local_state": local_state,
+            "verification": "verified" if verified else "configuration_only",
+            "verification_note": (
+                "An operator probe verified reachability and schema." if verified else
+                "Configuration only: no connection was attempted. Use GET /readiness (or verify_storage) for an active check."
+            ),
+        },
+        "job_system": {"status": "degraded" if attention else "healthy", "jobs": len(jobs),
+                       "by_status": job_counts, "attention": attention},
+        "workflow_execution": workflow,
+        "worker_system": workers,
+        "operator_attention": operator_attention(store, now=now, repository_root=root),
+        "n8n": n8n_section(root),
+        "deployment": deployment,
+        "configuration": configuration,
+    }
 
 
 def readiness_for(store, job_service, job_id, registry=None):
-    job=job_service.get(job_id); failure=job_service.prerequisite_failure(job)
-    report={"job_id":job_id,"status":"READY" if not failure else "NOT_READY","reason":failure,"dry_run":job.get("dry_run",True)}
+    job = job_service.get(job_id)
+    gate = job_service.gate_failure(job) if hasattr(job_service, "gate_failure") else None
+    failure = gate[1] if gate else None
+    report = {
+        "job_id": job_id,
+        "status": "READY" if not failure else "NOT_READY",
+        "reason": failure,
+        "dry_run": job.get("dry_run", True),
+    }
+    if gate:
+        report["error_code"] = gate[0]
+        report["next_action"] = job.get("next_action") or next_action_for(gate[0], project_id=job.get("project_id"),
+                                                                          build_id=job.get("build_id"), job_type=job.get("job_type"))
     if not failure and registry:
-        candidates=registry.candidates(job)
-        if not candidates: report.update({"status":"NOT_READY","reason":"No available capable worker."})
+        candidates = registry.candidates(job)
+        if not candidates:
+            report.update({"status": "NOT_READY", "reason": "No available capable worker.",
+                           "error_code": "WORKER_UNAVAILABLE", "next_action": NEXT_ACTIONS["WORKER_UNAVAILABLE"]})
     return report

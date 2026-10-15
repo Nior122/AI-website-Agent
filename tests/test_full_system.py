@@ -27,6 +27,19 @@ from validation.quality_validator import validate_rendered_html
 FIXTURE = Path(__file__).parent / "fixtures" / "qualified_leads.json"
 
 
+def _workspace_store_copy(root: Path) -> TrackingStore:
+    """Read the workspace's recorded project state through a disposable copy.
+
+    These tests must see the project-0002 build/validation records exactly as recorded, but building
+    or verifying a review package persists `updated_at` and package digests onto those records. Going
+    through the default state path would mutate real workspace data every time the suite runs, so the
+    copy carries the writes. The build artifact itself is still read read-only from the repository.
+    """
+    temp_state = Path(root) / "state-workspace-copy.json"
+    temp_state.write_bytes(Path("data/tracking/state.json").read_bytes())
+    return TrackingStore(temp_state)
+
+
 class FullSystemTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -600,7 +613,7 @@ class FullSystemTests(unittest.TestCase):
         self.assertTrue(any("test fixtures and documentation cannot serve as evidence" in e for e in bad_res.errors))
 
         # 3. Verify workspace project-0002 new build, stale validation invalidation, and human-review package
-        ws_store = TrackingStore()
+        ws_store = _workspace_store_copy(self.root)
         snap = ws_store.snapshot("project-0002")
         self.assertEqual(snap["project"]["assigned_build_id"], "build-2026-10-13T012227z")
         self.assertEqual(snap["project"]["latest_validation_id"], "validation-2026-10-13T012227z")
@@ -631,7 +644,7 @@ class FullSystemTests(unittest.TestCase):
         """Phase 32: review-package reproducibility, stale/tampered export detection, and 127.0.0.1-only local server."""
         from builder.cli import validate_serve_target
 
-        ws_store = TrackingStore()
+        ws_store = _workspace_store_copy(self.root)
         pkg_dir_1 = self.root / "pkg-1"
         pkg_dir_2 = self.root / "pkg-2"
         pkg1 = ws_store.build_review_package("project-0002", export_dir=pkg_dir_1)

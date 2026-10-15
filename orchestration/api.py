@@ -14,7 +14,15 @@ from urllib.parse import parse_qs, urlparse
 
 from tracking.database import DatabasePersistenceError, is_production_mode, sanitize_db_error
 from tracking.store import TrackingStore
-from .health import readiness_for, system_health, verify_storage
+from .health import (
+    STALE_RUNNING_SECONDS,
+    deployment_report,
+    operator_attention,
+    provider_section,
+    readiness_for,
+    system_health,
+    verify_storage,
+)
 from .jobs import JobService, JobWorker
 from .workers import LocalPipelineWorker
 
@@ -131,6 +139,10 @@ def make_handler(
             path = [seg for seg in parsed_url.path.strip("/").split("/") if seg]
             if path == ["healthz"]:
                 # Lightweight Render liveness probe: does not expose operational data or secrets.
+                # Deliberately liveness-only and always unauthenticated: it proves the process is
+                # executing and answering, never that storage, workers or the workflow are healthy.
+                # Readiness (which verifies the database) is the authenticated GET /readiness, and
+                # operational state is GET /health, GET /attention and GET /deployment-status.
                 return self._json(200, {"status": "ok"})
             if not self._authorized():
                 return self._json(401, {"error": "Unauthorized"})
@@ -149,6 +161,7 @@ def make_handler(
                         and w.get("health_status") == "AVAILABLE"
                     ]
                     if path == ["health"]:
+                        health = system_health(service.store, repository_root=repo_path, storage=verify_storage(service.store))
                         return self._json(200, {
                             "api_status": "OK",
                             "worker_registered": active_worker is not None,
@@ -156,20 +169,41 @@ def make_handler(
                             "api_execution_worker_configured": active_worker is not None,
                             "registered_worker_count": len(registered_workers),
                             "available_registered_worker_count": len(available_registered_workers),
-                            "health": system_health(service.store),
+                            "stale_running_threshold_seconds": STALE_RUNNING_SECONDS,
+                            "attention": health["operator_attention"]["counts"],
+                            "readiness": health["readiness"]["status"],
+                            "attention_required": health["operator_attention"]["requires_attention"],
+                            "health": health,
                         })
                     if path == ["readiness"]:
                         db_backend = getattr(service.store, "db_backend", None)
                         storage = verify_storage(service.store)
                         if storage["status"] != "healthy":
                             # A required database that cannot be reached or verified is never READY.
+                            # The process stays alive (GET /healthz still answers) - readiness is about
+                            # whether work can be trusted, and it cannot.
                             return self._json(503, {
                                 "status": "NOT_READY",
+                                "liveness": "ALIVE",
                                 "reason": storage["error"] or "Storage backend is unavailable.",
+                                "error_code": "STORAGE_UNAVAILABLE",
                                 "storage_backend": storage["backend"],
                                 "production_mode": storage["production_mode"],
+                                "blocking": [{
+                                    "code": "STORAGE_UNAVAILABLE",
+                                    "message": storage["error"] or "Storage backend is unavailable.",
+                                    "next_action": (
+                                        "Verify the database connection configuration and schema, then re-check "
+                                        "with: python3 -m orchestration.cli check-workspace"
+                                    ),
+                                }],
+                                "degradations": [],
                             })
+                        state = system_health(service.store, repository_root=repo_path, verify_build_evidence=False, storage=storage)
                         return self._json(200, {
+                            "liveness": "ALIVE",
+                            "blocking": state["readiness"]["blocking"],
+                            "degradations": state["readiness"]["degradations"],
                             "status": "READY",
                             "storage_backend": db_backend.dialect if db_backend is not None else "json",
                             "production_mode": is_production_mode(),
@@ -182,6 +216,30 @@ def make_handler(
                         })
                     if len(path) == 3 and path[0] == "jobs" and path[2] == "readiness":
                         return self._json(200, readiness_for(service.store, service, path[1]))
+                    if len(path) == 3 and path[0] == "jobs" and path[2] == "history":
+                        # Full attempt history for one job, from the execution ledger the system already
+                        # writes: what was attempted, when, by which worker, and how it ended.
+                        job = service.get(path[1])
+                        return self._json(200, {
+                            "job": _enrich_job(job),
+                            "executions": service.executions_for(path[1]),
+                            "retry_eligibility": service.retry_eligibility(path[1]),
+                        })
+                    if path == ["attention"]:
+                        return self._json(200, operator_attention(service.store, repository_root=repo_path))
+                    if path == ["deployment-status"]:
+                        project_id = (query.get("project_id") or [None])[0]
+                        report = provider_section(service.store, repo_path)
+                        if project_id:
+                            scoped = deployment_report(service.store, repository_root=repo_path)
+                            report["projects"] = [
+                                item for item in (scoped.get("attention", []) + [])
+                                if item.get("project_id") == project_id
+                            ] or [{
+                                "project_id": project_id,
+                                "note": "No deployment attention recorded for this project.",
+                            }]
+                        return self._json(200, report)
                     if path == ["jobs"]:
                         jobs = [_enrich_job(j) for j in service.store.state["jobs"].values()]
                         status_filter = (query.get("status") or [None])[0]
@@ -325,12 +383,26 @@ def make_handler(
                         reset_attempts = bool(payload.get("reset_attempts", False))
                         if run_immediately and active_worker is None:
                             return self._json(409, {"error": "No worker is registered by the HTTP adapter. Run an approved worker process."})
-                        job = service.retry(
-                            path[1],
-                            input=retry_input,
-                            reset_attempts=reset_attempts,
-                            worker=active_worker if run_immediately else None,
-                        )
+                        try:
+                            job = service.retry(
+                                path[1],
+                                input=retry_input,
+                                reset_attempts=reset_attempts,
+                                worker=active_worker if run_immediately else None,
+                            )
+                        except ValueError as error:
+                            # A refused retry is a decision the operator can act on, not a missing
+                            # resource: report the recorded reason and what remains possible.
+                            eligibility = service.retry_eligibility(path[1])
+                            return self._json(409, {
+                                "error": str(error),
+                                "error_code": eligibility.get("error_code") or "RETRY_NOT_ELIGIBLE",
+                                "job_id": path[1],
+                                "retry_eligibility": eligibility,
+                                "last_error_code": eligibility.get("last_error_code"),
+                                "next_action": eligibility.get("next_action")
+                                or "Correct the recorded cause, then retry explicitly.",
+                            })
                         return self._json(200, _enrich_job(job))
 
                     if path == ["leads", "deduplicate"]:

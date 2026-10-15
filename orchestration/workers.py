@@ -3,7 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
-from .jobs import JOB_TYPES, WorkerResult, _now
+from .jobs import JOB_TYPES, OPERATOR_ATTENTION_STATUSES, WorkerResult, _now, next_action_for
+from .observability import log_event, recorded_duration_seconds, sanitize_diagnostic
 
 WORKER_TYPES={"LOCAL_AGENT","REMOTE_AGENT","API_AGENT","HUMAN","OTHER"}
 WORKER_STATES={"OFFLINE","STARTING","IDLE","BUSY","DEGRADED","ERROR","DISABLED","UNKNOWN"}
@@ -73,7 +74,10 @@ class WorkerRegistry:
         job=self.store.state["jobs"].get(job_id); lease=(job or {}).get("lease",{})
         if lease.get("worker_id")!=worker_id or lease.get("lease_id")!=lease_id: raise ValueError("Stale or unauthorized result rejected.")
         worker=self._worker(worker_id); execution=self.store.state["executions"][job["execution_id"]]; status=result.status
-        normalized={**(result.output or {}),"status":status,"summary":result.summary,"artifacts":result.artifacts,"warnings":result.warnings,"errors":[result.error] if result.error else [],"metadata":result.metadata,"commit_sha":result.commit_sha}
+        detail=sanitize_diagnostic(result.error)
+        # `errors` is diagnostic text a worker may have copied from a provider response, so it is
+        # redacted before it is stored on the job and echoed by the API.
+        normalized={**(result.output or {}),"status":status,"summary":result.summary,"artifacts":result.artifacts,"warnings":[sanitize_diagnostic(item) for item in (result.warnings or [])],"errors":[detail] if result.error else [],"metadata":result.metadata,"commit_sha":result.commit_sha}
         final="COMPLETED" if status=="COMPLETED" else "NEEDS_REVIEW" if status in {"NEEDS_REVIEW","PARTIAL"} or result.error_type=="HUMAN_REVIEW" else "QUEUED" if result.retryable and job["attempts"]<job["max_attempts"] else "FAILED"
         next_types=[]
         if final=="COMPLETED":
@@ -81,9 +85,26 @@ class WorkerRegistry:
             nxt=NEXT_TYPES.get(job["job_type"])
             if nxt and not (job["job_type"]=="VALIDATE" and normalized.get("validation_status")!="PASS"):
                 next_types=[nxt]
-        job.update({"status":final,"output":normalized,"artifacts":result.artifacts,"error":result.error,"next_job_types":next_types,"updated_at":_now(),"completed_at":_now() if final!="QUEUED" else None,"lease":None})
-        execution.update({"status":final,"completed_at":_now(),"result":normalized,"error_type":result.error_type,"error_message":result.error,"artifacts":result.artifacts,"commit_sha":result.commit_sha})
-        worker.update({"status":"IDLE","current_job_id":None,"updated_at":_now(),"last_successful_job":job_id if final=="COMPLETED" else worker.get("last_successful_job"),"last_failed_job":job_id if final in {"FAILED","NEEDS_REVIEW"} else worker.get("last_failed_job"),"last_error":result.error})
+        # Same coded, sanitized failure vocabulary as the job service, so a worker-reported fault and a
+        # service-run fault are readable and searchable identically.
+        code=None if final=="COMPLETED" else (result.error_code or ("TRANSIENT_FAILURE" if final=="QUEUED" else "WORKER_FAILED"))
+        stamp=_now()
+        job.update({"status":final,"output":normalized,"artifacts":result.artifacts,"error":detail,"next_job_types":next_types,
+                    "error_code":code,"next_action":next_action_for(code,project_id=job.get("project_id"),build_id=job.get("build_id"),job_type=job.get("job_type")),
+                    "requires_operator_action":final in OPERATOR_ATTENTION_STATUSES or (final=="FAILED" and job["attempts"]>=job["max_attempts"]),
+                    "updated_at":stamp,"completed_at":stamp if final!="QUEUED" else None,"lease":None})
+        if final!="COMPLETED":
+            job["failure"]={"code":code,"message":detail,"stage":final,"attempt":int(job.get("attempts") or 0),"recorded_at":stamp}
+        else:
+            job["failure"]=None
+        execution.update({"status":final,"completed_at":stamp,"duration_seconds":recorded_duration_seconds(execution.get("started_at"),stamp),
+                          "result":normalized,"error_type":result.error_type,"error_code":code,"error_message":detail,
+                          "next_action":job.get("next_action"),"artifacts":result.artifacts,"commit_sha":result.commit_sha})
+        worker.update({"status":"IDLE","current_job_id":None,"updated_at":stamp,"last_successful_job":job_id if final=="COMPLETED" else worker.get("last_successful_job"),"last_failed_job":job_id if final in {"FAILED","NEEDS_REVIEW"} else worker.get("last_failed_job"),"last_error":detail})
+        if final!="COMPLETED":
+            log_event(severity="ERROR" if final=="FAILED" else "WARNING",operation=f"worker.{job.get('job_type','unknown').lower()}",code=code,
+                      message=detail,job_id=job_id,lead_id=job.get("lead_id"),project_id=job.get("project_id"),build_id=job.get("build_id"),
+                      execution_id=job.get("execution_id"),worker_id=worker_id,attempt=job.get("attempts"))
         self._unlock(job); self.store._save(); return job
     def recover_expired(self):
         self._refresh()
@@ -91,7 +112,18 @@ class WorkerRegistry:
         for job in list(self.store.state["jobs"].values()):
             lease=job.get("lease") or {}
             if job.get("status")=="RUNNING" and lease.get("expires_at") and _parse(lease["expires_at"])<now:
-                worker=self._worker(lease["worker_id"]); worker.update({"status":"DEGRADED","health_status":"UNAVAILABLE","current_job_id":None,"last_error":"Lease expired."}); job.update({"status":"QUEUED" if job["attempts"]<job["max_attempts"] else "NEEDS_REVIEW","error":"Worker lease expired.","lease":None,"updated_at":_now()}); self._unlock(job); recovered.append(job)
+                worker=self._worker(lease["worker_id"]); worker.update({"status":"DEGRADED","health_status":"UNAVAILABLE","current_job_id":None,"last_error":"Lease expired."})
+                code="LEASE_EXPIRED"; detail="Worker lease expired before the result was reported."
+                job.update({"status":"QUEUED" if job["attempts"]<job["max_attempts"] else "NEEDS_REVIEW","error":detail,"error_code":code,
+                            "next_action":next_action_for(code,project_id=job.get("project_id"),job_type=job.get("job_type")),
+                            "requires_operator_action":job["attempts"]>=job["max_attempts"],"lease":None,"updated_at":_now()})
+                execution=(self.store.state.get("executions") or {}).get(job.get("execution_id") or "")
+                if isinstance(execution,dict) and execution.get("status")=="RUNNING":
+                    execution.update({"status":"NEEDS_REVIEW" if job["status"]=="NEEDS_REVIEW" else "QUEUED","completed_at":_now(),
+                                      "error_code":code,"error_message":detail,"next_action":job.get("next_action")})
+                log_event(severity="WARNING",operation="worker.lease",code=code,message=detail,job_id=job.get("job_id"),
+                          worker_id=lease.get("worker_id"),project_id=job.get("project_id"),attempt=job.get("attempts"))
+                self._unlock(job); recovered.append(job)
         self.store._save(); return recovered
     def human_takeover(self, job_id, worker_id):
         self._refresh()
