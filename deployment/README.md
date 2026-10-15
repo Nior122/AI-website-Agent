@@ -84,17 +84,29 @@ network call.
 `docs/INTEGRATION-SETUP.md` §5 states the whole procedure; the short form is below, and no step may be
 skipped forward. A step that is unverified is not a step that succeeded.
 
-1. Link the intended preview project by hand (`vercel link`); confirm the name, never hand-write IDs.
-2. Build and validate the artifact (`tracking.cli build`, then `validate-build`), and confirm the
-   disclosure text matches the data classification (fictional wording only for `TEST_FIXTURE` data).
+1. Link the intended preview project by hand (`vercel login`, then `vercel link`); confirm the name, never
+   hand-write IDs. `vercel whoami --non-interactive` is the proof that the CLI in *that* machine is
+   authenticated. The code compares the linked `projectName`; it does not compare the `projectId`, so the
+   operator matches that value against the dashboard, then reads `deployment-status`
+   (`project_linked`, `linked_project_name`) to confirm the checkout really sees the link.
+2. Build and validate the artifact (`tracking.cli build`, then `validate-build`), confirm the disclosure
+   text matches the data classification (fictional wording only for `TEST_FIXTURE` data), and confirm the
+   file is actually present: `output/` is git-ignored, so a rebuilt workspace can hold a build *record*
+   without its artifact. Re-run `build` in that case and have the human review the new build id - the gate
+   refuses a decision for a superseded one with `BUILD_MISMATCH`.
 3. `tracking.cli deploy-check <project_id> --build-id <build-id>` - the read-only form of the gate verdict.
 4. Record the human decision (`tracking.cli review ... --decision APPROVED_FOR_PREVIEW
    --action PREVIEW_DEPLOYMENT --build-id <build-id> --notes ... --confirm ...`).
 5. Dry run (`deployment.cli --build <dir> --state-path ... --project-id ... --build-id ...`): verifies
    manifest, approval capability, artifact hash, and build identity; writes no ledger entry.
 6. Execute, once, with the same flags plus `--execute`. Evidence of success is a recorded `DEPLOYED`
-   status with an `https://<name>.vercel.app` URL returned by the provider - nothing else counts, and this
-   repository has no path that marks a preview deployed without it.
+   status with the **deployment-specific** `https://<name>.vercel.app` URL the provider returned, whose
+   `build_id` and `artifact_sha256` match the artifact that was staged, and which answers when fetched -
+   nothing else counts. The project's stable alias (`https://<project>.vercel.app`) proves nothing about
+   this build: it keeps serving whatever was last published to it, including an older project's artifact,
+   and a deployment created by a connected Git repository is not this gate's deployment at all (check
+   `gh api repos/<owner>/<repo>/commits/<sha>/check-runs`). This repository has no path that marks a preview
+   deployed without the provider's own answer.
 7. `deployment-status` / `GET /deployment-status` to read the outcome back, and `attention` for anything
    that needs a human afterwards (an uncertain publish stays uncertain until §"Resolving an uncertain
    publish" is followed).

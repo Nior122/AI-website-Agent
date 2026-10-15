@@ -186,6 +186,51 @@ vercel link --project ai-website-agent-preview     # writes .vercel/project.json
 mismatch, so a link to the production project is a refusal, not a publish. `requirements.txt` and the Vercel
 CLI are only needed in the environment that will publish — not in the sandbox that runs the tests.
 
+**Linking is an authenticated, human action — and only three things can prove the identity.** A project
+*name* and a public URL are not a link. Verify in this order, and accept nothing you cannot point at:
+
+1. **The dashboard** (`Settings → General`): the project's slug and its `prj_…` id. The name must be
+   `ai-website-agent-preview`, which is what `deployment/deployer.py` compares against
+   (`EXPECTED_PREVIEW_PROJECT`), and the slug rules additionally refuse anything that looks like a
+   production or live target. Nothing in this repository creates the project.
+2. **`vercel link --project ai-website-agent-preview`**, run *in the checkout that will publish*, by someone
+   who has authenticated that CLI (`vercel login`, or an environment the operator controls). It is the link
+   command that writes `.vercel/project.json`; **that file must never be hand-written**, because its
+   `projectId` is what decides where the bytes go. `git check-ignore .vercel` confirms it stays out of Git.
+3. **The repo's own read-back**: `python3 -m orchestration.cli deployment-status` reports
+   `configuration.project_linked`, `linked_project_name`, and `cli_available`, so after step 2 the answer is
+   `ai-website-agent-preview` rather than `null`. The code pins the linked **name**; it does not compare the
+   linked **id** against a recorded expectation, so the `prj_…` value from step 1 is the operator's to match
+   against the file from step 2. After an executed publish, `deployment.json` and
+   `deployment-attempts.json` carry the `vercel_project_id` that was actually used.
+
+**A public project URL is not evidence about a build.** `https://ai-website-agent-preview.vercel.app` is the
+project's stable alias: it answers even when the project has never received the artifact you are holding,
+when an older artifact is what is live, or when a Git-triggered deploy published something else entirely. The
+evidence that *this* build was published is (a) a recorded `DEPLOYED` whose `build_id` and
+`artifact_sha256` match the artifact you staged, (b) the matching `DEPLOYING` → `DEPLOYED` pair in the
+build's `deployment-attempts.json`, and (c) a fetch of the **deployment-specific** URL the provider returned
+(a `*.vercel.app` host, checked for the disclosure and the expected content), not the alias alone.
+`deployment-status` deliberately reports `live_url_checked: false`: this repository never upgrades its own
+record into a claim about the live web.
+
+**A connected Git repository publishes without asking this gate.** Vercel's Git integration deploys on push —
+preview deployments for pushed branches, and the production deployment for the project's production branch —
+and it never consults the review, the validation result, or the authorization capability. Two consequences
+have to be decided deliberately, in the project's settings, not assumed:
+
+- **A Git-triggered deploy cannot publish a validated artifact.** Builds live in `output/`, which is
+  git-ignored (as are `.vercel/` and `data/tracking/`), so the repository contains no `index.html` to
+  deploy. Pointing the project's Root Directory / Build Output at the repo root would publish source and
+  committed fixtures instead of a reviewed page — a different thing than the artifact the human approved.
+- **Keep the automatic path off unless you want it.** Vercel's `Settings → Git → Ignored Build Step` (or
+  disabling Preview Deployments, or disconnecting the repository) is what guarantees that pushing a branch
+  cannot publish. Changing that setting is an operator decision, and this repository will not change it for
+  you. To see whether a push already triggered something, without dashboard access:
+  `gh api repos/<owner>/<repo>/commits/<sha>/check-runs` and `…/commits/<sha>/status` — a Vercel Git deploy
+  posts a `Vercel` check-run whose title is the deployment URL; an empty list means no deployment is
+  attributed to that commit.
+
 **Automatic.** Readiness and the artifact to publish:
 
 ```bash
@@ -285,7 +330,7 @@ answers it from records rather than from hope, and `python3 -m orchestration.cli
 | 1 | The build exists and validation passed for **that** build | `python3 -m tracking.cli snapshot <project_id>` | `latestBuild.status COMPLETED`, `latestValidation.status PASS`, `artifact_exists true` |
 | 2 | A human approval is recorded for **that exact build** | `python3 -m tracking.cli deploy-check <project_id> --build-id <build-id>` | `authorized true`, `code APPROVED_FOR_DEPLOYMENT`, and the `build_id`/`validation_id` in the answer are the ones you are publishing |
 | 3 | The authorization capability is intact and not revoked | same `deploy-check` (it verifies the build-local capability and artifact digest) | no `APPROVAL_REVOKED`, `APPROVAL_TAMPERED`, or `APPROVAL_ARTIFACT_STALE` |
-| 4 | The provider is configured **and authenticated** in the machine that will publish | `python3 -m orchestration.cli deployment-status` | `configuration.cli_available true`, `configuration.project_linked true` |
+| 4 | The provider is configured **and authenticated** in the machine that will publish | `python3 -m orchestration.cli deployment-status`, then `vercel whoami --non-interactive` in the publishing machine | `configuration.cli_available true`, `project_linked true`, `linked_project_name` equal to the expected preview project, and `whoami` naming the account that owns it |
 | 5 | The target is the intended preview project | `python3 -m orchestration.cli preflight --project-id <project_id>` | `deployment_provider_configuration.expected_preview_project` equals the linked name; no `--prod` path exists in this repository |
 | 6 | The operator has explicitly authorised a real preview deployment | - | a human decision, recorded nowhere else; the commands refuse without it |
 
@@ -303,6 +348,14 @@ is recorded with its own code instead of a generic worker fault, because no huma
 
 They appear identically in `deployment.json` (`metadata.denial_code`), in the job row, in `inspect-job`, and
 in the structured log line, so the operator-facing surfaces cannot disagree.
+
+**The artifact has to be present, not merely recorded.** `output/` is git-ignored, so a rebuilt or freshly
+cloned workspace can hold the *record* of a build while missing its file. `snapshot <project_id>` compares
+them (`latestBuild.artifact_sha256` against the bytes on disk, `artifact_exists: true`); when the artifact is
+gone, re-run `build` and let the review name the **new** build id — an approval for the superseded id is
+refused with `BUILD_MISMATCH`, which is the gate protecting you rather than an obstacle to route around.
+Rebuilding the same verified data from the same template produces an identical digest, so the human review
+still covers the same page.
 
 **When this machine is not the one that publishes.** A sandbox, CI runner, or fresh clone normally answers
 `cli_available: false` / `project_linked: false`, and provider credentials must never be pasted into a shared
