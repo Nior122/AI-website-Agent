@@ -355,7 +355,10 @@ them (`latestBuild.artifact_sha256` against the bytes on disk, `artifact_exists:
 gone, re-run `build` and let the review name the **new** build id — an approval for the superseded id is
 refused with `BUILD_MISMATCH`, which is the gate protecting you rather than an obstacle to route around.
 Rebuilding the same verified data from the same template produces an identical digest, so the human review
-still covers the same page.
+still covers the same page - but the build identifier is a timestamp and the artifact is never in Git, so
+**build, `deploy-check`, the `review` decision, and `deployment.cli --execute` all have to happen in the
+same workspace**: an approval recorded where one build directory exists cannot authorize a different
+directory on another machine, and it should not - that mismatch is exactly what `BUILD_MISMATCH` is for.
 
 **When this machine is not the one that publishes.** A sandbox, CI runner, or fresh clone normally answers
 `cli_available: false` / `project_linked: false`, and provider credentials must never be pasted into a shared
