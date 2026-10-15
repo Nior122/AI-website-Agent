@@ -486,6 +486,28 @@ class LocalPipelineWorker:
                 except ValueError as err:
                     return WorkerResult("FAILED", error=str(err), retryable=False)
             build_dir = out_file.parent
+            # A successful deployment for the assigned build is never repeated automatically: an
+            # external publish is not idempotent, so a retried or re-delivered DEPLOY job reuses
+            # the recorded result instead of publishing a second preview.
+            recorded_dep = store.state["deployments"].get(p.get("latest_deployment_id"))
+            if (
+                recorded_dep
+                and recorded_dep.get("build_id") == build_id
+                and recorded_dep.get("project_id") == project_id
+                and recorded_dep.get("deployment_status") == "DEPLOYED"
+            ):
+                return WorkerResult(
+                    "COMPLETED",
+                    summary=f"Preview {recorded_dep.get('deployment_id')} is already deployed for {build_id}; repeat deployment skipped.",
+                    output={
+                        **recorded_dep,
+                        "lead_id": p["lead_id"],
+                        "project_id": project_id,
+                        "build_id": build_id,
+                        "validation_id": p.get("latest_validation_id"),
+                        "outcome": "ALREADY_DEPLOYED_REPEAT_SKIPPED",
+                    },
+                )
             provider = self.deployment_provider or VercelDeploymentProvider(self.repository_root)
             dep_res = provider.deploy(
                 build_dir,
@@ -501,6 +523,11 @@ class LocalPipelineWorker:
                 "build_id": build_id,
                 "validation_id": p.get("latest_validation_id"),
                 "deployment_id": dep_res.deployment_id,
+                "outcome": {
+                    "DEPLOYED": "PREVIEW_DEPLOYED",
+                    "PENDING": "DRY_RUN_VERIFIED_NOT_DEPLOYED",
+                    "NEEDS_REVIEW": "DEPLOYMENT_REQUIRES_HUMAN_REVIEW",
+                }.get(dep_res.deployment_status, "DEPLOYMENT_FAILED"),
             }
             if dep_res.deployment_status == "DEPLOYED":
                 store.record_deployment(project_id, dep_res.to_dict())

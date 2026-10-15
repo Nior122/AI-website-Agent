@@ -2,6 +2,8 @@
 from datetime import datetime, timezone
 import re
 
+from tracking.store import next_numeric_id
+
 CHANNELS={"EMAIL","WHATSAPP","INSTAGRAM","FACEBOOK","LINKEDIN","SMS","OTHER"}
 UNSAFE=("award-winning","guaranteed","customers","revenue","years in business","number one","certified")
 def now(): return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00","Z")
@@ -25,7 +27,7 @@ class OutreachService:
   if existing and not regenerate: return existing[-1]
   evidence=self._evidence(lead)
   if not evidence: raise ValueError("INSUFFICIENT_RESEARCH")
-  i=len(self.store.state["outreach"])+1; ident=f"outreach-{i:04d}"; body=self._draft(lead,dep["deployment_url"],channel,tone,evidence)
+  ident=next_numeric_id(self.store.state.get("outreach") or {}, "outreach"); body=self._draft(lead,dep["deployment_url"],channel,tone,evidence)
   self._safe(body,lead["business_name"],dep["deployment_url"])
   item={"outreach_id":ident,"project_id":project_id,"lead_id":lead["lead_id"],"build_id":dep["build_id"],"deployment_id":dep["deployment_id"],"channel":channel,"recipient":self._contact(lead,channel),"subject":f"A website preview for {lead['business_name']}" if channel=="EMAIL" else None,"draft_message":body,"personalization_points":evidence,"preview_url":dep["deployment_url"],"status":"AWAITING_REVIEW","generated_at":now(),"review_notes":None,"revision_of":existing[-1]["outreach_id"] if existing else None}
   self.store.state["outreach"][ident]=item; self.store._save(); return item

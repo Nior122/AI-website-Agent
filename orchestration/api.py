@@ -12,9 +12,9 @@ from pathlib import Path
 import threading
 from urllib.parse import parse_qs, urlparse
 
-from tracking.database import DatabasePersistenceError, is_production_mode
+from tracking.database import DatabasePersistenceError, is_production_mode, sanitize_db_error
 from tracking.store import TrackingStore
-from .health import readiness_for, system_health
+from .health import readiness_for, system_health, verify_storage
 from .jobs import JobService, JobWorker
 from .workers import LocalPipelineWorker
 
@@ -160,6 +160,15 @@ def make_handler(
                         })
                     if path == ["readiness"]:
                         db_backend = getattr(service.store, "db_backend", None)
+                        storage = verify_storage(service.store)
+                        if storage["status"] != "healthy":
+                            # A required database that cannot be reached or verified is never READY.
+                            return self._json(503, {
+                                "status": "NOT_READY",
+                                "reason": storage["error"] or "Storage backend is unavailable.",
+                                "storage_backend": storage["backend"],
+                                "production_mode": storage["production_mode"],
+                            })
                         return self._json(200, {
                             "status": "READY",
                             "storage_backend": db_backend.dialect if db_backend is not None else "json",
@@ -169,6 +178,7 @@ def make_handler(
                             "api_execution_worker_configured": active_worker is not None,
                             "registered_worker_count": len(registered_workers),
                             "available_registered_worker_count": len(available_registered_workers),
+                            "storage_backend_status": storage["status"],
                         })
                     if len(path) == 3 and path[0] == "jobs" and path[2] == "readiness":
                         return self._json(200, readiness_for(service.store, service, path[1]))
@@ -245,6 +255,8 @@ def make_handler(
                     return self._json(503, {"error": "Database persistence error", "detail": str(db_error)})
                 except (KeyError, ValueError) as error:
                     return self._json(404, {"error": str(error)})
+                except Exception as error:  # Never close the socket without a structured answer.
+                    return self._json(500, {"error": "Unhandled request failure", "detail": sanitize_db_error(error)})
 
         def do_POST(self) -> None:  # noqa: N802
             if not self._authorized():
@@ -376,6 +388,8 @@ def make_handler(
                     return self._json(503, {"error": "Database persistence error", "detail": str(db_error)})
                 except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
                     return self._json(400, {"error": str(error)})
+                except Exception as error:  # A partial write must surface as a 500, not a dropped connection.
+                    return self._json(500, {"error": "Unhandled request failure", "detail": sanitize_db_error(error)})
 
         def log_message(self, _format: str, *_args) -> None:
             """Avoid logging headers or request bodies, which could contain credentials."""

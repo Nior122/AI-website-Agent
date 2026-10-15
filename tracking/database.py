@@ -61,6 +61,51 @@ class DatabasePersistenceError(RuntimeError):
     """Raised when persistent database storage is required or configured and an operation fails."""
 
 
+# Fields that legitimately differ between two equivalent writes of the same record (retry,
+# replay, or a second worker touching the same row), used only to decide whether a concurrent
+# insert of an already-existing record ID is an idempotent replay or a real conflict.
+VOLATILE_RECORD_FIELDS = frozenset({
+    "created_at",
+    "updated_at",
+    "reviewed_at",
+    "completed_at",
+    "started_at",
+    "heartbeat_at",
+    "last_heartbeat",
+    "timestamp",
+})
+
+
+def _comparable_record(rec: Any) -> Any:
+    if not isinstance(rec, dict):
+        return rec
+    return {k: v for k, v in rec.items() if k not in VOLATILE_RECORD_FIELDS}
+
+
+def _conflict_owner_label(rec: Any) -> str:
+    """Describe which lead/project/build already owns a conflicting row so the error is actionable."""
+    if not isinstance(rec, dict):
+        return "unknown owner"
+    parts = [
+        f"{field}={rec[field]}"
+        for field in ("lead_id", "project_id", "build_id", "job_id", "worker_id", "lease_id", "validation_id", "deployment_id")
+        if rec.get(field)
+    ]
+    return ", ".join(parts) if parts else "unknown owner"
+
+
+def _lease_is_live(rec: Any, *, now_value: datetime | None = None) -> bool:
+    expires_at = (rec or {}).get("expires_at") if isinstance(rec, dict) else None
+    if not expires_at:
+        return False
+    try:
+        parsed = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+    except ValueError:
+        # An unparseable expiry is treated as live: never assume another worker's lock has lapsed.
+        return True
+    return parsed > (now_value or datetime.now(timezone.utc))
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -813,6 +858,48 @@ class RelationalStateBackend:
 
                 for rec_id, rec in current_col.items():
                     if rec_id not in baseline_col or baseline_col[rec_id] != rec:
+                        db_rec = db_col.get(rec_id)
+                        if db_rec is not None and rec_id not in baseline_col:
+                            # Another connection committed this record ID after our snapshot was
+                            # loaded. Never overwrite it silently.
+                            if _comparable_record(db_rec) == _comparable_record(rec):
+                                # Idempotent replay (same content, retry after a partial failure).
+                                continue
+                            if collection == "project_locks" and not _lease_is_live(db_rec):
+                                pass  # The stored lease has lapsed; taking it over is safe.
+                            elif collection == "project_locks":
+                                raise DatabasePersistenceError(
+                                    f"Project lock conflict for {rec_id}: worker {(db_rec.get('worker_id'))} "
+                                    f"holds a live lease until {db_rec.get('expires_at')} "
+                                    f"(job {db_rec.get('job_id')}). Refusing to overwrite another worker's lock."
+                                )
+                            else:
+                                raise DatabasePersistenceError(
+                                    f"Concurrent-insert conflict on {collection}.{rec_id}: this connection tried to "
+                                    f"insert a new record, but the row already exists with different content "
+                                    f"({_conflict_owner_label(db_rec)}). Load the latest state "
+                                    "(TrackingStore.refresh()) and retry instead of overwriting the other writer."
+                                )
+                        if collection == "projects" and rec_id not in baseline_col and rec.get("project_status") == "ACTIVE":
+                            # Business rule: one ACTIVE project per lead. A concurrent connection
+                            # that already committed one must be reused, never duplicated.
+                            duplicate_project = next(
+                                (
+                                    other
+                                    for other_id, other in db_col.items()
+                                    if other_id != rec_id
+                                    and other.get("lead_id") == rec.get("lead_id")
+                                    and other.get("project_status") == "ACTIVE"
+                                ),
+                                None,
+                            )
+                            if duplicate_project is not None:
+                                raise DatabasePersistenceError(
+                                    f"Lead {rec.get('lead_id')} already has an ACTIVE project "
+                                    f"({duplicate_project.get('project_id')}) committed by another connection; "
+                                    f"refusing to create duplicate project {rec_id}. Reload the latest state "
+                                    "(TrackingStore.refresh()) and reuse the existing project."
+                                )
                         if collection == "jobs":
                             eff_key = str(rec.get("idempotency_key") or f"idemp-{rec_id}")
                             if rec_id not in baseline_col:

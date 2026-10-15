@@ -7,13 +7,16 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path, PureWindowsPath
+import os
 import re
+import sys
 from urllib.parse import urlparse
 
 from tracking.database import (
     DatabasePersistenceError,
     RelationalStateBackend,
     TRACKED_COLLECTIONS,
+    VOLATILE_RECORD_FIELDS,
     configured_database_url,
     extract_research_evidence_entries,
     is_production_mode,
@@ -85,6 +88,61 @@ def project_workflow_state(p: dict) -> str:
 
 def now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _write_state_atomically(path: Path, state: dict) -> None:
+    """Write the tracking state through a temporary file and an atomic rename.
+
+    A direct `write_text()` truncates the existing file first, so a crash or an out-of-disk
+    error mid-write leaves a partially written state file behind for every later reader.
+    """
+    payload = json.dumps(state, indent=2) + "\n"
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def records_conflict(existing: dict, incoming: dict) -> bool:
+    """True when two records claiming the same ID disagree on a shared non-volatile field.
+
+    Only fields present in both records are compared, because the stored record legitimately gains
+    derived fields (project/lead linkage, artifact digests, capture warnings) after being recorded.
+    """
+    if not isinstance(existing, dict) or not isinstance(incoming, dict):
+        return existing != incoming
+    for key, value in incoming.items():
+        if key in VOLATILE_RECORD_FIELDS or key not in existing:
+            continue
+        if existing[key] != value:
+            return True
+    return False
+
+
+def next_numeric_id(collection: dict, prefix: str) -> str:
+    """Return the next non-colliding ``prefix-NNNN`` id for *collection*.
+
+    Uses the maximum existing numeric suffix instead of ``len(collection) + 1`` so
+    that deletions, retries, or concurrent inserts cannot reuse an id that is
+    still referenced by historical records.
+    """
+    max_n = 0
+    for key in (collection or {}).keys():
+        if not isinstance(key, str) or not key.startswith(prefix + "-"):
+            continue
+        suffix = key[len(prefix) + 1:]
+        if suffix.isdigit():
+            max_n = max(max_n, int(suffix))
+    return f"{prefix}-{max_n + 1:04d}"
 
 
 def norm(v) -> str | None:
@@ -312,9 +370,22 @@ class TrackingStore:
         if self.path.exists():
             try:
                 disk_raw = json.loads(self.path.read_text(encoding="utf-8"))
-                if isinstance(disk_raw, dict):
-                    disk_state = _empty_state()
-                    disk_state.update(disk_raw)
+            except (json.JSONDecodeError, UnicodeDecodeError, OSError) as error:
+                # A truncated or unreadable state file cannot be merged. Replacing it with the
+                # validated in-memory state is preferable to refusing every later write, but the
+                # reason is surfaced so a corrupted file is never mistaken for an empty workspace.
+                sys.stderr.write(
+                    f"WARNING: existing tracking state file {self.path} could not be read ({error}); "
+                    "writing the current in-memory state without a disk merge.\n"
+                )
+                disk_raw = None
+            if isinstance(disk_raw, dict):
+                disk_state = _empty_state()
+                disk_state.update(disk_raw)
+                # Compute every merged collection before touching `self.state` so an unexpected
+                # error can never leave a partially merged (silently lossy) state on disk.
+                merged_columns: dict[str, dict] = {}
+                try:
                     for col in (*TRACKED_COLLECTIONS, "executions", "workers", "project_locks"):
                         if not isinstance(self.state.get(col), dict) and not isinstance(disk_state.get(col), dict):
                             continue
@@ -335,19 +406,24 @@ class TrackingStore:
                                     merged_col[rec_id] = m_rec
                                 else:
                                     merged_col[rec_id] = copy.deepcopy(rec_val)
-                        target_col = self.state.setdefault(col, {})
-                        for dead_id in list(target_col.keys()):
-                            if dead_id not in merged_col:
-                                target_col.pop(dead_id, None)
-                        for rec_id, m_val in merged_col.items():
-                            if rec_id in target_col and isinstance(target_col[rec_id], dict) and isinstance(m_val, dict):
-                                target_col[rec_id].clear()
-                                target_col[rec_id].update(m_val)
-                            else:
-                                target_col[rec_id] = m_val
-            except Exception:
-                pass
-        self.path.write_text(json.dumps(self.state, indent=2) + "\n", encoding="utf-8")
+                        merged_columns[col] = merged_col
+                except Exception as error:
+                    raise ValueError(
+                        f"Refusing to overwrite tracking state {self.path}: concurrent changes could not be merged safely ({error}). "
+                        "Reload the state (TrackingStore.refresh()) and retry."
+                    ) from error
+                for col, merged_col in merged_columns.items():
+                    target_col = self.state.setdefault(col, {})
+                    for dead_id in list(target_col.keys()):
+                        if dead_id not in merged_col:
+                            target_col.pop(dead_id, None)
+                    for rec_id, m_val in merged_col.items():
+                        if rec_id in target_col and isinstance(target_col[rec_id], dict) and isinstance(m_val, dict):
+                            target_col[rec_id].clear()
+                            target_col[rec_id].update(m_val)
+                        else:
+                            target_col[rec_id] = m_val
+        _write_state_atomically(self.path, self.state)
         self._loaded_snapshot = copy.deepcopy(self.state)
 
     def find_duplicate(self, lead: dict) -> dict:
@@ -370,13 +446,17 @@ class TrackingStore:
         return {"match": "NO_MATCH", "lead_id": None}
 
     def create_lead(self, lead: dict) -> dict:
+        if self.db_backend is not None:
+            # Read the newest committed rows first so duplicate detection and the numeric ID
+            # allocation below cannot race with a concurrent insert.
+            self.refresh()
         dup = self.find_duplicate(lead)
         if dup["match"] == "EXACT_MATCH":
             raise ValueError(f"Duplicate lead: {dup['lead_id']}")
         classification = lead.get("data_classification") or "TEST_FIXTURE"
         if classification not in DATA_CLASSIFICATIONS:
             raise ValueError(f"Invalid data_classification: {classification}")
-        ident = f"lead-{len(self.state['leads']) + 1:04d}"
+        ident = next_numeric_id(self.state.get("leads") or {}, "lead")
         record = {
             **lead,
             "data_classification": classification,
@@ -390,6 +470,9 @@ class TrackingStore:
         return record
 
     def create_project(self, lead_id: str) -> dict:
+        if self.db_backend is not None:
+            # See `create_lead`: a fresh read keeps active-project reuse and ID allocation accurate.
+            self.refresh()
         lead = self.state["leads"].get(lead_id)
         if not lead or lead.get("qualification_status") != "QUALIFIED":
             raise ValueError("Only QUALIFIED leads can have projects.")
@@ -399,7 +482,7 @@ class TrackingStore:
         )
         if existing:
             return existing
-        ident = f"project-{len(self.state['projects']) + 1:04d}"
+        ident = next_numeric_id(self.state.get("projects") or {}, "project")
         p = {
             "project_id": ident,
             "lead_id": lead_id,
@@ -544,6 +627,9 @@ class TrackingStore:
             existing["research_record"] = copy.deepcopy(record)
             existing["research_record"]["lead_id"] = existing["lead_id"]
             existing["updated_at"] = now()
+            # Commit the refreshed lead before appending qualification history so a later
+            # failure cannot discard the research update.
+            self._save()
             lead = existing
         else:
             lead = self.create_lead(lead_payload)
@@ -580,9 +666,16 @@ class TrackingStore:
         lead = self.state["leads"].get(qualification.get("lead_id"))
         if not lead:
             raise ValueError("Qualification requires an existing lead.")
-        ident = qualification.get("qualification_id") or f"qualification-{len(self.state['qualifications']) + 1:04d}"
-        if ident in self.state["qualifications"]:
-            return self.state["qualifications"][ident]
+        explicit_id = qualification.get("qualification_id")
+        ident = explicit_id or None
+        if ident is None:
+            ident = next_numeric_id(self.state["qualifications"], "qualification")
+        existing_qual = self.state["qualifications"].get(ident)
+        if existing_qual:
+            # An ID reused for a different lead is a data-integrity conflict, never an idempotent replay.
+            if existing_qual.get("lead_id") != qualification.get("lead_id"):
+                raise ValueError("Qualification ID is already assigned to another lead.")
+            return existing_qual
         qualification["qualification_id"] = ident
         record = {**qualification, "qualification_id": ident, "created_at": qualification.get("created_at") or now()}
         self.state["qualifications"][ident] = record
@@ -598,19 +691,45 @@ class TrackingStore:
         self._save()
         return record
 
-    def transition(self, project_id: str, to: str) -> dict:
+    def _set_stage(self, project_id: str, to: str) -> dict:
+        """Validate and apply a stage change in memory only, without persisting.
+
+        Multi-record operations (build, validation, deployment, review) move through several
+        stages at once. Those intermediate stages are not meaningful committed states, and
+        persisting each one separately means a later failure can leave the durable state in the
+        middle of the sequence. Every such operation applies its transitions here and performs a
+        single `_save()` once all of its records are in place, so the write is all-or-nothing.
+        """
         p = self.state["projects"].get(project_id)
-        if not p or to not in TRANSITIONS.get(p["current_stage"], set()):
-            raise ValueError("Illegal project state transition.")
+        if not p:
+            raise ValueError(f"Unknown project: {project_id}. Cannot transition to {to}.")
+        current = p.get("current_stage")
+        if to not in TRANSITIONS.get(current, set()):
+            allowed = ", ".join(sorted(TRANSITIONS.get(current, set()))) or "none"
+            raise ValueError(
+                f"Illegal project state transition for {project_id}: {current} -> {to}. "
+                f"Permitted next stages from {current}: {allowed}."
+            )
         p["current_stage"] = to
         p["updated_at"] = now()
+        return p
+
+    def transition(self, project_id: str, to: str) -> dict:
+        p = self._set_stage(project_id, to)
         self._save()
         return p
+        current = p.get("current_stage")
+        if to not in TRANSITIONS.get(current, set()):
+            allowed = ", ".join(sorted(TRANSITIONS.get(current, set()))) or "none"
+            raise ValueError(
+                f"Illegal project state transition for {project_id}: {current} -> {to}. "
+                f"Permitted next stages from {current}: {allowed}."
+            )
 
     def record_build(self, project_id: str, build: dict) -> dict:
         p = self.state["projects"].get(project_id)
         if not p:
-            raise ValueError("Project is not ready for a build.")
+            raise ValueError(f"Unknown project: {project_id}. Cannot record a build.")
         if build.get("lead_id") != p["lead_id"]:
             raise ValueError("Build lead does not match project lead.")
         build_id = build.get("build_id")
@@ -621,6 +740,11 @@ class TrackingStore:
             raise ValueError("Build ID is already assigned to another project.")
         if existing and existing.get("status") == "FAILED" and build.get("status") != "FAILED":
             raise ValueError("Failed build cannot become a successful build.")
+        if existing and records_conflict(existing, build):
+            raise ValueError(
+                f"Build ID {build_id} is already recorded with different content. "
+                "A corrected or regenerated build must use a new build_id so the prior result stays auditable."
+            )
         if (
             existing
             and existing.get("project_id") == project_id
@@ -629,7 +753,10 @@ class TrackingStore:
         ):
             return existing
         if p["current_stage"] not in {"QUALIFIED", "BUILDING", "FAILED", "READY_FOR_REVIEW", "VALIDATING"}:
-            raise ValueError("Project is not ready for a build.")
+            raise ValueError(
+                f"Project {project_id} is in stage {p['current_stage']} and cannot accept a new build. "
+                "Builds are recorded from QUALIFIED, BUILDING, VALIDATING, READY_FOR_REVIEW, or FAILED."
+            )
         lead = self.state["leads"].get(p["lead_id"]) or {}
         lead_class = lead.get("data_classification") or p.get("data_classification") or "TEST_FIXTURE"
         build_class = build.get("data_classification") or (build.get("metadata") or {}).get("data_classification")
@@ -642,12 +769,13 @@ class TrackingStore:
         if lead_class == "TEST_FIXTURE" and build_class == "REAL_PUBLIC_DATA":
             raise ValueError("Cannot attach real-business build to a fictional test project.")
         if p["current_stage"] in {"QUALIFIED", "FAILED", "READY_FOR_REVIEW", "VALIDATING"}:
-            self.transition(project_id, "BUILDING")
+            self._set_stage(project_id, "BUILDING")
         stored_build = {
             **build,
             "project_id": project_id,
             "data_classification": build_class or lead_class,
         }
+        artifact_capture_error: str | None = None
         if stored_build.get("status") != "FAILED":
             html_content = stored_build.pop("html_content", None)
             explicit_assets = stored_build.pop("local_assets", None)
@@ -663,8 +791,14 @@ class TrackingStore:
                     if manifest_file.is_file():
                         manifest_data = json.loads(manifest_file.read_text(encoding="utf-8"))
                     scanned_assets = _collect_safe_local_assets(out_path_obj.parent)
-                except Exception:
-                    pass
+                except Exception as capture_exc:
+                    # Recorded on the build instead of being swallowed: a missing durable artifact must
+                    # not look like a healthy build, and review packaging fails with this reason.
+                    artifact_capture_error = f"{type(capture_exc).__name__}: {capture_exc}"
+            elif not isinstance(html_content, str) or not html_content:
+                artifact_capture_error = (
+                    f"No build artifact content available (output_location={out_loc!r} is not a readable file)."
+                )
             local_assets = copy.deepcopy(explicit_assets) if isinstance(explicit_assets, dict) else scanned_assets
             if isinstance(html_content, str) and html_content:
                 html_bytes = len(html_content.encode("utf-8"))
@@ -688,6 +822,10 @@ class TrackingStore:
                     "created_at": stored_build.get("created_at") or now(),
                     "updated_at": now(),
                 }
+        if artifact_capture_error:
+            stored_build["artifact_capture_error"] = artifact_capture_error
+        else:
+            stored_build.pop("artifact_capture_error", None)
         self.state["builds"][build_id] = stored_build
         p["assigned_build_id"] = build_id
         p["latest_validation_id"] = None
@@ -699,9 +837,10 @@ class TrackingStore:
         p["approved_action"] = None
         p["pre_deployment_review_status"] = None
         if build.get("status") == "FAILED":
-            self.transition(project_id, "FAILED")
+            self._set_stage(project_id, "FAILED")
         else:
-            self.transition(project_id, "VALIDATING")
+            self._set_stage(project_id, "VALIDATING")
+        self._save()
         return self.state["builds"][build_id]
 
     def record_build_artifact(
@@ -903,6 +1042,11 @@ class TrackingStore:
         existing_val = self.state["validations"].get(val_id)
         if existing_val and (existing_val.get("project_id") != project_id or existing_val.get("build_id") != build["build_id"]):
             raise ValueError("Validation ID is already assigned to another build or project.")
+        if existing_val and records_conflict(existing_val, validation):
+            raise ValueError(
+                f"Validation ID {val_id} is already recorded with different content. "
+                "A re-run must use a new validation_id so the prior result stays auditable."
+            )
         if (
             existing_val
             and existing_val.get("project_id") == project_id
@@ -927,11 +1071,12 @@ class TrackingStore:
         self.state["validations"][val_id] = stored_val
         p["latest_validation_id"] = val_id
         if p["current_stage"] in {"FAILED", "READY_FOR_REVIEW"}:
-            self.transition(project_id, "BUILDING")
-            self.transition(project_id, "VALIDATING")
+            self._set_stage(project_id, "BUILDING")
+            self._set_stage(project_id, "VALIDATING")
         elif p["current_stage"] == "BUILDING":
-            self.transition(project_id, "VALIDATING")
-        self.transition(project_id, "READY_FOR_REVIEW" if validation.get("status") == "PASS" else "FAILED")
+            self._set_stage(project_id, "VALIDATING")
+        self._set_stage(project_id, "READY_FOR_REVIEW" if validation.get("status") == "PASS" else "FAILED")
+        self._save()
         return stored_val
 
     def record_deployment(self, project_id: str, deployment: dict) -> dict:
@@ -961,6 +1106,11 @@ class TrackingStore:
         existing_dep = self.state["deployments"].get(dep_id)
         if existing_dep and existing_dep.get("project_id") != project_id:
             raise ValueError("Deployment ID is already assigned to another project.")
+        if existing_dep and records_conflict(existing_dep, deployment):
+            raise ValueError(
+                f"Deployment ID {dep_id} is already recorded with different content. "
+                "A new deployment requires a new build and deployment_id so the prior deployment stays auditable."
+            )
         if (
             existing_dep
             and existing_dep.get("project_id") == project_id
@@ -1009,7 +1159,8 @@ class TrackingStore:
             p["pre_deployment_review_status"] = "APPROVED_FOR_PREVIEW"
             p["review_status"] = "PENDING"
             p["approved_action"] = None
-        self.transition(project_id, "PREVIEW_DEPLOYED")
+        self._set_stage(project_id, "PREVIEW_DEPLOYED")
+        self._save()
         return stored_dep
 
     def record_review(
@@ -1034,6 +1185,15 @@ class TrackingStore:
         p = self.state["projects"].get(project_id)
         if not p:
             raise ValueError(f"Unknown project: {project_id}")
+        if self.db_backend is not None:
+            # A review authorizes real work, so decide against the newest committed build,
+            # validation, and deployment state rather than a possibly stale local snapshot.
+            self.refresh()
+            p = self.state["projects"].get(project_id)
+            if not p:
+                raise ValueError(
+                    f"Unknown project: {project_id} (it was not present in the newest committed state)."
+                )
         if require_notes and (not isinstance(notes, str) or len(notes.strip()) < 3):
             raise ValueError("Review decision requires meaningful review notes (at least 3 characters).")
         assigned_build_id = p.get("assigned_build_id")
@@ -1119,6 +1279,20 @@ class TrackingStore:
         else:
             intended_action = intended_action or "HOLD"
 
+        # An exactly repeated review decision for the same build is an idempotent replay (for
+        # example a retried CLI call or an n8n re-delivery), not a second audit entry.
+        prior_entries = list(p.get("review_history") or [])
+        last_entry = prior_entries[-1] if prior_entries else None
+        if (
+            isinstance(last_entry, dict)
+            and last_entry.get("build_id") == assigned_build_id
+            and last_entry.get("decision") == normalized_status
+            and last_entry.get("intended_action") == intended_action
+            and last_entry.get("notes") == notes
+            and last_entry.get("reviewer") == reviewer
+        ):
+            return p
+
         stamp = now()
         stage_before = p["current_stage"]
         p.update({
@@ -1130,14 +1304,14 @@ class TrackingStore:
             "approved_action": intended_action if normalized_status in {"APPROVED_FOR_PREVIEW", "APPROVED"} else None,
         })
         if normalized_status in {"CHANGES_REQUESTED", "REJECTED"}:
-            self.transition(project_id, "BUILDING")
+            self._set_stage(project_id, "BUILDING")
         elif normalized_status == "APPROVED":
             if p["current_stage"] == "PREVIEW_DEPLOYED":
-                self.transition(project_id, "HUMAN_REVIEW")
-            self.transition(project_id, "READY_FOR_OUTREACH")
+                self._set_stage(project_id, "HUMAN_REVIEW")
+            self._set_stage(project_id, "READY_FOR_OUTREACH")
         wf_after = project_workflow_state(p)
         reviews = self.state.setdefault("reviews", {})
-        review_id = f"review-{len(reviews) + 1:04d}"
+        review_id = next_numeric_id(reviews, "review")
         entry = {
             "review_id": review_id,
             "project_id": project_id,
