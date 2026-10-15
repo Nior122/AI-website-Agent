@@ -26,6 +26,14 @@ A completed build, a `PASS` validation, an approved *plan*, or a UI/n8n conditio
 
 `deployment/authorization.py` implements both, and `verify_approval()` returns a specific machine-readable code for every refusal: `APPROVAL_MISSING`, `APPROVAL_UNREADABLE`, `APPROVAL_TAMPERED`, `APPROVAL_REVOKED`, `APPROVAL_INVALID_DECISION`, `APPROVAL_WRONG_ACTION`, `APPROVAL_BUILD_MISMATCH`, `APPROVAL_LEAD_MISMATCH`, `APPROVAL_VALIDATION_MISMATCH`, `VALIDATION_NOT_PASSED`, `APPROVAL_ARTIFACT_STALE`, `BUILD_ID_UNRECORDED`, plus the ledger verdicts `DEPLOYMENT_ALREADY_RECORDED`, `PUBLISH_STATE_UNCERTAIN` and `PUBLISH_LEDGER_UNREADABLE`. Both files are build-local artifacts under the ignored `output/` tree and contain no credentials.
 
+Provider *configuration* refusals are a separate family, because no approval can resolve them: a missing
+`.vercel/project.json` is `PREVIEW_PROJECT_NOT_LINKED`, an unusable link record is
+`PREVIEW_PROJECT_LINK_INVALID`, and an absent `vercel` executable is `PROVIDER_CLI_MISSING`. They surface as
+`deployment_status: FAILED` with the code in `metadata.denial_code`, and the same code reaches the job row,
+`inspect-job`, and the structured log line, so an operator is never told to "read the worker error" when the
+fix is `vercel link`. They are `ValueError`s for existing callers, and they never enter the publish ledger:
+nothing is attempted, so nothing is recorded as attempted.
+
 Because `TrackingStore.authorize_preview_deployment(project_id)` answers the same question from the durable record (project ownership, assigned build, PASS validation, stage, approval binding, artifact presence, prior attempts), every entry point can report the identical reason before touching the provider. It reports authorization; it never grants it.
 
 The adapter never invokes `vercel --prod`, never creates a project by default, and never handles a token directly. Vercel authentication, when approved, must already exist in the environment or CLI session; values are never written to source, manifests, or logs.

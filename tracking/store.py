@@ -2022,10 +2022,17 @@ class TrackingStore:
                 })
 
         b_name = lead.get("business_name") or "Business"
-        disclosure = (
+        draft_disclosure = (
             f"Uncommissioned preview draft prepared for internal evaluation · "
             f"Not an authorized or official website of {b_name}."
         )
+        # The page carries one of two disclosures, chosen by the same rule that renders it: a fictional
+        # fixture is labelled as a demonstration, while real business data is labelled as an unauthorised
+        # draft. Checking for only the draft sentence made every fictional build look like it was missing
+        # its disclosure, so a reviewer following this package would chase a defect that is not there.
+        from templates.components import FICTIONAL_DISCLOSURE, is_fictional  # single source of the rule
+        fictional = bool(is_fictional(lead))
+        disclosure = FICTIONAL_DISCLOSURE if fictional else draft_disclosure
         omitted_disputed_fields = [item["field"] for item in unresolved_or_conflicting if item["status"] == "CONFLICTING_WITHHELD"]
         claims_lacking_primary_observation = [
             {
@@ -2061,7 +2068,9 @@ class TrackingStore:
             "artifact_exists": True,
             "artifact_bytes": len(html_bytes),
             "artifact_sha256": sha256_hex,
-            "uncommissioned_disclosure": disclosure,
+            "uncommissioned_disclosure": draft_disclosure,
+            "expected_disclosure": disclosure,
+            "disclosure_variant": "FICTIONAL_DEMO" if fictional else "UNCOMMISSIONED_DRAFT",
             "disclosure_present_in_html": disclosure in html_text,
             "omitted_disputed_fields": omitted_disputed_fields,
             "supported_facts": supported_facts,

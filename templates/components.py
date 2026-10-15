@@ -11,6 +11,11 @@ def text(value: object) -> str:
     return escape(str(value)) if value is not None else ""
 
 
+# The sentence a fictional page must carry. Shared with the review package on purpose: the check only
+# means something if it asks for exactly what the renderer writes.
+FICTIONAL_DISCLOSURE = "Fictional demonstration website \u00b7 Created for AI Website Agent testing."
+
+
 def is_fictional(data: dict) -> bool:
     """Keep fixture demonstrations visually complete without actionable contacts."""
     return (
@@ -163,5 +168,5 @@ def contact(data: dict) -> str:
 
 
 def footer(name: str, fictional: bool = False) -> str:
-    disclosure = '<p class="fictional-disclosure">Fictional demonstration website · Created for AI Website Agent testing.</p>' if fictional else f'<p class="draft-disclosure">Uncommissioned preview draft prepared for internal evaluation · Not an authorized or official website of {text(name)}.</p>'
+    disclosure = f'<p class="fictional-disclosure">{FICTIONAL_DISCLOSURE}</p>' if fictional else f'<p class="draft-disclosure">Uncommissioned preview draft prepared for internal evaluation · Not an authorized or official website of {text(name)}.</p>'
     return f'<footer><a class="brand footer-brand" href="#top">{text(name)}</a>{disclosure}</footer>'

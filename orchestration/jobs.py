@@ -57,6 +57,13 @@ NEXT_ACTIONS = {
     "which records who decided and why in the build's deployment-attempts.json before anything is sent. Never "
     "re-publish blind: a second accepted publish is not undoable by this system.",
     "DEPLOYMENT_RECORD_FAILED": "Record the published preview against the project (TrackingStore.record_deployment) so the audit trail matches the provider.",
+    "PREVIEW_PROJECT_NOT_LINKED": "Link the dedicated preview project to this checkout first: 'vercel link --project <preview-project>' "
+        "(the linked name must be the configured preview project), then re-run python3 -m tracking.cli deploy-check <project_id>. "
+        "No human approval can resolve a missing link, so this stays a configuration blocker.",
+    "PREVIEW_PROJECT_LINK_INVALID": "Repair .vercel/project.json: it must be valid JSON with a projectId and the configured preview project name. "
+        "Re-link with 'vercel link --project <preview-project>' rather than editing the record by hand, then re-run deploy-check.",
+    "PROVIDER_CLI_MISSING": "Install and authenticate the provider CLI for the operator who will run the publish (vercel login, then verify "
+        "with 'vercel ls'). This sandbox is not expected to hold provider credentials; the deployment is executed by the authenticated operator.",
     "REAL_PREVIEW_TARGET_MISMATCH": "Use the project's configured isolated_preview_project as the deployment target.",
     "REAL_PREVIEW_TARGET_REQUIRED": "Configure an isolated preview target: python3 -m tracking.cli configure-preview <project_id> --project-name <slug>.",
     "REAL_APPROVAL_REQUIRED": "Record the pre-deployment approval: python3 -m tracking.cli review <project_id> --decision APPROVED_FOR_PREVIEW --action PREVIEW_DEPLOYMENT --notes \"...\" --confirm <project_id>:<build_id>:APPROVED_FOR_PREVIEW.",

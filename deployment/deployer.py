@@ -36,6 +36,19 @@ _TEXT_PAYLOAD_SUFFIXES = {".css", ".html", ".js", ".json", ".svg", ".txt"}
 _CSS_URL = re.compile(r"url\(\s*(['\"]?)(.*?)\1\s*\)", re.IGNORECASE)
 
 
+class ProviderConfigurationError(ValueError):
+    """The workspace cannot reach the provider at all: no link, a broken link record, no CLI.
+
+    Kept separate from an authorization refusal on purpose. A missing link is not something a human
+    approval can resolve, so it is recorded with its own code and remedy instead of collapsing into the
+    generic worker failure, and it stays a ``ValueError`` for callers that only catch that.
+    """
+
+    def __init__(self, message: str, *, error_code: str) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+
+
 @dataclass
 class DeploymentResult:
     deployment_id: str; lead_id: str; business_name: str | None; build_id: str; validation_id: str | None
@@ -212,6 +225,11 @@ class VercelDeploymentProvider:
                 result.deployment_url, result.vercel_deployment_id, result.deployment_status = url, _deployment_id_from_url(url), "DEPLOYED"
         except NeedsReview as error:
             result.deployment_status, result.error = "NEEDS_REVIEW", str(error)
+        except ProviderConfigurationError as error:
+            # The workspace, not the approval, is what is missing here. The code travels in the manifest so
+            # a job records "link the preview project" rather than an undifferentiated worker failure.
+            result.deployment_status, result.error = "FAILED", str(error)
+            result.metadata["denial_code"] = error.error_code
         except Exception as error:
             result.deployment_status, result.error = "FAILED", str(error)
         result.completed_at = _now(); _write_manifest(build_path, result)
@@ -342,11 +360,17 @@ def _assert_valid_preview_target(target_project_name: str, *, configured_isolate
 
 def _assert_project_linked(root: Path, expected_project_name: str) -> dict:
     project = root / ".vercel" / "project.json"
-    if not project.is_file(): raise ValueError("No linked Vercel project found (.vercel/project.json). Link the approved dedicated preview project before deploying.")
+    if not project.is_file(): raise ProviderConfigurationError(
+        "No linked Vercel project found (.vercel/project.json). Link the approved dedicated preview project before deploying.",
+        error_code="PREVIEW_PROJECT_NOT_LINKED")
     try: record = json.loads(project.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as error: raise ValueError("Linked Vercel project configuration is not valid JSON.") from error
-    if not isinstance(record.get("projectId"), str) or not record["projectId"].strip(): raise ValueError("Linked Vercel project configuration has no projectId.")
-    if record.get("projectName") != expected_project_name: raise ValueError(f"Refusing deployment: linked Vercel project is not the dedicated preview project '{expected_project_name}'.")
+    except json.JSONDecodeError as error: raise ProviderConfigurationError(
+        "Linked Vercel project configuration is not valid JSON.", error_code="PREVIEW_PROJECT_LINK_INVALID") from error
+    if not isinstance(record.get("projectId"), str) or not record["projectId"].strip(): raise ProviderConfigurationError(
+        "Linked Vercel project configuration has no projectId.", error_code="PREVIEW_PROJECT_LINK_INVALID")
+    if record.get("projectName") != expected_project_name: raise ProviderConfigurationError(
+        f"Refusing deployment: linked Vercel project is not the dedicated preview project '{expected_project_name}'.",
+        error_code="PREVIEW_PROJECT_LINK_INVALID")
     _assert_valid_preview_target(record["projectName"])
     return record
 
@@ -385,9 +409,10 @@ def _assert_vercel_cli_available() -> None:
     """Fail with an actionable configuration error instead of an opaque OS error."""
     command = _vercel_command()
     if shutil.which(command) is None:
-        raise ValueError(
+        raise ProviderConfigurationError(
             f"Deployment configuration is incomplete: the '{command}' CLI is not available on PATH. "
-            "Install/authenticate the approved Vercel CLI before executing a preview deployment."
+            "Install/authenticate the approved Vercel CLI before executing a preview deployment.",
+            error_code="PROVIDER_CLI_MISSING",
         )
 
 

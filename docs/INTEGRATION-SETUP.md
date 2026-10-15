@@ -274,7 +274,61 @@ it never overwrites an existing state file, and every reconstructed record says 
 
 ---
 
-## 8. What remains manual
+## 8. Before the first real preview: six checks, then the handoff
+
+A provider call is allowed only when all six of these are true **at the same time**. Each has a command that
+answers it from records rather than from hope, and `python3 -m orchestration.cli preflight --project-id
+<project_id>` collects five of them into one document (the sixth is the operator's own decision):
+
+| # | Must be true | Command that proves it | What a "yes" looks like |
+| --- | --- | --- | --- |
+| 1 | The build exists and validation passed for **that** build | `python3 -m tracking.cli snapshot <project_id>` | `latestBuild.status COMPLETED`, `latestValidation.status PASS`, `artifact_exists true` |
+| 2 | A human approval is recorded for **that exact build** | `python3 -m tracking.cli deploy-check <project_id> --build-id <build-id>` | `authorized true`, `code APPROVED_FOR_DEPLOYMENT`, and the `build_id`/`validation_id` in the answer are the ones you are publishing |
+| 3 | The authorization capability is intact and not revoked | same `deploy-check` (it verifies the build-local capability and artifact digest) | no `APPROVAL_REVOKED`, `APPROVAL_TAMPERED`, or `APPROVAL_ARTIFACT_STALE` |
+| 4 | The provider is configured **and authenticated** in the machine that will publish | `python3 -m orchestration.cli deployment-status` | `configuration.cli_available true`, `configuration.project_linked true` |
+| 5 | The target is the intended preview project | `python3 -m orchestration.cli preflight --project-id <project_id>` | `deployment_provider_configuration.expected_preview_project` equals the linked name; no `--prod` path exists in this repository |
+| 6 | The operator has explicitly authorised a real preview deployment | - | a human decision, recorded nowhere else; the commands refuse without it |
+
+Reading these answers changes nothing: `deploy-check` and `preflight` never publish, never consume an
+approval, and never write to the publish ledger.
+
+**Configuration refusals name themselves.** When the checkout cannot reach the provider at all, the failure
+is recorded with its own code instead of a generic worker fault, because no human approval can fix them:
+
+| Code | Meaning | Remedy in `next_action` |
+| --- | --- | --- |
+| `PREVIEW_PROJECT_NOT_LINKED` | no `.vercel/project.json` in this checkout | `vercel link --project <preview-project>`, then re-run `deploy-check` |
+| `PREVIEW_PROJECT_LINK_INVALID` | the link file is unparseable, has no `projectId`, or names another project | re-link with the CLI instead of editing the record |
+| `PROVIDER_CLI_MISSING` | the `vercel` executable is not on `PATH` | install and authenticate the CLI in the environment that publishes |
+
+They appear identically in `deployment.json` (`metadata.denial_code`), in the job row, in `inspect-job`, and
+in the structured log line, so the operator-facing surfaces cannot disagree.
+
+**When this machine is not the one that publishes.** A sandbox, CI runner, or fresh clone normally answers
+`cli_available: false` / `project_linked: false`, and provider credentials must never be pasted into a shared
+session. The prepared handoff is:
+
+```bash
+# 1. On the publishing machine: create the review package and read it before deciding anything.
+python3 -m tracking.cli review-package <project_id> --repo-root . \
+    --export-dir preview-export/<lead_id>-<slug>
+# 2. Still there: the human decision, bound to one build, with the operator's own handle.
+python3 -m tracking.cli review <project_id> --decision APPROVED_FOR_PREVIEW --action PREVIEW_DEPLOYMENT \
+    --notes "what was actually checked" --reviewer <handle> \
+    --confirm <project_id>:<build-id>:APPROVED_FOR_PREVIEW
+# 3. Link, verify, publish once, preview-only.
+vercel link --project ai-website-agent-preview
+python3 -m tracking.cli deploy-check <project_id> --build-id <build-id>
+python3 -m deployment.cli --build output/<lead_id>/<build-id> --state-path data/tracking/state.json \
+    --project-id <project_id> --build-id <build-id> --execute
+```
+
+Evidence that a preview exists is a recorded `DEPLOYED` with an `https://<name>.vercel.app` URL, plus the
+matching `DEPLOYING`/`DEPLOYED` pair in `deployment-attempts.json`. Anything else - a timeout, an empty
+provider response - stays `PUBLISH_UNCERTAIN` and is resolved by §7, never by retrying blind. A dry run is
+never evidence of a deployment, and no command in this repository reports one as such.
+
+## 9. What remains manual
 
 A live integration is only real once someone with dashboard access does these. Nothing here claims they
 have been done:
@@ -288,5 +342,10 @@ have been done:
    (`python3 -m tracking.cli review <pid> --decision APPROVED_FOR_PREVIEW --action PREVIEW_DEPLOYMENT
    --build-id <build-id> --notes "..." --confirm <token>`).
 6. Deploy to Render only when you want the API public, and expect startup to fail until the secrets are set.
+
+A workspace that has run §8 and cannot reach the provider should stop there with
+`PREVIEW_PROJECT_NOT_LINKED` or `PROVIDER_CLI_MISSING` recorded. That is the expected end state for a
+sandbox, a CI runner, or a fresh clone - not a condition to route around by creating `.vercel/project.json`
+by hand, storing a token in the repository, or reporting a dry run as a deployment.
 
 Outreach remains draft-only, and sending is disabled by configuration; this guide does not enable it.

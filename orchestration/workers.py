@@ -627,7 +627,10 @@ class LocalPipelineWorker:
                 )
             if dep_res.deployment_status == "NEEDS_REVIEW":
                 return WorkerResult("NEEDS_REVIEW", error=dep_res.error, output=dep_out, retryable=False)
-            return WorkerResult("FAILED", error=dep_res.error or "Deployment failed.", output=dep_out, retryable=False)
+            # A provider that refused for a configuration reason already names it in the manifest; carrying
+            # that code onto the job is what makes `inspect-job` and the attention list actionable.
+            return WorkerResult("FAILED", error=dep_res.error or "Deployment failed.", output=dep_out,
+                error_code=(dep_res.metadata or {}).get("denial_code"), retryable=False)
 
         if job_type == "PREPARE_OUTREACH":
             project_id = job["project_id"]
