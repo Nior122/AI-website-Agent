@@ -361,9 +361,18 @@ def run_cli(
     resp_parser.add_argument("--received-at", default=None, help="When the reply arrived (defaults to --occurred-at or now).")
     resp_parser.add_argument("--outreach-id", default=None, help="Outreach draft this answers, if known.")
     resp_parser.add_argument("--idempotency-key", default=None, help="Repeat-safe key for the same inbound message.")
+    resp_parser.add_argument("--provider", default=None, help="Where it arrived from (mailbox, WhatsApp web, contact form).")
+    resp_parser.add_argument("--external-message-id", default=None, help="Provider message id, if one exists. Recorded as given, not verified.")
+    resp_parser.add_argument("--conversation-id", default=None, help="Threading id from the source, when it has one.")
+    resp_parser.add_argument("--in-reply-to", default=None, help="Ledger event id this answer addresses (e.g. engagement-0001).")
+    resp_parser.add_argument("--classification", default=None, help="How the operator reads it: QUESTION, INTEREST, REJECTION, UNSUBSCRIBE, REFERRAL, MEETING_REQUEST, AUTO_REPLY, SPAM, OTHER.")
+    resp_parser.add_argument("--no-human-review", action="store_true", help="Mark that no reply is owed (default: a human decides).")
 
-    sent_parser = subparsers.add_parser("outreach-mark-sent", help="Record that a human actually sent an approved draft (a prepared draft is never 'sent').")
+    sent_parser = subparsers.add_parser("outreach-mark-sent", help="Report what a human did with an approved draft: sent or failed (a prepared draft is never 'sent').")
     sent_parser.add_argument("outreach_id", help="Outreach record id (e.g. outreach-0001).")
+    sent_parser.add_argument("--result", default="REPORTED_SENT", help="REPORTED_SENT or FAILED. ACCEPTED_BY_PROVIDER/VERIFIED_DELIVERED need a provider receipt and are refused here.")
+    sent_parser.add_argument("--provider", default=None, help="Which mailbox/tool the operator used, e.g. 'gmail-web'. Not a claim that the provider confirmed anything.")
+    sent_parser.add_argument("--failure-note", default=None, help="What failed, for --result FAILED. Credential-shaped text is refused.")
     sent_parser.add_argument("--occurred-at", default=None, help="When it was sent.")
     sent_parser.add_argument("--evidence-note", default=None, help="How the operator knows it went out.")
     sent_parser.add_argument("--evidence-url", default=None, help="Link to the sent message, when one exists.")
@@ -375,6 +384,7 @@ def run_cli(
     fu_sched.add_argument("--reason", required=True, help="Why this follow-up exists.")
     fu_sched.add_argument("--channel", default=None, help="Channel the follow-up will use, if decided.")
     fu_sched.add_argument("--proposal-id", default=None, help="Link a proposal this follow-up concerns.")
+    fu_sched.add_argument("--outreach-id", default=None, help="Outreach record this follow-up continues, when there is one.")
     fu_sched.add_argument("--allow-past-due", action="store_true", help="Permit backdating a schedule deliberately.")
 
     fu_update = subparsers.add_parser("follow-up-update", help="Complete, cancel, or reschedule a follow-up.")
@@ -389,11 +399,41 @@ def run_cli(
     due_parser = subparsers.add_parser("due-follow-ups", help="List scheduled follow-ups that are due or overdue, as of today.")
     due_parser.add_argument("--today", default=None, help="Override the reference date (YYYY-MM-DD) for a report.")
 
+    rel_show = subparsers.add_parser("relationship", help="One lead's relationship stage, next action, and what proves them.")
+    rel_show.add_argument("lead_id", help="Tracked lead (e.g. lead-0002).")
+
+    rel_move = subparsers.add_parser("relationship-advance", help="Move a relationship stage by hand - still only onto a record that proves it.")
+    _ledger(rel_move)
+    rel_move.add_argument("--stage", required=True, help="Target stage: " + ", ".join(
+        ["NOT_CONTACTED", "OUTREACH_APPROVED", "OUTREACH_SENT", "RESPONDED", "FOLLOW_UP_SCHEDULED", "PROPOSAL_OPEN",
+         "PROPOSAL_PRESENTED", "NEGOTIATING", "WON", "LOST", "OPTED_OUT", "PAUSED"]) + ".")
+    rel_move.add_argument("--reason", required=True, help="Why the stage is moving now.")
+    rel_move.add_argument("--allow-backtrack", action="store_true", help="Permit lowering a stage when an earlier record was itself wrong.")
+
+    pipe_parser = subparsers.add_parser("pipeline", help="Count and list leads by relationship stage (bounded, paginated, read-only).")
+    pipe_parser.add_argument("--stage", default=None, help="Only this relationship stage.")
+    pipe_parser.add_argument("--limit", type=int, default=50, help="Rows to return (max 200).")
+    pipe_parser.add_argument("--offset", type=int, default=0, help="Rows to skip.")
+    pipe_parser.add_argument("--today", default=None, help="Reference date for due-work flags (YYYY-MM-DD).")
+
+    work_parser = subparsers.add_parser("outstanding", help="What a human owes the pipeline: due follow-ups, undecided proposals, unanswered replies, blocked contacts.")
+    work_parser.add_argument("--today", default=None, help="Reference date for due follow-ups (YYYY-MM-DD).")
+    work_parser.add_argument("--limit", type=int, default=50, help="Rows per section (max 200).")
+
+    elig_parser = subparsers.add_parser("outreach-eligibility", help="Ask whether a contact would be permitted at all. Answers; never authorizes.")
+    elig_parser.add_argument("lead_id", help="Tracked lead (e.g. lead-0002).")
+    elig_parser.add_argument("--channel", default=None, help="Channel to check (EMAIL, WHATSAPP, ...).")
+    elig_parser.add_argument("--outreach-id", default=None, help="Outreach draft whose human approval should be read.")
+    elig_parser.add_argument("--for-action", default="SEND", help="SEND or SCHEDULE.")
+
     prop_create = subparsers.add_parser("proposal-create", help="Draft a proposal record for a lead (creating it does not present it).")
     _ledger(prop_create)
     prop_create.add_argument("--summary", required=True, help="What is being offered, in the operator's words.")
     prop_create.add_argument("--project-id", default=None, help="Project this proposal covers (defaults to the lead's project).")
     prop_create.add_argument("--outreach-id", default=None, help="Outreach draft it relates to.")
+    prop_create.add_argument("--deployment-id", default=None, help="Recorded deployment whose preview the proposal demos (the URL is read from that record, never typed).")
+    prop_create.add_argument("--preview-url", default=None, help="Cross-check the cited deployment's URL; it must match the record exactly.")
+    prop_create.add_argument("--approval-ref", default=None, help="Review record id that authorized the work this proposal offers.")
     prop_create.add_argument("--idempotency-key", default=None, help="Repeat-safe key for the same draft.")
     prop_create.add_argument("--terms-note", default=None, help="Free-text terms as written by the operator.")
     prop_create.add_argument("--currency", default=None, help="ISO currency code, only together with --amount-minor.")
@@ -406,6 +446,7 @@ def run_cli(
     prop_update.add_argument("--evidence-url", default=None, help="Source URL for it, when one exists.")
     prop_update.add_argument("--occurred-at", default=None, help="When it happened.")
     prop_update.add_argument("--notes", default=None, help="Operator note stored with the decision.")
+    prop_update.add_argument("--evidence-kind", default=None, help="Kind of evidence cited (CUSTOMER_MESSAGE by default for a decision, OPERATOR_NOTE otherwise).")
 
     out_parser2 = subparsers.add_parser("outcome-record", help="Record the prospect's outcome; WON needs evidence and a contract/invoice/payment reference.")
     _ledger(out_parser2)
@@ -756,7 +797,8 @@ def run_cli(
         if args.command in {
             "engagement-record", "response-record", "outreach-mark-sent", "follow-up-schedule",
             "follow-up-update", "due-follow-ups", "proposal-create", "proposal-update", "outcome-record",
-            "opt-out", "opt-out-revoke", "ledger",
+            "opt-out", "opt-out-revoke", "ledger", "relationship", "relationship-advance", "pipeline",
+            "outstanding", "outreach-eligibility",
         }:
             from tracking.engagement import EngagementLedger
 
@@ -794,6 +836,12 @@ def run_cli(
                     quote=args.quote,
                     outreach_id=args.outreach_id,
                     idempotency_key=args.idempotency_key,
+                    provider=getattr(args, "provider", None),
+                    external_message_id=getattr(args, "external_message_id", None),
+                    conversation_id=getattr(args, "conversation_id", None),
+                    in_reply_to=getattr(args, "in_reply_to", None),
+                    classification=getattr(args, "classification", None),
+                    needs_human_review=not getattr(args, "no_human_review", False),
                 )
             elif args.command == "outreach-mark-sent":
                 result = ledger.mark_outreach_sent(
@@ -802,6 +850,9 @@ def run_cli(
                     evidence_note=args.evidence_note,
                     evidence_url=args.evidence_url,
                     provider_message_id=args.provider_message_id,
+                    result=getattr(args, "result", "REPORTED_SENT"),
+                    provider=getattr(args, "provider", None),
+                    failure_note=getattr(args, "failure_note", None),
                 )
             elif args.command == "follow-up-schedule":
                 result = ledger.schedule_follow_up(
@@ -810,6 +861,7 @@ def run_cli(
                     reason=args.reason,
                     channel=args.channel,
                     proposal_id=args.proposal_id,
+                    outreach_id=getattr(args, "outreach_id", None),
                     allow_past_due=bool(args.allow_past_due),
                 )
             elif args.command == "follow-up-update":
@@ -834,6 +886,9 @@ def run_cli(
                     currency=args.currency,
                     amount_minor=args.amount_minor,
                     idempotency_key=args.idempotency_key,
+                    deployment_id=getattr(args, "deployment_id", None),
+                    preview_url=getattr(args, "preview_url", None),
+                    approval_ref=getattr(args, "approval_ref", None),
                 )
             elif args.command == "proposal-update":
                 result = ledger.update_proposal(
@@ -843,6 +898,7 @@ def run_cli(
                     evidence_url=args.evidence_url,
                     occurred_at=args.occurred_at,
                     notes=args.notes,
+                    evidence_kind=getattr(args, "evidence_kind", None),
                 )
             elif args.command == "outcome-record":
                 result = ledger.record_outcome(
@@ -866,6 +922,26 @@ def run_cli(
                 )
             elif args.command == "opt-out-revoke":
                 result = ledger.revoke_opt_out(args.block_id, reason=args.reason, evidence_note=args.evidence_note)
+            elif args.command == "relationship":
+                result = ledger.relationship(args.lead_id)
+            elif args.command == "relationship-advance":
+                result = ledger.advance_relationship_stage(
+                    args.lead_id,
+                    args.stage,
+                    reason=args.reason,
+                    evidence_note=args.evidence_note,
+                    evidence_url=args.evidence_url,
+                    occurred_at=args.occurred_at,
+                    allow_backtrack=bool(args.allow_backtrack),
+                )
+            elif args.command == "pipeline":
+                result = ledger.pipeline(stage=args.stage, limit=args.limit, offset=args.offset, today=args.today)
+            elif args.command == "outstanding":
+                result = ledger.outstanding_work(today=args.today, limit=args.limit)
+            elif args.command == "outreach-eligibility":
+                result = ledger.outreach_eligibility(
+                    args.lead_id, args.channel, outreach_id=args.outreach_id, for_action=args.for_action
+                )
             else:
                 result = ledger.ledger(args.lead_id, project_id=args.project_id)
             out_stream.write(json.dumps(result, indent=2) + "\n")

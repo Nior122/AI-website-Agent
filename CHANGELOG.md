@@ -4,6 +4,53 @@ All notable project changes are recorded here. Dates use ISO 8601 (`YYYY-MM-DD`)
 
 ## [Unreleased]
 
+### Added — 2026-10-15 (Phase 46 continued: relationship stage, send outcomes, one eligibility guard, ledger reads)
+
+- The ledger gained the parts that make it usable as the record of a *relationship* rather than a pile of events:
+  a sixth collection `relationships` (one row per lead: stage, previous stage, when it changed, the ids that
+  prove it, and the derived next action), portfolio queries (`pipeline`, `outstanding`, `outcome_report`) that are
+  read-only, clamped to 200 rows, and paginated, and five new `python -m tracking` commands
+  (`relationship`, `relationship-advance`, `pipeline`, `outstanding`, `outreach-eligibility`), taking the ledger
+  surface to seventeen commands. The stage row is a projection: it advances when a record proves a step, an
+  explicit human move is kept over later derivations, a stage with no record behind it is refused with
+  `STAGE_NEEDS_CORROBORATION`, and `pipeline` reports `stage_is_current: false` when the two accounts disagree
+  instead of quietly overwriting either.
+- Send reporting now distinguishes five states instead of collapsing them. `outreach-mark-sent --result FAILED`
+  records an attempt that did not reach anyone (`SEND_FAILED`, `delivery_status: FAILED_REPORTED`,
+  `counts_as_contact: false`), leaves the lead uncontacted and the stage unmoved, keeps the draft's human
+  approval so a deliberate retry reuses the same outreach record rather than minting a second one, and still
+  consumes a contact-budget slot because a retry loop that never trips the cap is how a prospect gets spammed.
+  `ACCEPTED_BY_PROVIDER` and `VERIFIED_DELIVERED` are refused with `PROVIDER_RECEIPT_UNAVAILABLE` from every
+  entry point - this repository reads no provider receipt, so it does not pretend to know one.
+- One guard, no weaker duplicate: `outreach_eligibility()` reads the opt-out, the per-lead per-channel budget, the
+  outreach review decision, and the project's state at call time, and both `mark_outreach_sent` and
+  `schedule_follow_up` route through it (as must any future sender). It answers and never authorizes: the payload
+  carries `grants_authorization: false` and the check list names what a human has to decide.
+- Proposals cite their evidence rather than restating it: `--deployment-id` attaches the demo by reading the URL
+  and verification state from the recorded deployment (a typed URL that matches no record is
+  `DEMO_URL_UNRECORDED`, a mismatched one is `DEMO_URL_MISMATCH`, and `live_url_checked` is echoed, never
+  upgraded), `--approval-ref` cites an actual review record for the same project, an `ACCEPTED` proposal needs a
+  customer-side evidence kind (`EVIDENCE_KIND_INSUFFICIENT` for an operator's impression), and the draft's
+  sending state stays on the outreach record.
+- Inbound messages can now carry what a real intake would have: `--provider`, `--external-message-id`,
+  `--conversation-id`, `--in-reply-to` (validated to point at something outbound), and `--classification` from a
+  fixed vocabulary with `classification_source: operator_asserted` because no classifier exists here. A reply is
+  owed until something *outbound* follows it - an internal note does not close it - and an `UNSUBSCRIBE` is not an
+  opt-out: it is recorded as an inbound message with `suggested_action: record_opt_out`.
+- Durability and safety details: every public write is now one transaction (the touched collections are
+  snapshotted, a single durable save lands at the end, and a refusal rolls the in-memory edits back so nothing
+  half-applied survives); free-text failure and provider details are refused with `DETAIL_MAY_CONTAIN_SECRET`
+  when they look credential-shaped rather than silently scrubbed; contact email/phone redaction still applies to
+  all narrative fields; and `TrackingStore.refresh()` is skipped while edits are pending so a re-read cannot
+  blend old rows into an unfinished operation.
+- Four read-only HTTP routes (`GET /engagement/pipeline`, `/outstanding`, `/eligibility/:lead_id`,
+  `/leads/:lead_id`, `/relationship/:lead_id`) were added so a scheduler can ask what is due and what is
+  permitted; they sit behind the existing bearer token, ledger refusals answer `400` with their own code, and
+  there is no write route at all. `orchestration/workers.py` and the n8n examples are unchanged, no message is
+  sent, and 26 new tests (55 in the phase file, **457 in the whole suite**) cover the stage projection, the five
+  send states, the guard, the transaction boundary, redaction of secrets, demo/approval references, reply
+  threading, the CLI, the API's read-only surface, and a report that survives a record pointing at something deleted.
+
 ### Added — 2026-10-15 (Phase 46: persistent prospect engagement and customer-outcome ledger)
 
 - `tracking/engagement.py` adds `EngagementLedger`, the persistent record of the steps after an outreach draft

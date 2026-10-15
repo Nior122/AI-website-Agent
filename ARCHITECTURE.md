@@ -122,8 +122,8 @@ Observations are the existing `website_observation` vocabulary, so `_evaluate_we
 `tracking/engagement.py` is the persistent record of the steps after discovery: what was sent, what came back,
 what is due, where a proposal stands, and how the opportunity ended. It writes into the same `TrackingStore`
 state as leads, builds, reviews, and deployments, uses the same guards (`validate_record_id`,
-`validate_bounded_text`, `next_numeric_id`), and adds five collections - `engagements`, `proposals`,
-`follow_ups`, `outcomes`, `contact_blocks`.
+`validate_bounded_text`, `next_numeric_id`), and adds six collections - `engagements`, `proposals`,
+`follow_ups`, `outcomes`, `contact_blocks`, and a one-row-per-lead `relationships` progress record.
 
 The module encodes the difference between adjacent facts rather than trusting the caller to remember it: an
 approved draft, a reported send, and a verified delivery are three different records, and only the first two
@@ -132,13 +132,22 @@ accepted proposal are three states with evidence required for the last two; `NO_
 that needs no customer evidence and it is never produced by the passage of time; and `WON` requires a
 customer-side evidence kind plus a contract, invoice, or payment reference. Opt-outs are not just history -
 recording one cancels the follow-ups it covers and blocks new ones and further sends on that channel, and the
-per-lead, per-channel send count is capped so "one more nudge" cannot become an uncounted habit.
+per-lead, per-channel send count is capped so "one more nudge" cannot become an uncounted habit. A failure is
+recorded as a failure (`SEND_FAILED`, not a contact, not a rewritten history), and the two claims that would
+need a provider's own receipt - accepted, delivered - are unreachable from this code rather than approximated.
+
+`outreach_eligibility()` is the single guard: opt-out, contact budget, the outreach review decision, and project
+state, re-read at call time, consulted by the ledger's own writes and offered to any future scheduler over the
+CLI or a read-only endpoint. It answers, never authorizes. The relationship stage is a projection of the records
+below it - it can be advanced by hand only onto a step something already proves, an explicit human move is
+kept over later derivations, and disagreement is reported as `stage_is_current: false` instead of being
+silently overwritten.
 
 Free-text is redacted of email and phone shapes on write, records link to `lead_id`/`project_id`/`outreach_id`
 instead of copying contact details, and every operation is idempotent on a derived or supplied key so a retried
-command cannot double-count a reply. The ledger has no HTTP endpoint and imports no network, builder,
-deployer, or sender - a workflow cannot mark its own outreach successful; that record comes from a human who
-saw it happen.
+command cannot double-count a reply, and each operation is one transaction - one durable save or none. The
+ledger imports no network, builder, deployer, or sender and exposes only read-only HTTP routes - a workflow
+cannot mark its own outreach successful; that record comes from a human who saw it happen.
 
 ## Website opportunity handoff
 

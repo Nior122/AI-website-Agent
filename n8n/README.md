@@ -14,6 +14,16 @@ python3 -m orchestration.cli serve --host 127.0.0.1 --port 8787
 
 The API binds only to `127.0.0.1`/`localhost` (refusing public `0.0.0.0` binds) and fails closed if `AI_WEBSITE_AGENT_API_TOKEN` is unset. Every request must supply `Authorization: Bearer <token>`.
 
+## Engagement ledger reads (and why there are no writes)
+
+A scheduled workflow may call `GET /engagement/outstanding`, `GET /engagement/pipeline?stage=`, or
+`GET /engagement/eligibility/:lead_id?outreach_id=` to decide *whether to notify a human*, and `python3 -m tracking.cli
+outreach-eligibility` from a local shell task. No workflow example writes to the ledger, and none can: routes that
+would record `OUTREACH_SENT`, a presented proposal, or a `WON` outcome do not exist over HTTP, because a graph
+able to mark its own outreach successful would replace the human approval step this system exists to keep.
+Opt-outs and the per-channel contact budget are enforced in the application rather than in the graph, so editing
+a workflow cannot widen them.
+
 ## Exported Workflows (`n8n/workflows/`)
 
 - `01-create-job.json` *(preserved starter workflow)* — creates an idempotent, dry-run `SCOUT` job from a manual trigger (`POST /jobs`).

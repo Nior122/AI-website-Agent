@@ -14,6 +14,7 @@ import threading
 from urllib.parse import parse_qs, urlparse
 
 from tracking.database import DatabasePersistenceError, is_production_mode
+from tracking.engagement import EngagementLedger, LedgerError
 from tracking.store import (
     MAX_REVIEWER_CHARS,
     MAX_REVIEW_NOTES_CHARS,
@@ -455,6 +456,44 @@ def make_handler(
                             "review_status": snap["project"].get("review_status"),
                             "verification": verification,
                         })
+                    if path[:1] == ["engagement"]:
+                        # Read-only engagement surface. There is deliberately no POST/PUT for the ledger:
+                        # `OUTREACH_SENT`, `PRESENTED`, and `WON` are claims about what a person did, and an
+                        # endpoint that let a workflow write them would let that workflow approve itself.
+                        ledger = EngagementLedger(service.store, source="api-readonly")
+                        sub = path[1:]
+                        first = sub[0] if sub else ""
+                        if first == "pipeline":
+                            return self._json(200, ledger.pipeline(
+                                stage=(query.get("stage") or [None])[0],
+                                limit=(query.get("limit") or [50])[0],
+                                offset=(query.get("offset") or [0])[0],
+                                today=(query.get("today") or [None])[0],
+                            ))
+                        if first == "outstanding":
+                            return self._json(200, ledger.outstanding_work(
+                                today=(query.get("today") or [None])[0],
+                                limit=(query.get("limit") or [50])[0],
+                            ))
+                        if first == "eligibility" and len(sub) == 2:
+                            return self._json(200, ledger.outreach_eligibility(
+                                sub[1],
+                                channel=(query.get("channel") or [None])[0],
+                                outreach_id=(query.get("outreach_id") or [None])[0],
+                                for_action=(query.get("for_action") or ["SEND"])[0],
+                            ))
+                        if first in {"leads", "relationship"} and len(sub) == 2:
+                            self._record_id(sub[1], kind="lead_id")
+                            if first == "leads":
+                                return self._json(200, ledger.ledger(sub[1]))
+                            return self._json(200, ledger.relationship(sub[1]))
+                        return self._json(404, {
+                            "error": "Unknown engagement route. The ledger is read-only over HTTP "
+                                     "(engagement/pipeline, engagement/outstanding, engagement/eligibility/:lead_id, "
+                                     "engagement/leads/:lead_id, engagement/relationship/:lead_id); writes come from "
+                                     "the operator's CLI.",
+                            "error_code": "LEDGER_ROUTE_NOT_FOUND",
+                        })
                     return self._json(404, {"error": "Not found", "error_code": "ROUTE_NOT_FOUND"})
                 except RequestBodyTooLarge as error:
                     return self._json(413, {"error": str(error), "error_code": "REQUEST_BODY_TOO_LARGE"})
@@ -466,6 +505,10 @@ def make_handler(
                     # HTTP answer cannot map the host filesystem.
                     return self._json(503, {"error": "Database persistence error", "error_code": "STORAGE_UNAVAILABLE",
                                             "detail": self._client_detail(db_error)})
+                except LedgerError as error:
+                    # A ledger refusal is about the request (a bad limit, an unknown stage), so it is a client
+                    # error with its own code - never a 500 and never a silently widened query.
+                    return self._json(400, {"error": self._client_detail(error), "error_code": error.code})
                 except (KeyError, ValueError) as error:
                     # A GET failure is a lookup failure on this surface (unknown job/project); malformed
                     # input is answered above as 400.

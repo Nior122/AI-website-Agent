@@ -381,6 +381,7 @@ def _empty_state() -> dict:
         "follow_ups": {},
         "outcomes": {},
         "contact_blocks": {},
+        "relationships": {},
     }
 
 

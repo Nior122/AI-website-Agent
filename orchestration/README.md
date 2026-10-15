@@ -34,6 +34,10 @@ Supported authenticated endpoints (`Authorization: Bearer <token>`):
 - `POST /projects/:id/review` — records one explicit human review decision (`decision`, `notes`, `reviewer`, and `confirm=<project_id>:<assigned_build_id>:<DECISION>`). `decision` must be one of `APPROVED_FOR_PREVIEW`, `APPROVED`, `REJECTED`, `CHANGES_REQUESTED`; `notes`, `reviewer`, and `confirm` must be strings within the recorded bounds (4000 and 120 characters). A stale or misrouted confirmation is refused with `409 REVIEW_CONFIRMATION_MISMATCH` before anything is written, the reviewer string is recorded verbatim with `identity_verified: false`, and the response carries the resulting `deployment_authorization`. Supplying `identity_verified: true` is refused with `400 IDENTITY_ASSERTION_REFUSED` (see *HTTP trust boundary* below). Recording a decision never publishes anything.
 - `GET /projects/:id/deployment-authorization` — read-only view of the server-side publish gate for the assigned build (or `?build_id=` to assert one): `authorized`, a machine-readable `code` (`APPROVAL_MISSING`, `APPROVED_FOR_DEPLOYMENT`, `ALREADY_DEPLOYED` with `skip_publish: true`, `REVIEW_REJECTED`, `REVIEW_CHANGES_REQUESTED`, `VALIDATION_NOT_PASSED`, `PUBLISH_STATE_UNCERTAIN`, `REAL_ISOLATED_TARGET_REQUIRED`, …) and an actionable `reason`. It never deploys and never mutates state.
 - `GET /attention` — the operator backlog from `operator_attention()`: stale-running jobs, blocked/failed/exhausted jobs, projects awaiting a human decision or sent back by review, and deployment outcomes that need manual resolution - each with a stable code, the sanitized recorded message, and the safe next action.
+- `GET /engagement/pipeline?stage=&limit=&offset=&today=` — the relationship ledger by stage: one row per lead with its recorded stage, whether that stage still matches what the records prove, its derived next action, proposal statuses, due follow-up ids, and whether contact is blocked. Bounded (default 50, maximum 200 rows) and read-only.
+- `GET /engagement/outstanding?limit=&today=` — what a human owes the pipeline right now: due follow-ups with their eligibility blockers, proposals awaiting a decision or a presentation, inbound messages with no outbound answer after them, and active contact blocks.
+- `GET /engagement/eligibility/:lead_id?channel=&outreach_id=&for_action=` — the one guard every contact path consults (opt-out, contact budget, the outreach review decision, project state). It answers; it never authorizes, and the response carries `grants_authorization: false`.
+- `GET /engagement/leads/:lead_id` and `GET /engagement/relationship/:lead_id` — one prospect's joined history and its stage row.
 - `GET /deployment-status` — recorded publish state per project (`VERIFIED_RECORDED`, `UNCERTAIN`, `FAILED`, `RECORDED_UNCONFIRMED`, `SUPERSEDED`, `NOT_ATTEMPTED`) plus deployment *configuration* (CLI on `PATH`, project link, isolated target). It reads the ledger and configuration only and always reports `provider_contacted: false` / `live_url_checked: false`, so a configuration check cannot be mistaken for verification of a live site; `?project_id=` narrows the attention list.
 - `POST /jobs/:id/retry` refuses an ineligible retry with `409`, `error_code: RETRY_NOT_ELIGIBLE`, and the recorded eligibility explanation rather than a generic error.
 
@@ -223,20 +227,28 @@ decision have to be told apart, or the operator is sent to approve something tha
 
 Structured events are emitted with `orchestration.observability.log_event()`: one JSON object per line to stderr (filtered by `AI_WEBSITE_AGENT_LOG_LEVEL`, default `WARNING`) and appended to `AI_WEBSITE_AGENT_LOG_DIR/operations.jsonl` when that directory is configured. Every line carries `timestamp`, `severity`, `operation`, a stable `code`, the identifiers needed to trace it (`job_id`, `lead_id`, `project_id`, `build_id`, `validation_id`, `deployment_id`, `execution_id`, `worker_id`, `attempt`), and a sanitized `detail`. `redact()` removes bearer/authorization values, named secrets, `sk-` keys, JWTs, and complete connection-string userinfo before anything is persisted or returned, and messages are length-bounded. Duplicate alert suppression is in-process by design: a long-lived caller should pass its own `seen` set, and no second copy of workflow state is kept for monitoring.
 
-## Engagement ledger: no HTTP write surface, on purpose
+## Engagement ledger: reads over HTTP, writes only from a human
 
-Phase 46 added persistent tracking for everything after an approved outreach draft - replies, follow-ups,
-proposal status, prospect decisions, outcomes, and opt-outs - in `tracking/engagement.py`. It is reachable from
-`python3 -m tracking` (twelve commands, listed in `tracking/README.md`) and from `TrackingStore` consumers, and
-it was deliberately **not** exposed as an `orchestration/api.py` endpoint: an automated caller that can write
-`OUTREACH_SENT`, `PRESENTED`, or `WON` can declare its own success, which is the failure mode the review gate and
-the `AWAITING_REVIEW -> READY_TO_SEND` handoff exist to prevent. A future worker may therefore call
-`EngagementLedger` methods directly - they are pure state transitions that never send, deploy, approve, or
-build - but the values it can store are bounded by what the store will accept: a send needs operator evidence and
-is still recorded as `SENT_REPORTED` with `provider_verified: false`, a proposal needs evidence before it reads
-as `PRESENTED`, `WON` needs a customer-side document reference, and no number of elapsed days turns an unanswered
-follow-up into a `DECLINED` outcome. `orchestration/workers.py` was not changed and no n8n workflow example was
-changed or activated: `n8n/workflows/03-core-lead-to-review-package-pipeline.json` still ends at
-"Generate & Verify Review Package" and hands off to a human, so no exported graph creates a ledger record, marks
-outreach as sent, or closes an opportunity. (The `sendBody`/`sendHeaders` keys inside those files are n8n HTTP
-node configuration for calling this repository's own API, not anything that contacts a prospect.)
+Phase 46 added persistent tracking for everything after an approved outreach draft - replies, send outcomes
+(including honest failures), follow-ups, proposal status and demo references, prospect decisions, outcomes,
+opt-outs, and a one-row-per-lead relationship stage - in `tracking/engagement.py`. It is reachable from
+`python3 -m tracking` (seventeen commands, listed in `tracking/README.md`) and from `TrackingStore` consumers.
+The **write** path is deliberately not exposed over HTTP: the four `GET /engagement/...` routes let a scheduler
+ask what is due and what is permitted, and nothing over HTTP can record `OUTREACH_SENT`, `PRESENTED`, or `WON` -
+which is exactly the failure mode the review gate and the `AWAITING_REVIEW -> READY_TO_SEND` handoff exist to
+prevent.
+
+A worker may call `EngagementLedger` methods directly: they are pure state transitions that never send, deploy,
+approve, or build, and `outreach_eligibility()` is the one guard they all consult immediately before a contact -
+the same function the ledger's own refusals use, so no path can carry a weaker rule. What can be stored is
+bounded by what the record will accept: a send needs operator evidence and is still `SENT_REPORTED` with
+`provider_verified: false`; `ACCEPTED_BY_PROVIDER` and `VERIFIED_DELIVERED` are refused outright because this
+repository reads no provider receipt; a proposal needs evidence before it reads as `PRESENTED`; `WON` needs a
+customer-side document reference and stores no revenue; and no number of elapsed days turns an unanswered
+follow-up into a `DECLINED` outcome.
+
+`orchestration/workers.py` was not changed and no n8n workflow example was changed or activated:
+`n8n/workflows/03-core-lead-to-review-package-pipeline.json` still ends at "Generate & Verify Review Package"
+and hands off to a human, so no exported graph creates a ledger record, marks outreach as sent, or closes an
+opportunity. (The `sendBody`/`sendHeaders` keys inside those files are n8n HTTP node configuration for calling
+this repository's own API, not anything that contacts a prospect.)
