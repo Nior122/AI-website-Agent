@@ -537,7 +537,10 @@ have been done:
    control, stays with the operator - nothing in this repository can read or change them.
 5. Record the human review decision for the project you intend to publish
    (`python3 -m tracking.cli review <pid> --decision APPROVED_FOR_PREVIEW --action PREVIEW_DEPLOYMENT
-   --build-id <build-id> --notes "..." --confirm <token>`).
+   --build-id <build-id> --notes "..." --confirm <token>`). `/demo <project-id> SEND` on the allow-listed
+   Telegram account records the same decision through the same path - same build id, same validation result,
+   same deployment record - and attributes it to that account, with `identity_verified: false` because the
+   allow-list proves an account and not a person. Nothing outside those two surfaces can produce this file.
 6. Deploy to Render only when you want the API public, and expect startup to fail until the secrets are set.
 
 A workspace that has run §8 and cannot reach the provider should stop there with
@@ -545,9 +548,12 @@ A workspace that has run §8 and cannot reach the provider should stop there wit
 sandbox, a CI runner, or a fresh clone - not a condition to route around by creating `.vercel/project.json`
 by hand, storing a token in the repository, or reporting a dry run as a deployment.
 
-Outreach drafting remains what it always was: a human approves content, and nothing sends from an approval
-alone. §10 documents the four things that must be true before an approved draft can be sent, and what a send is
-allowed to claim afterwards. This guide describes them; it does not enable them.
+Outreach drafting keeps the rule it always had: a human approves the content, and an approval is a *permission
+to be considered*, never an instruction to send. Since Phase 49 there is a sender, so the sentence has to be read
+as "nothing sends from an approval **alone**" - §10 lists the further conditions a draft has to clear (an
+unbroken fingerprint binding, the ledger's eligibility answer, the recipient not opted out, a machine opted in
+with `AI_WEBSITE_AGENT_ALLOW_LIVE_OUTREACH`, and an operator who typed `SEND` after reading that exact text) and
+says what each result is allowed to claim afterwards. This guide describes them; it does not enable them.
 
 ---
 
