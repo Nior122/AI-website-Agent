@@ -469,6 +469,33 @@ def run_cli(
     ledger_parser.add_argument("lead_id", nargs="?", default=None, help="Lead id (e.g. lead-0002), or omit with --project-id.")
     ledger_parser.add_argument("--project-id", default=None, help="View by project instead of by lead.")
 
+    inbound_parser = subparsers.add_parser(
+        "inbound-record",
+        help="Record one inbound business response from a provider event (it records what arrived; it never sends, approves, or decides).")
+    inbound_parser.add_argument("--from-file", default=None,
+                                help="Path to a provider event JSON object; alternative to the flags below.")
+    inbound_parser.add_argument("--provider", default=None,
+                                help="EMAIL_INBOUND, SMS_INBOUND, WHATSAPP_INBOUND, FORM_INBOUND, GENERIC_WEBHOOK.")
+    inbound_parser.add_argument("--event-id", default=None, help="The provider's own stable message/event id.")
+    inbound_parser.add_argument("--channel", default=None, help="Where it arrived (EMAIL, SMS, WHATSAPP, ...).")
+    inbound_parser.add_argument("--lead-id", default=None, help="The tracked lead it came from, when known.")
+    inbound_parser.add_argument("--outreach-id", default=None, help="Our draft it answers; its lead is read from that record.")
+    inbound_parser.add_argument("--project-id", default=None, help="Link through a tracked project instead of a lead.")
+    inbound_parser.add_argument("--conversation-id", default=None, help="Thread id; links to the lead that thread already belongs to.")
+    inbound_parser.add_argument("--external-message-id", default=None, help="Provider message id when it differs from --event-id.")
+    inbound_parser.add_argument("--body", default=None, help="Message text. Only a bounded, contact-redacted excerpt is stored.")
+    inbound_parser.add_argument("--summary", default=None, help="What the message says, in the operator's words.")
+    inbound_parser.add_argument("--message-ref", default=None, help="Where the full message lives (a path or id, not the text).")
+    inbound_parser.add_argument("--occurred-at", default=None, help="When the business sent it, if the provider reports that.")
+    inbound_parser.add_argument("--classification", default=None, help="A hint from the caller. Recorded as a hint, never as fact.")
+    inbound_parser.add_argument("--unsubscribe-confirmed", action="store_true",
+                                help="The provider reported the customer's own unsubscribe action.")
+
+    pending_parser = subparsers.add_parser(
+        "inbound-pending",
+        help="List inbound events the intake could not route, could not process, or is not sure about.")
+    pending_parser.add_argument("--limit", type=int, default=25, help="Rows to return (max 200).")
+
     rec_exp_parser = subparsers.add_parser(
         "recover-verified-exports",
         help="Recover project-0001 and project-0002 from committed fixtures and SHA-256 verified review packages.",
@@ -792,6 +819,35 @@ def run_cli(
                 regenerate=bool(args.regenerate),
             )
             out_stream.write(json.dumps(draft, indent=2) + "\n")
+            return 0
+
+        if args.command in {"inbound-record", "inbound-pending"}:
+            from tracking.engagement import EngagementLedger
+            from tracking.inbound import InboundIntake
+
+            intake = InboundIntake(EngagementLedger(store, source=f"tracking-cli:{args.command}"))
+            if args.command == "inbound-pending":
+                out_stream.write(json.dumps(intake.pending(limit=args.limit), indent=2) + "\n")
+                return 0
+            payload: dict = {}
+            if args.from_file:
+                payload = json.loads(Path(args.from_file).read_text(encoding="utf-8"))
+                if not isinstance(payload, dict):
+                    raise ValueError("The event file must contain one JSON object.")
+            for field, key in (
+                ("provider", "provider"), ("event_id", "event_id"), ("channel", "channel"),
+                ("lead_id", "lead_id"), ("outreach_id", "outreach_id"), ("project_id", "project_id"),
+                ("conversation_id", "conversation_id"), ("external_message_id", "external_message_id"),
+                ("body", "body"), ("summary", "summary"), ("message_ref", "message_ref"),
+                ("occurred_at", "occurred_at"), ("classification", "classification"),
+            ):
+                value = getattr(args, field, None)
+                if value is not None:
+                    payload[key] = value
+            if getattr(args, "unsubscribe_confirmed", False):
+                payload["unsubscribe_confirmed"] = True
+            result = intake.process(payload, source="tracking-cli")
+            out_stream.write(json.dumps(result, indent=2) + "\n")
             return 0
 
         if args.command in {

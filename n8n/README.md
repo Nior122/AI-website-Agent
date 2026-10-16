@@ -16,6 +16,11 @@ The API binds only to `127.0.0.1`/`localhost` (refusing public `0.0.0.0` binds) 
 
 ## Engagement ledger reads (and why there are no writes)
 
+One write is open to a workflow, and it is the narrow one: `POST /engagement/inbound` records what a business
+replied (`n8n/workflows/05-inbound-response-intake.json`). It cannot record that anything was sent, approved,
+presented, delivered, or won - those fields are refused by the application, not by the graph - so a workflow that
+receives a reply still cannot mark its own outreach successful or close an opportunity.
+
 A scheduled workflow may call `GET /engagement/outstanding`, `GET /engagement/pipeline?stage=`, or
 `GET /engagement/eligibility/:lead_id?outreach_id=` to decide *whether to notify a human*, and `python3 -m tracking.cli
 outreach-eligibility` from a local shell task. No workflow example writes to the ledger, and none can: routes that
@@ -39,7 +44,45 @@ a workflow cannot widen them.
   - Website build failure (`Outcome - Build Failure`)
   - Automated validation failure (`Outcome - Validation Failure`)
   - Successful build ready for human review (`Outcome - Successful Build Ready For Human Review`, `review_status = PENDING`)
+- `05-inbound-response-intake.json` — hands one provider event to the authenticated intake route and routes on the answer:
+  `WEBHOOK/MANUAL TRIGGER -> field allow-list (Set) -> POST /engagement/inbound -> IF recorded -> IF operator action needed -> outcome`.
+  It is the smallest graph that does the job, and it deliberately contains no webhook, email, chat, or messaging node:
+  receiving a delivery and *replying* to it are different capabilities, and only the first is exported here. The Set
+  node lists the intake's fields, so an `outcome` or `approved` key cannot ride through a relay unnoticed - the
+  application refuses them anyway. Three outcomes are named in the graph: response recorded, operator review
+  required (unmatched / failed / uncertain opt-out), and not recorded (a contract refusal). Nothing in it sends.
 - `04-recover-and-retry-jobs.json` — recovers stale `RUNNING` jobs (`POST /jobs/recover-stale`), inspects a target job (`GET /jobs/:id`), and safely retries/runs eligible `FAILED`, `QUEUED`, or `NEEDS_REVIEW` jobs (`POST /jobs/:id/retry`).
+
+### Activating `05` - what an operator actually has to do
+
+The file being importable is not a running workflow, and no workflow in this directory is active: each export
+carries `"active": false`, and `check-n8n` refuses one that does not. To put inbound capture to work:
+
+1. Choose the real receiving channel and check **its** API before writing any relay: does it hand you a stable
+   message id, can it sign or be verified, and does it report an unsubscribe as the customer's own action? If it
+   cannot, use `GENERIC_WEBHOOK` / `FORM_INBOUND` semantics and accept that identity is derived from content
+   rather than proven. This repository has verified none of them, and connects none.
+2. Set `AI_WEBSITE_AGENT_API_URL` and `AI_WEBSITE_AGENT_API_TOKEN` in the environment n8n reads (the export
+   references nothing else; `check-n8n` lists what a file needs and what is missing here).
+3. In the n8n UI, import the JSON, replace `Manual Trigger` with a Webhook node (its request body becomes
+   `$json.body`, which is what the Set node reads), and keep the node's failure path enabled so a `400`/`401`
+   from the application fails the execution visibly instead of being swallowed.
+4. Optional, recommended when the relay is not this application's own process: set
+   `AI_WEBSITE_AGENT_INBOUND_SIGNING_SECRET` on the *application*, and have the relay put
+   `HMAC-SHA256(secret, raw body)` into `X-Inbound-Signature` (in this export the value comes from
+   `$json.signature_header`, so a Code node or n8n's Crypto node computes it). If a secret is configured and the
+   header is missing or does not match, the application answers `401` and records nothing.
+5. Quote-bearing bodies: the exported `jsonBody` interpolates fields into a JSON string. That is fine for ids and
+   plain text; in n8n's expression language prefer `={{ JSON.stringify($json) }}` for the message field so a
+   customer typing a `"` cannot produce malformed JSON (the application would refuse it as `BODY_INVALID`, never
+   mis-parse it).
+6. Activate the workflow only when you want it running, and confirm the first delivery with
+   `python3 -m tracking.cli inbound-pending` - the intake's backlog is the check that events are arriving, being
+   linked, and being left alone.
+
+Re-delivery is safe: the intake dedupes on the provider's event id, so pointing a webhook at this route twice,
+or replaying an execution, cannot double-count a reply. A re-run after a storage fault is likewise how a `FAILED`
+row gets resolved.
 
 ## Local Verification When n8n Binary Is Not Installed
 
@@ -51,7 +94,7 @@ When a live self-hosted n8n runtime (`n8n` CLI or Docker container) is not runni
 ### Checking the workflow configuration before importing
 
 ```bash
-python3 -m orchestration.cli check-n8n                      # all four exports
+python3 -m orchestration.cli check-n8n                      # all five exports
 python3 -m orchestration.cli check-n8n --workflow path/to.json
 python3 -m orchestration.cli preflight                      # the same section, with more context
 ```

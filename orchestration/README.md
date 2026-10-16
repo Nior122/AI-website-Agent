@@ -233,10 +233,11 @@ Phase 46 added persistent tracking for everything after an approved outreach dra
 (including honest failures), follow-ups, proposal status and demo references, prospect decisions, outcomes,
 opt-outs, and a one-row-per-lead relationship stage - in `tracking/engagement.py`. It is reachable from
 `python3 -m tracking` (seventeen commands, listed in `tracking/README.md`) and from `TrackingStore` consumers.
-The **write** path is deliberately not exposed over HTTP: the four `GET /engagement/...` routes let a scheduler
+The **write** path is deliberately not exposed over HTTP: the `GET /engagement/...` routes let a scheduler
 ask what is due and what is permitted, and nothing over HTTP can record `OUTREACH_SENT`, `PRESENTED`, or `WON` -
 which is exactly the failure mode the review gate and the `AWAITING_REVIEW -> READY_TO_SEND` handoff exist to
-prevent.
+prevent. Phase 47 added one exception, `POST /engagement/inbound`, described below: it accepts a business's words
+as evidence and refuses every state-asserting field the payload could carry.
 
 A worker may call `EngagementLedger` methods directly: they are pure state transitions that never send, deploy,
 approve, or build, and `outreach_eligibility()` is the one guard they all consult immediately before a contact -
@@ -246,6 +247,44 @@ bounded by what the record will accept: a send needs operator evidence and is st
 repository reads no provider receipt; a proposal needs evidence before it reads as `PRESENTED`; `WON` needs a
 customer-side document reference and stores no revenue; and no number of elapsed days turns an unanswered
 follow-up into a `DECLINED` outcome.
+
+### The one engagement write: `POST /engagement/inbound`
+
+Phase 47 added exactly one write route to the engagement namespace, and it is the one thing a workflow can
+legitimately report: *a business said something*. `orchestration/api.py` hands the body to
+`tracking.inbound.InboundIntake`, which validates the payload contract, links the message through recorded
+references, triages it with the same rules the operator's CLI uses, applies a clear opt-out through the ledger,
+and parks everything it is not sure about. It cannot assert an approval, a delivery, or an outcome - those fields
+are refused with `INBOUND_FORBIDDEN_FIELD`, so the read-only rule above still holds for every claim about
+customer behaviour. `tracking/inbound.py` documents the payload contract, the refusals, and the fact that no
+provider is connected to this repository.
+
+| Answer | When |
+| --- | --- |
+| `200` + `{disposition: RECORDED / NOTED / OPT_OUT_RECORDED / OPT_OUT_UNCERTAIN / UNMATCHED / FAILED}` | the event was accepted and recorded (or deliberately not recorded); a re-delivery answers the same way with `duplicate: true` and the original record |
+| `400` + `EVENT_ID_REQUIRED`, `PROVIDER_UNSUPPORTED`, `CHANNEL_REQUIRED`, `EVENT_EMPTY`, `EVENT_BODY_TOO_LARGE`, `INBOUND_FORBIDDEN_FIELD`, `DETAIL_MAY_CONTAIN_SECRET`, `LINKAGE_ID_INVALID` | the payload breaks the contract; nothing is stored, so the adapter can fix it and resend |
+| `401` + `INBOUND_SIGNATURE_MALFORMED / _INVALID / _UNVERIFIABLE` | a signing secret is configured and this delivery did not satisfy it |
+| `413` + `REQUEST_BODY_TOO_LARGE` | over `MAX_REQUEST_BYTES`, refused before the body is read |
+| `503` + `STORAGE_UNAVAILABLE` | the record could not be persisted; the event stays retryable by its own id |
+
+Authentication is the same bearer token as every other route (`_require_auth()` runs before a byte is read),
+and a delivery may additionally carry `X-Inbound-Signature: sha256=<hex HMAC-SHA256 of the raw body>`, keyed by
+`AI_WEBSITE_AGENT_INBOUND_SIGNING_SECRET`. The token proves *who may write*; the signature proves *which bytes*
+the provider sent, so a relay trusted to forward is not also trusted to rewrite. When no secret is configured the
+route still records events and each record says `signature.verified: false` with the reason - the absence of
+verification is data, not a silence. `GET /engagement/inbound?limit=` reads back the intake's own backlog
+(unmatched, failed, uncertain opt-outs) and returns ids, dispositions, and next actions rather than message bodies.
+
+### What "needs an operator" now includes
+
+`operator_attention()` grew past jobs, projects, and publishes to the engagement records themselves
+(`engagement_attention_items()`): due follow-ups, proposals presented with no customer decision, replies with
+nothing sent since, follow-ups suppressed by an opt-out, and from Phase 47 the inbound kinds - `INBOUND_UNMATCHED`,
+`INBOUND_PROCESSING_FAILED`, `OPT_OUT_NEEDS_REVIEW`, `INBOUND_TRIAGE_UNCERTAIN`. They appear under
+`counts.engagements` and `counts.inbound`, share the existing item shape so no new dashboard or endpoint is
+needed, are deduped per record and bounded by `ATTENTION_LIMIT`, and carry no message text because that report is
+copied into log lines. They are deliberately absent from `CRITICAL_JOB_CODES` and `CRITICAL_KINDS`: an unanswered
+enquiry is work for a human, not an outage, so `run-alert-scan` will not page anyone over it.
 
 `orchestration/workers.py` was not changed and no n8n workflow example was changed or activated:
 `n8n/workflows/03-core-lead-to-review-package-pipeline.json` still ends at "Generate & Verify Review Package"

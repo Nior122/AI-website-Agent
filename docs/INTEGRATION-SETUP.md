@@ -36,6 +36,7 @@ Only these are read. A variable that is absent is not an error unless the "Requi
 | `AI_WEBSITE_AGENT_DB_CONNECT_TIMEOUT` | Seconds before a database connection attempt is abandoned (default 10) | optional | no |
 | `AI_WEBSITE_AGENT_OPERATOR_ID` | Default attribution for operator actions recorded by the CLI | optional | no |
 | `AI_WEBSITE_AGENT_LOG_DIR` / `_LOG_FILE` / `_LOG_LEVEL` | Structured operational log location and level | optional | no |
+| `AI_WEBSITE_AGENT_INBOUND_SIGNING_SECRET` | HMAC key an external relay uses to sign its `POST /engagement/inbound` delivery (`X-Inbound-Signature: sha256=<hex>`); when it is set, an unsigned or mismatched delivery is refused with `401` | only if an inbound adapter relays provider events | no |
 
 Local shell, POSIX:
 
@@ -153,6 +154,7 @@ goes to `/jobs` instead of your API and reads like an outage.
 | `n8n/workflows/02-inspect-job.json` | `GET /jobs/:id` | **manual edit**: replace `REPLACE_WITH_JOB_ID` in the n8n UI |
 | `n8n/workflows/03-core-lead-to-review-package-pipeline.json` | discovery → research → qualification → build → validation → review package | ends at *human review pending*; there is no deploy node |
 | `n8n/workflows/04-recover-and-retry-jobs.json` | `POST /jobs/recover-stale`, `GET /jobs/:id`, `POST /jobs/:id/retry` | retries only eligible jobs; a retried `DEPLOY` still passes the same durable gate |
+| `n8n/workflows/05-inbound-response-intake.json` | field allow-list → `POST /engagement/inbound` → branch on the disposition | records what a business said; it cannot approve, send, deliver, or decide anything, and it has no webhook node yet — see `n8n/README.md` for the activation steps |
 
 **Manual steps, in the n8n UI** (Workflows → Import from File, one file at a time):
 
@@ -167,9 +169,15 @@ goes to `/jobs` instead of your API and reads like an outage.
    bearer token; a hand-edited export cannot walk the credential to another host.
 5. To drive the pipeline, trigger the workflow or use the CLI/worker. `DEPLOY` is not creatable over HTTP
    (`ALLOWED_API_JOB_TYPES`), so no workflow can schedule a publish.
+6. For `05` only: in the n8n UI replace its `Manual Trigger` with a Webhook node (the provider's JSON arrives
+   as `$json.body`), optionally compute the `X-Inbound-Signature` HMAC if you set
+   `AI_WEBSITE_AGENT_INBOUND_SIGNING_SECRET`, and check what landed with
+   `python3 -m tracking.cli inbound-pending`. Nothing is "connected" until you do this: no mailbox, social
+   account, or provider webhook is wired to this repository, and no provider's inbound API has been verified
+   from here.
 
-No messaging, outreach, or customer-contact node exists in these four files, and outreach sending is
-disabled in this repository's configuration.
+No messaging, outreach, or customer-contact node exists in these five files, and outreach sending is
+disabled in this repository's configuration. `05` receives a delivery and records it; it never replies.
 
 ---
 

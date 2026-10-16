@@ -1,0 +1,364 @@
+{
+    "name": "AI Website Agent - Inbound Response Intake",
+    "nodes": [
+        {
+            "parameters": {},
+            "id": "manual-trigger",
+            "name": "Manual Trigger",
+            "type": "n8n-nodes-base.manualTrigger",
+            "typeVersion": 1,
+            "position": [
+                200,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "values": {
+                    "string": [
+                        {
+                            "name": "provider",
+                            "value": "={{ $json.provider || '' }}"
+                        },
+                        {
+                            "name": "event_id",
+                            "value": "={{ $json.event_id || '' }}"
+                        },
+                        {
+                            "name": "channel",
+                            "value": "={{ $json.channel || '' }}"
+                        },
+                        {
+                            "name": "lead_id",
+                            "value": "={{ $json.lead_id || '' }}"
+                        },
+                        {
+                            "name": "outreach_id",
+                            "value": "={{ $json.outreach_id || '' }}"
+                        },
+                        {
+                            "name": "project_id",
+                            "value": "={{ $json.project_id || '' }}"
+                        },
+                        {
+                            "name": "conversation_id",
+                            "value": "={{ $json.conversation_id || '' }}"
+                        },
+                        {
+                            "name": "external_message_id",
+                            "value": "={{ $json.external_message_id || '' }}"
+                        },
+                        {
+                            "name": "occurred_at",
+                            "value": "={{ $json.occurred_at || '' }}"
+                        },
+                        {
+                            "name": "body",
+                            "value": "={{ $json.body || '' }}"
+                        },
+                        {
+                            "name": "summary",
+                            "value": "={{ $json.summary || '' }}"
+                        },
+                        {
+                            "name": "message_ref",
+                            "value": "={{ $json.message_ref || '' }}"
+                        },
+                        {
+                            "name": "signature_header",
+                            "value": "={{ $json.signature_header || '' }}"
+                        }
+                    ],
+                    "boolean": [
+                        {
+                            "name": "unsubscribe_confirmed",
+                            "value": "={{ $json.unsubscribe_confirmed || false }}"
+                        }
+                    ]
+                }
+            },
+            "id": "init-inbound",
+            "name": "Initialize Inbound Event",
+            "type": "n8n-nodes-base.set",
+            "typeVersion": 2,
+            "position": [
+                440,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "method": "POST",
+                "url": "={{ $env.AI_WEBSITE_AGENT_API_URL }}/engagement/inbound",
+                "sendHeaders": true,
+                "headerParameters": {
+                    "parameters": [
+                        {
+                            "name": "Authorization",
+                            "value": "=Bearer {{ $env.AI_WEBSITE_AGENT_API_TOKEN }}"
+                        },
+                        {
+                            "name": "Content-Type",
+                            "value": "application/json"
+                        },
+                        {
+                            "name": "X-Inbound-Signature",
+                            "value": "={{ $json.signature_header || '' }}"
+                        }
+                    ]
+                },
+                "sendBody": true,
+                "contentType": "json",
+                "jsonBody": "={\"provider\": \"{{ $json.provider }}\", \"event_id\": \"{{ $json.event_id }}\", \"channel\": \"{{ $json.channel }}\", \"lead_id\": \"{{ $json.lead_id }}\", \"outreach_id\": \"{{ $json.outreach_id }}\", \"project_id\": \"{{ $json.project_id }}\", \"conversation_id\": \"{{ $json.conversation_id }}\", \"external_message_id\": \"{{ $json.external_message_id }}\", \"occurred_at\": \"{{ $json.occurred_at }}\", \"body\": \"{{ $json.body }}\", \"summary\": \"{{ $json.summary }}\", \"message_ref\": \"{{ $json.message_ref }}\", \"signature_header\": \"{{ $json.signature_header }}\", \"unsubscribe_confirmed\": {{ $json.unsubscribe_confirmed }}}"
+            },
+            "id": "post-intake",
+            "name": "Hand Event To Application Intake",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.2,
+            "position": [
+                680,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "conditions": {
+                    "string": [
+                        {
+                            "value1": "={{ $json.disposition }}",
+                            "operation": "equal",
+                            "value2": "RECORDED"
+                        },
+                        {
+                            "value1": "={{ $json.disposition }}",
+                            "operation": "equal",
+                            "value2": "OPT_OUT_RECORDED"
+                        },
+                        {
+                            "value1": "={{ $json.disposition }}",
+                            "operation": "equal",
+                            "value2": "NOTED"
+                        }
+                    ]
+                },
+                "combineOperation": "any"
+            },
+            "id": "if-recorded",
+            "name": "IF Event Recorded",
+            "type": "n8n-nodes-base.if",
+            "typeVersion": 1,
+            "position": [
+                920,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "values": {
+                    "string": [
+                        {
+                            "name": "outcome",
+                            "value": "=response recorded in the engagement ledger"
+                        },
+                        {
+                            "name": "disposition",
+                            "value": "={{ $json.disposition }}"
+                        },
+                        {
+                            "name": "lead_id",
+                            "value": "={{ $json.lead_id || '' }}"
+                        },
+                        {
+                            "name": "engagement_id",
+                            "value": "={{ $json.engagement_id || '' }}"
+                        },
+                        {
+                            "name": "duplicate_delivery",
+                            "value": "={{ $json.duplicate }}"
+                        },
+                        {
+                            "name": "operator_next_action",
+                            "value": "=A reply is now owed to this business. Nothing sends itself: open the lead, read the message, and decide."
+                        }
+                    ]
+                }
+            },
+            "id": "outcome-recorded",
+            "name": "Outcome - Response Recorded",
+            "type": "n8n-nodes-base.set",
+            "typeVersion": 2,
+            "position": [
+                1160,
+                180
+            ]
+        },
+        {
+            "parameters": {
+                "conditions": {
+                    "string": [
+                        {
+                            "value1": "={{ $json.disposition }}",
+                            "operation": "equal",
+                            "value2": "UNMATCHED"
+                        },
+                        {
+                            "value1": "={{ $json.disposition }}",
+                            "operation": "equal",
+                            "value2": "FAILED"
+                        },
+                        {
+                            "value1": "={{ $json.disposition }}",
+                            "operation": "equal",
+                            "value2": "OPT_OUT_UNCERTAIN"
+                        }
+                    ]
+                },
+                "combineOperation": "any"
+            },
+            "id": "if-operator-action",
+            "name": "IF Operator Action Needed",
+            "type": "n8n-nodes-base.if",
+            "typeVersion": 1,
+            "position": [
+                1160,
+                420
+            ]
+        },
+        {
+            "parameters": {
+                "values": {
+                    "string": [
+                        {
+                            "name": "outcome",
+                            "value": "=waiting on the operator"
+                        },
+                        {
+                            "name": "disposition",
+                            "value": "={{ $json.disposition }}"
+                        },
+                        {
+                            "name": "error_code",
+                            "value": "={{ $json.error_code || '' }}"
+                        },
+                        {
+                            "name": "operator_next_action",
+                            "value": "=Read the backlog: python3 -m tracking.cli inbound-pending, or GET /engagement/inbound. Link the message to the right lead and answer it yourself; it is never attached to a guessed business and this workflow never replies."
+                        }
+                    ]
+                }
+            },
+            "id": "outcome-attention",
+            "name": "Outcome - Operator Review Required",
+            "type": "n8n-nodes-base.set",
+            "typeVersion": 2,
+            "position": [
+                1400,
+                340
+            ]
+        },
+        {
+            "parameters": {
+                "values": {
+                    "string": [
+                        {
+                            "name": "outcome",
+                            "value": "=not recorded"
+                        },
+                        {
+                            "name": "disposition",
+                            "value": "={{ $json.disposition || $json.error_code || 'unknown' }}"
+                        },
+                        {
+                            "name": "operator_next_action",
+                            "value": "=The application refused this event (unknown provider, missing provider event id, oversized body, or a payload that asserted an approval or outcome). Fix the payload and let the provider re-deliver; never edit the message into something it was not."
+                        }
+                    ]
+                }
+            },
+            "id": "outcome-refused",
+            "name": "Outcome - Not Recorded",
+            "type": "n8n-nodes-base.set",
+            "typeVersion": 2,
+            "position": [
+                1400,
+                520
+            ]
+        }
+    ],
+    "connections": {
+        "Manual Trigger": {
+            "main": [
+                [
+                    {
+                        "node": "Initialize Inbound Event",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Initialize Inbound Event": {
+            "main": [
+                [
+                    {
+                        "node": "Hand Event To Application Intake",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Hand Event To Application Intake": {
+            "main": [
+                [
+                    {
+                        "node": "IF Event Recorded",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "IF Event Recorded": {
+            "main": [
+                [
+                    {
+                        "node": "Outcome - Response Recorded",
+                        "type": "main",
+                        "index": 0
+                    }
+                ],
+                [
+                    {
+                        "node": "IF Operator Action Needed",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "IF Operator Action Needed": {
+            "main": [
+                [
+                    {
+                        "node": "Outcome - Operator Review Required",
+                        "type": "main",
+                        "index": 0
+                    }
+                ],
+                [
+                    {
+                        "node": "Outcome - Not Recorded",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        }
+    },
+    "active": false,
+    "settings": {
+        "executionOrder": "v1"
+    },
+    "versionId": "example-no-secrets"
+}

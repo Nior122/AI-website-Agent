@@ -4,6 +4,85 @@ All notable project changes are recorded here. Dates use ISO 8601 (`YYYY-MM-DD`)
 
 ## [Unreleased]
 
+### Added — 2026-10-16 (Phase 47: Authorized Inbound Communications, One Provider-Neutral Intake, and the Operator Backlog the Ledger Was Already Holding)
+
+- `tracking/inbound.py` is the new front door for a business's reply: `normalize_event()` validates the payload
+  contract, `triage()` classifies it with visible phrase provenance, and `InboundIntake.process()` links it,
+  records it through `EngagementLedger`, applies an opt-out when the message clearly asks for one, and keeps a
+  durable intake row in a seventh collection, `inbound_events` - accounting for how the message arrived, not a
+  second history, because the `RESPONSE_RECEIVED` row in the ledger stays the business record. The collection is
+  declared in `TrackingStore`'s empty state, persisted through the existing `system_kv` document mechanism, and
+  deliberately kept out of `EngagementLedger.OWNED_COLLECTIONS`: the guard's transaction scope stays the six
+  ledger collections.
+- The payload contract refuses, with codes, instead of guessing. A provider that has a stable message id must
+  supply one (`EVENT_ID_REQUIRED`); a body over 20,000 characters is refused (`EVENT_BODY_TOO_LARGE`) and only a
+  bounded, contact-redacted `excerpt`, a `body_sha256`, and the caller's own `message_ref` are ever stored; an
+  unrecognised field is echoed in `ignored_fields` rather than dropped; a field that would assert an approval, a
+  delivery, an outcome, a proposal status, a relationship state, or a `next_action` is refused outright
+  (`INBOUND_FORBIDDEN_FIELD`) - an inbound feed that could write those could declare its own success, which is
+  what the review gate exists to prevent. Credential-shaped text is refused rather than scrubbed
+  (`DETAIL_MAY_CONTAIN_SECRET`), matching the ledger's existing rule.
+- Duplicate-safe, and honest about the weaker case. The dedupe key is `sha256(provider, event_id)` when the
+  provider supplies a stable id - so the same event re-delivered is the same event, whatever else the payload
+  says - and a content-plus-minute key otherwise, labelled `derived_from_content`. A duplicate returns the
+  original record with `duplicate: true` and changes nothing; distinct messages in one conversation stay distinct
+  records. Response, intake row, and opt-out are written in **one** ledger transaction, and `Unmatched` and
+  `Failed` rows are the two dispositions that may be reprocessed under the same key, which is how a parked
+  message gets linked and a storage fault gets retried.
+- Triage shows its work and stays a suggestion. Seven categories (`INTERESTED`, `INFORMATION_REQUEST`,
+  `MEETING_REQUEST`, `PROPOSAL_QUESTION`, `NOT_INTERESTED`, `OPT_OUT`, `UNCLEAR`) come from 37 phrase rules whose
+  matched phrases, contradictions, hedges, and a four-value `certainty` (`clear` / `mixed` / `ambiguous` /
+  `none`) are stored with the result. There is no confidence percentage anywhere: nothing in this repository
+  could justify one. A caller-supplied `classification` is kept as `classification_hint` with a
+  `classification_agrees` flag and never overwrites the rules - a contradiction between the two becomes a review
+  item rather than being smoothed over. Every `next_action` is written for a human, and none of them approves,
+  accepts, schedules, or sends.
+- Opt-out behaviour is Phase 46's rule, not a new one. An unambiguous written request to stop contact goes
+  through `record_opt_out()` with `channel=None` (all channels), cancels open follow-ups, and is enforced by the
+  same `outreach_eligibility()` guard every send path consults; a provider-reported unsubscribe with no customer
+  words in the text blocks only that provider's channel; a hedged or contradicted phrase ("unsubscribe for now,
+  but keep me posted") blocks nothing and returns `OPT_OUT_UNCERTAIN` for a human. Nothing replies to anything:
+  the intake has no send path, so an inbound "unsubscribe" cannot trigger an automated confirmation.
+- `POST /engagement/inbound` is the only engagement write exposed over HTTP, next to the read-only ledger routes.
+  It runs behind the same bearer token as every other route (authenticated before a byte is read), reads the raw
+  body itself so an optional `X-Inbound-Signature: sha256=<hex HMAC>` can be verified against the exact bytes the
+  provider sent (mandatory whenever `AI_WEBSITE_AGENT_INBOUND_SIGNING_SECRET` is set, and answered `401` with a
+  named code when missing or wrong), answers `400` with the intake's own code for a contract violation, `413` for
+  an oversized body, and `503` for a persistence fault without swallowing either. `GET /engagement/inbound`
+  reads the backlog bounded (1..200) with ids, dispositions, and next actions but no message bodies. Two CLI
+  commands, `inbound-record` and `inbound-pending`, reach the same intake, so an operator hand-recording a reply
+  and an adapter delivering one cannot drift apart.
+- `orchestration.health.engagement_attention_items()` closes the gap Phase 46 left: due follow-ups, proposals
+  presented with no customer decision, replies with nothing sent since, follow-ups suppressed by an opt-out, and
+  the four inbound kinds (`INBOUND_UNMATCHED`, `INBOUND_PROCESSING_FAILED`, `OPT_OUT_NEEDS_REVIEW`,
+  `INBOUND_TRIAGE_UNCERTAIN`) now appear in `operator_attention()` under the existing item shape, deduped per
+  record, bounded by `ATTENTION_LIMIT`, and carrying no message text because the report is copied into log lines -
+  and deliberately absent from the critical-alert codes, because an unanswered enquiry is work, not an outage.
+- `n8n/workflows/05-inbound-response-intake.json` is the smallest graph that does the hand-off: field allow-list
+  → `POST /engagement/inbound` → branch on the disposition → one of three named outcomes. It has no webhook,
+  email, chat, or messaging node in it (receiving and replying are different capabilities), no credential literal
+  (`$env.AI_WEBSITE_AGENT_API_URL` / `$env.AI_WEBSITE_AGENT_API_TOKEN` only), and `"active": false`;
+  `n8n/README.md` documents the six activation steps an operator still has to take, including swapping in the
+  Webhook node and what to do about signing.
+- **Not connected, and said so.** No mailbox, social account, or provider webhook is wired to this repository,
+  and no provider API was called while writing any of it: the five names in `INBOUND_PROVIDERS` are the shape an
+  adapter must produce, and picking one means reading that provider's real API for a stable event id, a
+  verifiable signature, and unsubscribe semantics first. `DELIVERY_RECEIPT_PROVIDERS` is empty, so the
+  delivery-receipt requirement stays a documented refusal rather than a claim - a reply proves a business
+  answered, not that a message was delivered, and `ACCEPTED_BY_PROVIDER` / `VERIFIED_DELIVERED` remain
+  unreachable from every entry point here. A future-timestamped event is recorded at receipt with the provider's
+  claim kept beside it labelled `rejected_future_claim` instead of being written into history.
+- Verified: `python3 -m unittest discover -s tests` -> **489/489 passed (0 failures, 0 errors)**, up from 457,
+  with 32 new tests in `tests/test_phase47_inbound_intake.py` covering the contract refusals, duplicate and
+  re-delivery behaviour, unmatched parking and later linkage, spoofed and dangling references, all three opt-out
+  paths, the persistence fault and its retry, the HTTP route (auth before any read, signed/tampered/unsigned
+  deliveries, oversized bodies, a 503 that carries no connection string, no bodies or credentials in the backlog
+  read or the log file), the attention items and their shape, and the exported workflow executed by
+  `N8nWorkflowRunner` against the live loopback API - twice, to prove re-running the automation cannot
+  double-count. `python3 -m compileall -q .` clean; `git diff --check` clean. Phase 46's 55 ledger tests and the
+  n8n/preflight suites pass unmodified apart from one legitimate count change (`check-n8n` now reports five
+  imports). No live provider, no sent message, no activated workflow, no production database.
+
 ### Added — 2026-10-15 (Phase 46 continued: relationship stage, send outcomes, one eligibility guard, ledger reads)
 
 - The ledger gained the parts that make it usable as the record of a *relationship* rather than a pile of events:

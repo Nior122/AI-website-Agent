@@ -146,8 +146,41 @@ silently overwritten.
 Free-text is redacted of email and phone shapes on write, records link to `lead_id`/`project_id`/`outreach_id`
 instead of copying contact details, and every operation is idempotent on a derived or supplied key so a retried
 command cannot double-count a reply, and each operation is one transaction - one durable save or none. The
-ledger imports no network, builder, deployer, or sender and exposes only read-only HTTP routes - a workflow
-cannot mark its own outreach successful; that record comes from a human who saw it happen.
+ledger imports no network, builder, deployer, or sender; over HTTP it exposes read-only queries plus the one
+inbound write described below, and a workflow still cannot mark its own outreach successful - that record comes
+from a human who saw it happen.
+
+## Authorized inbound communications
+
+A reply from a business is evidence, not a conclusion. `tracking/inbound.py` is the single place an external
+event becomes a record: `normalize_event()` enforces a payload contract (a stable provider event id wherever the
+provider has one, bounded and contact-redacted message text, the event's own time kept distinct from the time it
+was received, and an outright refusal of any field that would assert an approval, a delivery, an outcome, or a
+relationship state); `triage()` is a transparent phrase-rule baseline that reports which phrases matched, what
+contradicts what, and a four-value `certainty` - never an invented confidence number, and never an action beyond
+a suggestion written for a human; `InboundIntake` resolves linkage only through recorded references
+(`lead_id` → the draft's lead → the project's lead → the lead that already owns this conversation), parks
+anything else as `UNMATCHED` rather than attaching it to a guessed business, deduplicates durably on the
+provider's identity so a re-delivery cannot double-count, and writes the response, its own intake row, and any
+opt-out in one ledger transaction.
+
+The intake owns a seventh collection, `inbound_events`, which is accounting rather than history: it says how a
+message arrived, whether it was a duplicate, and why an event could not be routed, while the business record
+stays the ledger's `RESPONSE_RECEIVED` row. Opt-out semantics are Phase 46's, unchanged: an unambiguous written
+request to stop contact is applied through `EngagementLedger.record_opt_out()` (all channels, cancelling open
+follow-ups, enforced by the one `outreach_eligibility()` guard every send path consults); a provider-reported
+unsubscribe covers only that provider's channel; a hedged or contradicted phrase blocks nothing and becomes a
+review item. Nothing replies, so an inbound "unsubscribe" cannot be answered by an automated confirmation.
+
+`POST /engagement/inbound` is the only engagement write exposed over HTTP, and it can record only what the
+business said: `GET` reads of the ledger stay read-only, and a workflow that could write `OUTREACH_SENT`,
+`PRESENTED`, or `WON` could declare its own success. The operator token authenticates the caller; an optional
+`X-Inbound-Signature` HMAC over the raw body additionally proves which bytes the provider sent, and is mandatory
+whenever `AI_WEBSITE_AGENT_INBOUND_SIGNING_SECRET` is set. `DELIVERY_RECEIPT_PROVIDERS` is empty by design: an
+inbound reply is not a delivery receipt, so `ACCEPTED_BY_PROVIDER` and `VERIFIED_DELIVERED` remain unreachable
+from every entry point in this repository. No mailbox, social account, or webhook provider is connected here -
+the five provider names are the shape an adapter must produce, and selecting one requires reading that
+provider's own API first.
 
 ## Website opportunity handoff
 
@@ -183,8 +216,11 @@ Generated, validated, awaiting-review, approved-for-one-action, deployed, and re
 
 ## HTTP trust boundary
 
-The loopback API has exactly one credential: the shared `AI_WEBSITE_AGENT_API_TOKEN`. It is compared in
-constant time and grants access to workflow state, not to a human identity. The boundary is therefore
+The loopback API has one credential that authorizes a caller: the shared `AI_WEBSITE_AGENT_API_TOKEN`,
+compared in constant time, which grants access to workflow state and not to a human identity. One optional
+second secret exists for a single route - `AI_WEBSITE_AGENT_INBOUND_SIGNING_SECRET`, an HMAC key over the raw
+bytes of `POST /engagement/inbound` - and it authorizes nothing on its own: it proves which bytes a relay sent,
+and when it is configured an unsigned or mismatched delivery is refused. The boundary is therefore
 drawn where authority differs, not where convenience does: a request may name identifiers only in a
 validated form, may send a bounded body read only after the size check, may export a review package only
 inside the operator-configured export root, and may never assert that its reviewer was verified -
@@ -208,7 +244,7 @@ limitations this design accepts.
 | `builder/` | Qualified-lead build jobs, content-generator interface, local artifact creation, and validation. |
 | `validation/` | Static QA, severity findings, result contracts, and local validation CLI. |
 | `deployment/` | Preview-only Vercel adapter, deployment records, dry-run CLI, approval capability and publish ledger (`authorization.py`), and safety gates. |
-| `tracking/` | Single local JSON source of truth for lead, project, build, validation, deployment, and review history, plus the `authorize_preview_deployment` gate. |
+| `tracking/` | Single local JSON source of truth for lead, project, build, validation, deployment, and review history, the engagement/outcome ledger, the authorized inbound intake that feeds it, and the `authorize_preview_deployment` gate. |
 | `outreach/` | Draft-only, evidence-led outreach packages, revision history, and human draft review; no sender or transport. |
 | `orchestration/` | Application-owned job ledger, gating, retry/recovery, worker interface, and optional private API. |
 | `n8n/` | Inactive self-hosted n8n JSON examples and operating notes; no credentials. |

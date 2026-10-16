@@ -13,6 +13,7 @@ from pathlib import Path
 import threading
 from urllib.parse import parse_qs, urlparse
 
+from tracking import inbound
 from tracking.database import DatabasePersistenceError, is_production_mode
 from tracking.engagement import EngagementLedger, LedgerError
 from tracking.store import (
@@ -45,6 +46,20 @@ ALLOWED_API_JOB_TYPES = {"SCOUT", "RESEARCH", "QUALIFY", "BUILD", "VALIDATE"}
 #: Largest request body the HTTP adapter accepts (JSON), so a caller cannot exhaust memory or bloat
 #: the durable audit record with an oversized payload.
 MAX_REQUEST_BYTES = 1_048_576
+
+#: Header an external intake adapter signs its delivery with: ``sha256=<hex of HMAC-SHA256(body bytes)>``.
+#: The operator token authenticates *who may write*; this proves *which bytes* the provider sent, so a relay
+#: that is trusted to deliver is not also trusted to edit. It is required whenever a signing secret is set.
+#: A server with no secret still records events (the token gate is what protects it), and each record says
+#: ``signature.verified: false`` with the reason in prose rather than pretending verification happened.
+INBOUND_SIGNATURE_HEADER = inbound.INBOUND_SIGNATURE_HEADER
+INBOUND_SIGNING_SECRET_ENV = "AI_WEBSITE_AGENT_INBOUND_SIGNING_SECRET"
+
+
+def inbound_signing_secret(env: dict[str, str] | None = None) -> str:
+    """The HMAC key for inbound deliveries, or ``""`` when this instance verifies none."""
+    return (os.environ if env is None else env).get(INBOUND_SIGNING_SECRET_ENV, "").strip()
+
 
 #: Review decisions an automation caller may submit. Anything else is a bad request, not a 500.
 API_REVIEW_DECISIONS = {"APPROVED_FOR_PREVIEW", "APPROVED", "REJECTED", "CHANGES_REQUESTED"}
@@ -190,12 +205,17 @@ def make_handler(
             self._json(401, {"error": "Unauthorized"}, headers={"WWW-Authenticate": 'Bearer realm="ai-website-agent"'})
             return False
 
-        def _body(self) -> dict:
+        def _raw_body(self) -> bytes:
+            """Return the request body verbatim, refusing more than ``MAX_REQUEST_BYTES`` before reading it all.
+
+            Separate from :meth:`_body` because the inbound route must HMAC the *exact bytes* the provider
+            sent: re-serialising the parsed JSON would produce a different digest that could not be verified.
+            """
             raw_length = self.headers.get("Content-Length")
             if (self.headers.get("Transfer-Encoding") or "").strip().lower().startswith("chunked"):
                 raise BadRequest("Chunked request bodies are not supported; send a JSON object with Content-Length.")
             if raw_length is None or not str(raw_length).strip():
-                return {}
+                return b""
             cleaned = str(raw_length).strip()
             if not cleaned.isdigit():
                 raise BadRequest("Content-Length must be a non-negative integer number of bytes.")
@@ -205,10 +225,17 @@ def make_handler(
                     f"Request body is {length} bytes; the limit is {MAX_REQUEST_BYTES} bytes."
                 )
             if not length:
-                return {}
+                return b""
             raw = self.rfile.read(length)
             if len(raw) != length:
                 raise BadRequest(f"Request body was truncated ({len(raw)} of {length} bytes received).")
+            return raw
+
+        def _body(self) -> dict:
+            """Parse a JSON object body out of :meth:`_raw_body`."""
+            raw = self._raw_body()
+            if not raw:
+                return {}
             try:
                 parsed = json.loads(raw.decode("utf-8"))
             except UnicodeDecodeError as error:
@@ -459,7 +486,9 @@ def make_handler(
                     if path[:1] == ["engagement"]:
                         # Read-only engagement surface. There is deliberately no POST/PUT for the ledger:
                         # `OUTREACH_SENT`, `PRESENTED`, and `WON` are claims about what a person did, and an
-                        # endpoint that let a workflow write them would let that workflow approve itself.
+                        # endpoint that let a workflow write them would let that workflow approve itself. The
+                        # one write the engagement namespace accepts is POST engagement/inbound, which records
+                        # an inbound message as evidence and refuses every state-asserting field outright.
                         ledger = EngagementLedger(service.store, source="api-readonly")
                         sub = path[1:]
                         first = sub[0] if sub else ""
@@ -482,6 +511,16 @@ def make_handler(
                                 outreach_id=(query.get("outreach_id") or [None])[0],
                                 for_action=(query.get("for_action") or ["SEND"])[0],
                             ))
+                        if first == "inbound":
+                            # The intake's own backlog: events this side could not route, or is not sure
+                            # about. Read-only, bounded, and it never exposes a message body.
+                            from tracking.inbound import InboundIntake
+
+                            try:
+                                limit = int((query.get("limit") or ["25"])[0])
+                            except (TypeError, ValueError):
+                                limit = 25
+                            return self._json(200, InboundIntake(ledger).pending(limit=limit))
                         if first in {"leads", "relationship"} and len(sub) == 2:
                             self._record_id(sub[1], kind="lead_id")
                             if first == "leads":
@@ -490,8 +529,10 @@ def make_handler(
                         return self._json(404, {
                             "error": "Unknown engagement route. The ledger is read-only over HTTP "
                                      "(engagement/pipeline, engagement/outstanding, engagement/eligibility/:lead_id, "
-                                     "engagement/leads/:lead_id, engagement/relationship/:lead_id); writes come from "
-                                     "the operator's CLI.",
+                                     "engagement/leads/:lead_id, engagement/relationship/:lead_id, "
+                                     "engagement/inbound); the only permitted write is POST "
+                                     "engagement/inbound, which records what a business said and can assert "
+                                     "nothing else; other writes come from the operator's CLI.",
                             "error_code": "LEDGER_ROUTE_NOT_FOUND",
                         })
                     return self._json(404, {"error": "Not found", "error_code": "ROUTE_NOT_FOUND"})
@@ -519,6 +560,74 @@ def make_handler(
                     return self._json(500, {"error": "Unhandled request failure", "error_code": "INTERNAL_ERROR",
                                             "detail": self._detail(error)})
 
+        def _handle_inbound_event(self) -> None:
+            """Accept one authenticated inbound provider event and record it (auth and routing done upstream).
+
+            This route never replies to the business, never approves anything, and never decides an outcome.
+            :class:`tracking.inbound.InboundIntake` links what arrived to the record it can prove, triages it
+            with the rules the operator uses, and parks everything else for review. A payload that breaks the
+            intake contract is refused with a code and stores nothing. The raw body is read here rather than
+            through :meth:`_body` because a signature has to be checked against the exact bytes sent.
+            """
+            from tracking.inbound import (InboundEventError, InboundIntake, signature_mismatch,
+                                          verify_inbound_signature)
+
+            try:
+                raw = self._raw_body()
+            except RequestBodyTooLarge as error:
+                # The same code the rest of this API answers an oversized body with, so a caller only ever
+                # learns one vocabulary for "too large" (`EVENT_BODY_TOO_LARGE` below is a different limit:
+                # the message text the intake is willing to keep, not the bytes it is willing to read).
+                return self._json(413, {"error": str(error), "error_code": "REQUEST_BODY_TOO_LARGE",
+                                        "max_bytes": MAX_REQUEST_BYTES,
+                                        "next_action": "Send the message the provider delivered, not the whole "
+                                                       "mailbox; this limit is deliberate."})
+            except BadRequest as error:
+                return self._json(400, {"error": self._client_detail(error), "error_code": error.error_code,
+                                        "next_action": "Send the exact bytes with a valid Content-Length header."})
+
+            secret = inbound_signing_secret()
+            supplied = (self.headers.get(INBOUND_SIGNATURE_HEADER) or "").strip()
+            if supplied and not secret:
+                return self._json(401, {"error": "A signature was sent but no signing secret is configured here, "
+                                                 "so it cannot be verified.",
+                                        "error_code": "INBOUND_SIGNATURE_UNVERIFIABLE",
+                                        "next_action": f"Set {INBOUND_SIGNING_SECRET_ENV} to the secret the adapter "
+                                                       "uses, or stop signing."})
+            if secret and signature_mismatch(supplied):
+                return self._json(401, {"error": signature_mismatch(supplied),
+                                        "error_code": "INBOUND_SIGNATURE_MALFORMED",
+                                        "next_action": f"Send {INBOUND_SIGNATURE_HEADER}: sha256=<hex digest>."})
+            if secret and not verify_inbound_signature(secret, supplied, raw):
+                log_event(severity="WARNING", operation="http.post", code="INBOUND_SIGNATURE_FAILED",
+                          message="inbound delivery did not match the configured signing secret")
+                return self._json(401, {"error": "The inbound signature does not match this request body.",
+                                        "error_code": "INBOUND_SIGNATURE_INVALID",
+                                        "next_action": "Sign the exact bytes with the shared secret."})
+            try:
+                payload = json.loads(raw.decode("utf-8")) if raw else {}
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise BadRequest("Request body must be valid JSON.") from error
+            if not isinstance(payload, dict):
+                raise BadRequest("Request body must be a JSON object.")
+            if secret:
+                # Provenance only: a holder of the shared key signed these exact bytes.
+                payload["signature_verified"] = True
+            intake = InboundIntake(EngagementLedger(service.store, source="api-inbound"))
+            try:
+                result = intake.process(payload, source="api-inbound")
+            except InboundEventError as error:
+                # A contract violation is the adapter's to fix; nothing was stored, so a resend is safe.
+                log_event(severity="WARNING", operation="http.post", code=error.code or "EVENT_INVALID",
+                          message="inbound event refused at intake")
+                return self._json(400, {"error": str(error), "error_code": error.code,
+                                        "next_action": "Fix the payload and resend it; a refused event created no record."})
+            log_event(severity="INFO", operation="http.post", code="INBOUND_" + str(result.get("disposition")),
+                      message=f"inbound event disposition={result.get('disposition')}",
+                      lead_id=result.get("lead_id"), engagement_id=result.get("engagement_id"),
+                      event_ref=result.get("event_id") or result.get("external_message_id"))
+            return self._json(200, result)
+
         def do_POST(self) -> None:  # noqa: N802
             if not self._require_auth():
                 return
@@ -528,6 +637,10 @@ def make_handler(
                     if getattr(service.store, "db_backend", None) is not None and hasattr(service.store, "refresh"):
                         service.store.refresh()
                     path = self._guard_ids(path)
+                    if path == ["engagement", "inbound"]:
+                        # The one write route in the engagement namespace, and it can only record what a
+                        # business actually said. It reads its own body: see _handle_inbound_event.
+                        return self._handle_inbound_event()
                     payload = self._body()
                     if path == ["jobs"]:
                         if "job_type" not in payload or "job_id" not in payload:

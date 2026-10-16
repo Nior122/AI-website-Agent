@@ -683,16 +683,162 @@ def configuration_section(store, repository_root: Path) -> dict:
     return report
 
 
+def engagement_attention_items(store, *, today: Any = None, limit: int = ATTENTION_LIMIT) -> list[dict]:
+    """What the engagement records are waiting on a person for, in the same shape as every other item.
+
+    Phase 46 put responses, proposals, follow-ups and opt-outs in the ledger and Phase 47 added an inbound
+    intake, but ``operator_attention()`` still only reported jobs, projects and publishes - so a business
+    could reply to a draft and nothing surfaced anywhere. This closes that gap by reading, never deciding:
+    due follow-ups, undecided proposals and unanswered replies come from the ledger's own
+    :meth:`tracking.engagement.EngagementLedger.outstanding_work` (one source of truth, no second query),
+    and the intake rows from :meth:`tracking.inbound.InboundIntake.operator_backlog`.
+
+    Items are deduped by code and lead, so a twenty-message thread is one item and not twenty alerts, and
+    the whole section is bounded by ``limit`` like the others. None of these codes is a *critical* alert:
+    an unanswered enquiry is work, not an outage.
+    """
+    from tracking.engagement import EngagementLedger
+    from tracking.inbound import InboundIntake
+
+    ledger = EngagementLedger(store, source="health-attention")
+    items: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(code: str, message: str, action: str, *, kind: str = "engagement", lead_id: Any = None,
+            project_id: Any = None, status: Any = None, stage: Any = None, recorded_at: Any = None,
+            **extra: Any) -> None:
+        # One item per (code, record), so the same work is never listed twice while two genuinely different
+        # follow-ups, proposals, or inbound events for one lead stay two items.
+        key = (code, str(extra.get("dedupe_key") or extra.get("follow_up_id") or extra.get("proposal_id")
+                         or extra.get("engagement_id") or lead_id or project_id or ""))
+        if key in seen:
+            return
+        seen.add(key)
+        items.append({
+            "kind": kind,
+            "code": code,
+            "project_id": project_id,
+            "lead_id": lead_id,
+            "build_id": None,
+            "validation_id": None,
+            "deployment_id": None,
+            "status": status,
+            "stage": stage,
+            "review_status": None,
+            "message": message,
+            "recorded_at": recorded_at,
+            "age_seconds": recorded_age_seconds(recorded_at),
+            "next_action": action,
+            **extra,
+        })
+
+    try:
+        work = ledger.outstanding_work(today=today, limit=limit)
+    except Exception as error:  # a broken read must degrade the report, not the health endpoint
+        add("ENGAGEMENT_LEDGER_UNREADABLE",
+            f"The engagement ledger could not be read for this report ({type(error).__name__}).",
+            "Check storage; until it reads, engagement work is not visible in this report.",
+            kind="engagement")
+        return items[:limit]
+
+    for row in work.get("due_follow_ups") or []:
+        add("FOLLOW_UP_DUE",
+            f"Follow-up {row.get('follow_up_id')} for lead {row.get('lead_id')} was due "
+            f"{row.get('due_at') or 'at a recorded time'} on the {row.get('channel') or 'recorded'} channel. "
+            "Nothing was sent automatically.",
+            "Draft the follow-up and send it through the recorded approval path, or reschedule/cancel it with "
+            "python3 -m tracking.cli follow-up-schedule / follow-up-cancel.",
+            lead_id=row.get("lead_id"), status="DUE", recorded_at=row.get("due_at"),
+            follow_up_id=row.get("follow_up_id"))
+    for row in work.get("proposals_awaiting_decision") or []:
+        add("PROPOSAL_AWAITING_DECISION",
+            f"Proposal {row.get('proposal_id')} was presented to {row.get('business_name') or row.get('lead_id')} "
+            "and no customer decision is recorded.",
+            "Record what actually happened (python3 -m tracking.cli proposal-decision); silence is not a "
+            "rejection and an unanswered proposal is not a lost deal.",
+            lead_id=row.get("lead_id"), project_id=row.get("project_id"), status="PRESENTED",
+            recorded_at=row.get("presented_at"), proposal_id=row.get("proposal_id"))
+    for row in work.get("responses_awaiting_reply") or []:
+        add("RESPONSE_AWAITING_REVIEW",
+            f"{row.get('lead_id')} replied on {row.get('channel') or 'the recorded channel'} at "
+            f"{row.get('received_at')} (recorded classification {row.get('classification') or 'unset'}); "
+            "nothing has been sent since.",
+            "Read the reply and answer deliberately - the ledger records a response, never a decision for you.",
+            lead_id=row.get("lead_id"), status="AWAITING_REVIEW", recorded_at=row.get("received_at"),
+            engagement_id=row.get("engagement_id"))
+    if work.get("suppressed_by_opt_out"):
+        add("FOLLOW_UP_SUPPRESSED_BY_OPT_OUT",
+            f"{work['suppressed_by_opt_out']} due follow-up(s) are suppressed by a recorded opt-out and will "
+            "not be raised as due work.",
+            "Nothing to send. Confirm the opt-out is the customer's own recorded decision if it looks wrong.",
+            status="SUPPRESSED", recorded_at=None)
+
+    try:
+        backlog = InboundIntake(ledger).operator_backlog(limit=limit)
+    except Exception as error:
+        add("INBOUND_INTAKE_UNREADABLE",
+            f"The inbound intake backlog could not be read ({type(error).__name__}).",
+            "Check that the intake collection is persisted; unreadable inbound is not the same as none.",
+            kind="inbound")
+        return items[:limit]
+    for row in backlog.get("intake_items") or []:
+        disposition = str(row.get("disposition"))
+        if disposition == "UNMATCHED":
+            # No message text here on purpose: this report is copied into log lines and alert digests, and an
+            # inbound message can contain anything the sender typed. The bounded, contact-redacted excerpt is
+            # one authenticated read away (GET /engagement/inbound, or `inbound-pending`).
+            add("INBOUND_UNMATCHED",
+                f"An inbound {row.get('channel') or 'message'} event from provider {row.get('provider')} "
+                f"(received {row.get('received_at')}) could not be matched to a tracked lead, so it is not part "
+                "of any business history.",
+                "Say which lead it belongs to: python3 -m tracking.cli response-record --lead-id <id> "
+                "--quote \"...\" (or resend the event with lead_id). It is never attached by guessing.",
+                kind="inbound", recorded_at=row.get("received_at"), status="UNMATCHED",
+                dedupe_key=row.get("dedupe_key"))
+        elif disposition == "FAILED":
+            add("INBOUND_PROCESSING_FAILED",
+                f"An inbound event from {row.get('provider')} was accepted but could not be recorded "
+                f"({row.get('error_code') or 'unknown reason'}).",
+                "Fix the cause and resend the same event id - the intake keeps the failed row and re-delivery "
+                "is safe.",
+                kind="inbound", lead_id=row.get("lead_id"), recorded_at=row.get("received_at"),
+                status="FAILED", dedupe_key=row.get("dedupe_key"))
+        else:
+            add("OPT_OUT_NEEDS_REVIEW",
+                f"An opt-out-shaped message from {row.get('lead_id') or 'an unidentified sender'} is hedged or "
+                "contradicted, so no block was applied.",
+                "Ask the sender or check the provider's own unsubscribe record before blocking; an ambiguous "
+                "phrase is not consent to stop, and not blocking keeps them contactable.",
+                kind="inbound", lead_id=row.get("lead_id"), recorded_at=row.get("received_at"),
+                status="OPT_OUT_UNCERTAIN", dedupe_key=row.get("dedupe_key"))
+    for row in backlog.get("triage_items") or []:
+        add("INBOUND_TRIAGE_UNCERTAIN",
+            f"A reply from {row.get('lead_id') or 'an unidentified sender'} was recorded, but what it means is "
+            f"not settled (read as {row.get('category') or 'unclear'}, certainty "
+            f"{row.get('certainty') or 'unknown'}"
+            + (f", and the caller's hint '{row.get('hint')}' contradicts that" if row.get("hint_disagrees") else "")
+            + ").",
+            "Re-read the message and classify it explicitly with python3 -m tracking.cli response-record; the "
+            "suggestion is a reading aid, not a finding.",
+            kind="inbound", lead_id=row.get("lead_id"), project_id=row.get("project_id"),
+            recorded_at=row.get("received_at"), status=str(row.get("category") or "UNCLEAR").lower().upper(),
+            engagement_id=row.get("engagement_id"), dedupe_key=row.get("dedupe_key"))
+    return items[:limit]
+
+
 def operator_attention(store, *, now: datetime | None = None, repository_root: Path | str = ".",
                        include_deployment: bool = True, include_deployment_evidence: bool = True,
                        limit: int = ATTENTION_LIMIT) -> dict:
     """The single source for "what needs an operator", used by health, API, CLI and alerts.
 
     It reports only what is recorded: job codes and messages, project stage/review/validation state,
-    publish outcomes backed by an attempt ledger, and stale heartbeats.
+    publish outcomes backed by an attempt ledger, stale heartbeats, and the engagement work a human owes
+    (unanswered replies, undecided proposals, due follow-ups) including inbound events this side could not
+    route. Nothing here grants authorization; it is a reading of the records.
     """
     job_items, counts = job_attention_items(store, now=now, limit=limit)
     project_items = project_attention_items(store, limit=limit)
+    engagement_items = engagement_attention_items(store, limit=limit)
     deployment_attention: list[dict] = []
     if include_deployment:
         deployment_attention = deployment_report(
@@ -700,7 +846,10 @@ def operator_attention(store, *, now: datetime | None = None, repository_root: P
         ).get("attention", [])
     for item in deployment_attention:
         item.setdefault("kind", "deployment")
-    items = [*job_items, *project_items, *deployment_attention][:limit]
+    # Order is deliberate: a broken job outranks a project that is merely waiting, which outranks an
+    # enquiry a human has to answer. The cap is applied after the merge, so `counts.total` above stays
+    # accurate to what each section actually found.
+    items = [*job_items, *project_items, *deployment_attention, *engagement_items][:limit]
     grouped: dict[str, int] = {}
     for item in items:
         grouped[str(item.get("kind"))] = grouped.get(str(item.get("kind")), 0) + 1
@@ -709,7 +858,9 @@ def operator_attention(store, *, now: datetime | None = None, repository_root: P
         "checked_at": _checked_at(now),
         "requires_attention": bool(items),
         "counts": {**counts, "jobs": counts["total"], "projects": len(project_items),
-                   "deployments": len(deployment_attention), "by_kind": grouped},
+                   "deployments": len(deployment_attention), "engagements": len(engagement_items),
+                   "inbound": sum(1 for item in engagement_items if item.get("kind") == "inbound"),
+                   "by_kind": grouped},
         "projects": projects,
         "items": items,
         "meaning": "Attention means a recorded state that a human must clear; the system will not retry it on its own.",

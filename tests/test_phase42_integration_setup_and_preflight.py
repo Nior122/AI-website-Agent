@@ -357,9 +357,10 @@ class IntegrationPreflightTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         (self.root / "n8n" / "workflows").mkdir(parents=True)
-        for name in ("01-create-job.json", "02-inspect-job.json", "03-core-lead-to-review-package-pipeline.json",
-                     "04-recover-and-retry-jobs.json"):
-            shutil.copyfile(REPO_ROOT / "n8n" / "workflows" / name, self.root / "n8n" / "workflows" / name)
+        # Every export the repository carries, staged into the scratch workspace: a fifth workflow that
+        # joins n8n/workflows/ is checked here too instead of drifting out of the assertion below.
+        for path in sorted((REPO_ROOT / "n8n" / "workflows").glob("*.json")):
+            shutil.copyfile(path, self.root / "n8n" / "workflows" / path.name)
         self.state_path = self.root / "state.json"
 
     def cli(self, *argv: str, env: dict[str, str] | None = None):
@@ -467,7 +468,7 @@ class IntegrationPreflightTests(unittest.TestCase):
     def test_missing_n8n_configuration_is_a_named_blocker_not_a_crash(self) -> None:
         report = payload_of(self.cli("preflight"))
         automation = report["sections"]["automation_n8n"]
-        self.assertEqual(automation["checked_count"], 4)
+        self.assertEqual(automation["checked_count"], 5)
         self.assertTrue(any("AI_WEBSITE_AGENT_API_URL" in item for item in report["blockers"]),
                         json.dumps(report["blockers"]))
         self.assertFalse(automation["requests_sent"])
@@ -485,16 +486,18 @@ class IntegrationPreflightTests(unittest.TestCase):
 # 4. n8n workflow configuration readiness
 # =============================================================================================
 class N8nWorkflowReadinessTests(unittest.TestCase):
-    def test_the_four_exported_workflows_are_importable_and_inactive(self) -> None:
+    def test_the_five_exported_workflows_are_importable_and_inactive(self) -> None:
         from orchestration.n8n_runner import workflow_readiness
 
         paths = sorted((REPO_ROOT / "n8n" / "workflows").glob("*.json"))
+        # The count is the count: a fifth exported workflow must be listed here, which is the point - an
+        # export that silently joined the directory would otherwise be validated by nothing.
         self.assertEqual([path.name for path in paths], [
             "01-create-job.json", "02-inspect-job.json", "03-core-lead-to-review-package-pipeline.json",
-            "04-recover-and-retry-jobs.json"])
+            "04-recover-and-retry-jobs.json", "05-inbound-response-intake.json"])
         report = workflow_readiness(paths, env={"AI_WEBSITE_AGENT_API_URL": "http://127.0.0.1:8787",
                                                 "AI_WEBSITE_AGENT_API_TOKEN": "t"})
-        self.assertEqual(report["importable_count"], 4)
+        self.assertEqual(report["importable_count"], 5)
         self.assertEqual(report["missing_environment"], [])
         self.assertIs(report["requests_sent"], False)
         for entry in report["workflows"]:

@@ -349,6 +349,10 @@ class EngagementLedger:
     def _collection(self, name: str) -> dict[str, Any]:
         return self.store.state.setdefault(name, {})
 
+    #: What a ledger-owned transaction is allowed to write. The inbound intake joins the same save so a
+    #: response, its intake row, and any opt-out land together or not at all.
+    OWNED_COLLECTIONS = ENGAGEMENT_COLLECTIONS
+
     def find_event(self, dedupe_key: str) -> dict[str, Any] | None:
         for record in self._collection("engagements").values():
             if record.get("dedupe_key") == dedupe_key:

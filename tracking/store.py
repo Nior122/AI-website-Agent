@@ -382,6 +382,7 @@ def _empty_state() -> dict:
         "outcomes": {},
         "contact_blocks": {},
         "relationships": {},
+        "inbound_events": {},
     }
 
 

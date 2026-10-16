@@ -80,6 +80,87 @@ from an operator who saw them happen. On a database backend the collections pers
 mechanism (one JSON document per collection, the pattern `worker_routing` already uses); promoting them to
 real tables with per-row idempotency is the migration that should follow, not a reason to drop records now.
 
+## Authorized inbound intake (`tracking/inbound.py`)
+
+Phase 47 gave the ledger a front door. `tracking/inbound.py` accepts one *provider event* - an email that came
+back, a contact-form submission, a webhook from whatever tool holds the mailbox - and turns it into the ledger
+record it can prove. It is one module with three parts: `normalize_event()` (the payload contract), `triage()`
+(the transparent rule baseline), and `InboundIntake` (linkage, dedupe, opt-out handling, and the operator
+backlog). It owns a seventh collection, `inbound_events`, which is **intake accounting, not a second history**:
+the business record stays the ledger's `RESPONSE_RECEIVED` event, and `inbound_events` says how it arrived,
+whether it was a re-delivery, and why an event could not be routed.
+
+**The event contract.** `provider` (one of `EMAIL_INBOUND`, `SMS_INBOUND`, `WHATSAPP_INBOUND`, `FORM_INBOUND`,
+`GENERIC_WEBHOOK`), `event_id` (the provider's own stable message id - required for the first three, absent for
+a form or a generic hook, where identity is derived from content and labelled `derived_from_content`),
+`channel`, at least one of `body`/`summary`, and any of `lead_id`, `outreach_id`, `project_id`,
+`conversation_id`, `external_message_id`, `in_reply_to`, `occurred_at`, `message_ref`,
+`unsubscribe_confirmed`, `idempotency_key`, `classification` (a hint, see below). Unknown fields are echoed back
+in `ignored_fields` instead of being dropped quietly; **forbidden** fields are refused outright with
+`INBOUND_FORBIDDEN_FIELD`: `approved`, `approval_ref`, `provider_verified`, `delivered`, `outcome`,
+`proposal_status`, `status`, `sent`, `won`, `revenue`, `relationship_state`, `next_action`, `recorded_by` and
+friends. An inbound feed records what a business said; an approval, a delivery, an outcome, and a stage are
+decided elsewhere, and an endpoint that accepted them would let a relay declare its own success.
+
+Linkage follows recorded references only: `lead_id` → the draft's own `lead_id` → the project's lead → the lead
+that already has a row in this thread. Nothing is guessed from a name, an email domain, or a timestamp: a
+message that cannot be matched is stored as `UNMATCHED` with no `lead_id`, and never enters any business's
+history. Re-sending the same event with a `lead_id` resolves the parked row and marks it superseded.
+
+**Triage, with its working shown.** `triage()` reads 37 phrase rules into `INTERESTED`, `INFORMATION_REQUEST`,
+`MEETING_REQUEST`, `PROPOSAL_QUESTION`, `NOT_INTERESTED`, `OPT_OUT`, or `UNCLEAR`, and reports
+`matched_phrases`, `contradicts`, `hedged_by`, and a `certainty` of `clear` / `mixed` / `ambiguous` / `none`.
+There is deliberately no percentage: no labelled corpus stands behind a number here, and an invented `0.83`
+would be read as evidence. Each category carries a `next_action` written for a human - prepare a reply, propose
+a time, record or confirm the opt-out - and none of them approves, schedules, accepts, or sends anything. A
+caller-supplied `classification` is kept as `classification_hint` with a `classification_agrees` flag; it never
+overwrites the rules, and a hint that contradicts them becomes a review item rather than a smoothing-over.
+
+**Opt-outs keep Phase 46's rules.** A message the rules read as an unambiguous request to stop contact goes
+through `EngagementLedger.record_opt_out()` with `channel=None`, which is the all-channel block, cancels open
+follow-ups, and is honoured by the one `outreach_eligibility()` guard every send path consults. A provider-reported
+unsubscribe *without* customer words in the text blocks only the channel that provider operates. A hedged or
+contradicted phrase ("unsubscribe for now, but keep me posted") records nothing as a block and returns
+`OPT_OUT_UNCERTAIN` for a human to resolve - the cost of blocking the wrong business is a lost opportunity, the
+cost of not blocking a real one is contacting someone who said stop, so the ambiguous middle is escalated
+instead of guessed. The intake never replies, so an inbound "unsubscribe" cannot be answered by a confirmation
+message from here.
+
+**What is stored about a message.** Never the whole body: the row keeps a bounded `excerpt` (contact-redacted,
+`MAX_QUOTE_CHARS`), `body_chars`, `body_sha256`, and the caller's `message_ref` pointing at where the full text
+lives. A body, summary, or reference that looks like it carries a credential or connection string is refused
+with `DETAIL_MAY_CONTAIN_SECRET` rather than scrubbed, matching the ledger's existing rule. A timestamp ahead of
+this clock is not written into history: the record is stamped at receipt, the provider's claim is kept beside it
+labelled `rejected_future_claim`. A future-dated *event* therefore costs nothing but a label, and cannot corrupt
+a timeline.
+
+**Duplicate-safe and retryable.** The dedupe key is `sha256(provider, event_id)` when the provider supplies one
+- the same id re-delivered is the same event, whatever else the payload says - and a content-plus-minute key
+otherwise. A duplicate returns the original record with `duplicate: true` and changes nothing. The response, the
+intake row, and any opt-out are written in `ledger._transaction(...)`, i.e. one save for the whole event;
+`DatabasePersistenceError` propagates (the HTTP route answers 503) instead of reporting success. A failure row is
+written *outside* that transaction on purpose, with `attempts`, so a retry can succeed later and the operator can
+still see that the event arrived. `Unmatched` and `Failed` rows are the two dispositions that may be reprocessed
+under the same key.
+
+**Reads.** `InboundIntake.pending()` and `operator_backlog(limit=)` (1..200, oldest first) drive
+`python3 -m tracking.cli inbound-record` / `inbound-pending` and `GET /engagement/inbound`. They carry ids, a
+disposition, an error code, the excerpt, and a next action - never a full body, and never a credential.
+
+**What is not connected, and what remains refused.** No mailbox, webhook, social account, or provider API is
+wired to this repository: the five names above are the *shape* an adapter must produce, and the tests drive them
+with fictional events. A provider-specific adapter may be added once its own API is read and exercised - it needs
+a stable message id, a signature the receiver can verify, and a documented unsubscribe semantic - and it belongs
+in one function that maps that provider's JSON onto this contract, never in the business rules. `DELIVERY_RECEIPT_PROVIDERS`
+is empty and stays that way until some provider's receipt read-back is verified in code: a reply proves a business
+answered, not that a message was delivered, so `ACCEPTED_BY_PROVIDER` and `VERIFIED_DELIVERED` remain
+unreachable from here (the Phase 46 rule, unweakened). `inbound_events` persists through the same `system_kv`
+document mechanism as the ledger's other collections; promoting it to a table with a unique index on the dedupe
+key is the migration that would make duplicate-safety enforced by the database rather than by this module.
+Contact redaction keeps the ledger's narrow patterns, which catch `+234 801 234 5678` and `0801 234 5678` but
+not an unpunctuated `08012345678`; `body_sha256` is there so a reader can tell two messages apart without either
+one being quoted.
+
 ## Database integration commands
 
 `python3 -m tracking.cli preflight-db` answers, without writing anything: which database this workspace
