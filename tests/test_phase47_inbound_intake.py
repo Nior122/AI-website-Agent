@@ -557,10 +557,22 @@ class HttpRouteTests(HttpIntakeTests):
         self.assertEqual((status, payload["error_code"]), (400, "EVENT_ID_REQUIRED"))
         self.assertEqual(self.store.state["inbound_events"], {})
         self.assertEqual(self.store.state["engagements"], {})
-        status, payload = self.http("POST", "/engagement/inbound",
-                                    {"provider": "EMAIL_INBOUND", "event_id": "mid-1", "channel": "EMAIL",
-                                     "body": "x" * (MAX_REQUEST_BYTES + 10)})
+        # An oversized body is refused from the declared Content-Length, before a byte of it is read - that is
+        # the protection itself ("answered with 413 and never read in full"). Writing 1 MiB+ to a socket the
+        # server may close the instant it has refused is a race the client can lose with BrokenPipeError, which
+        # says nothing about the API's behaviour. Both shapes below are answered deterministically: a body just
+        # over a temporarily lowered cap (bytes actually sent, one write), and the real cap declared with no
+        # body at all. Neither may leave a record behind.
+        with mock.patch("orchestration.api.MAX_REQUEST_BYTES", 4096):
+            status, payload = self.http("POST", "/engagement/inbound",
+                                       {"provider": "EMAIL_INBOUND", "event_id": "mid-1", "channel": "EMAIL",
+                                        "body": "x" * 4106})
         self.assertEqual((status, payload["error_code"]), (413, "REQUEST_BODY_TOO_LARGE"))
+        status, payload = self.http("POST", "/engagement/inbound", None,
+                                    headers={"Content-Length": str(MAX_REQUEST_BYTES + 10)})
+        self.assertEqual((status, payload["error_code"]), (413, "REQUEST_BODY_TOO_LARGE"))
+        self.assertEqual(self.store.state["inbound_events"], {})
+        self.assertEqual(self.store.state["engagements"], {})
         status, payload = self.http("POST", "/engagement/inbound", b"not json", token=self.token)
         self.assertEqual(status, 400)
         # Nothing at all: the first thing the intake can say about an empty post is that it does not know

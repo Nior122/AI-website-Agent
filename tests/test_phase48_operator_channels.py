@@ -303,11 +303,19 @@ class ReadCommandTests(BotTestCase):
         ledger = EngagementLedger(self.store, source="test")
         ledger.record_response(self.lead["lead_id"], channel="EMAIL", summary="asked for a price",
                               quote="how much?", received_at="2026-10-15T09:00:00Z")
+        # Already due, deliberately. ``allow_past_due`` is the ledger's own parameter for a schedule recorded
+        # after the fact, so the fixture states a *condition* instead of betting on the wall clock: this line
+        # used a fixed timestamp a few hours ahead of the day it was written, and it began to fail with
+        # FOLLOW_UP_DUE_INVALID the moment the clock passed it. Nothing here relaxes the guard - a due
+        # follow-up is exactly what /followups and the engagement attention item are supposed to read, and
+        # the refusal for an accidental past date is asserted in tests/test_phase46_engagement_ledger.py.
         ledger.schedule_follow_up(self.lead["lead_id"], due_at="2026-10-16T08:00:00Z", channel="EMAIL",
-                                 reason="answer the price question")
+                                 reason="answer the price question", allow_past_due=True)
         ledger.create_proposal(self.lead["lead_id"], summary="twelve thousand naira for the pilot",
                               terms_note="agreed scope in the ledger")
-        self.assertEqual(self.command("/followups")["code"], "FOLLOW_UPS")
+        follow_ups = self.command("/followups")
+        self.assertEqual(follow_ups["code"], "FOLLOW_UPS")
+        self.assertEqual(follow_ups["count"], 1, "the due follow-up is the row this surface exists to show")
         self.assertEqual(self.command("/proposals")["code"], "PROPOSALS")
         answer = self.command("/attention")
         self.assertEqual(answer["code"], "ATTENTION")
