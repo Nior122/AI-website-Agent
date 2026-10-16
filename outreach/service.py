@@ -31,11 +31,19 @@ class OutreachService:
   self._safe(body,lead["business_name"],dep["deployment_url"])
   item={"outreach_id":ident,"project_id":project_id,"lead_id":lead["lead_id"],"build_id":dep["build_id"],"deployment_id":dep["deployment_id"],"channel":channel,"recipient":self._contact(lead,channel),"subject":f"A website preview for {lead['business_name']}" if channel=="EMAIL" else None,"draft_message":body,"personalization_points":evidence,"preview_url":dep["deployment_url"],"status":"AWAITING_REVIEW","generated_at":now(),"review_notes":None,"revision_of":existing[-1]["outreach_id"] if existing else None}
   self.store.state["outreach"][ident]=item; self.store._save(); return item
- def review(self,outreach_id,status,notes=None):
+ def review(self,outreach_id,status,notes=None,reviewed_by=None,identity_source=None):
+  """Record a human's decision on one draft. `reviewed_by` says who, `identity_source` says how we know.
+
+  Attribution is stored beside the decision because "an operator approved this" is only auditable if the record
+  says which operator and through what surface; it is never used to widen what the approval permits, and a
+  missing attribution is not a reason to invent one.
+  """
   x=self.store.state["outreach"].get(outreach_id)
   if not x or status not in {"APPROVED","REJECTED","CHANGES_REQUESTED"}: raise ValueError("Invalid outreach review.")
   self._safe(x["draft_message"],self.store.state["leads"][x["lead_id"]]["business_name"],x["preview_url"])
-  x.update({"status":"READY_TO_SEND" if status=="APPROVED" else status,"review_notes":notes,"reviewed_at":now()}); self.store._save(); return x
+  who=str(reviewed_by).strip()[:120] if reviewed_by else None
+  via=str(identity_source).strip()[:60] if identity_source else None
+  x.update({"status":"READY_TO_SEND" if status=="APPROVED" else status,"review_notes":notes,"reviewed_at":now(),"reviewed_by":who,"reviewer_identity_source":via}); self.store._save(); return x
  def _evidence(self,l):
   e=[]
   if l.get("website_status") in {"NO_WEBSITE","WEBSITE_POOR","WEBSITE_OUTDATED","WEBSITE_NEEDS_IMPROVEMENT","WEBSITE_BASIC"}: e.append({"claim":"Public research identified a website opportunity.","source_urls":l.get("research_source_urls") or l.get("source_urls",[]),"confidence":"high"})

@@ -51,6 +51,17 @@ a workflow cannot widen them.
   node lists the intake's fields, so an `outcome` or `approved` key cannot ride through a relay unnoticed - the
   application refuses them anyway. Three outcomes are named in the graph: response recorded, operator review
   required (unmatched / failed / uncertain opt-out), and not recorded (a contract refusal). Nothing in it sends.
+- `06-email-cycle-and-operator-notification.json` — one scheduled cycle for the two operator channels:
+  `SCHEDULE/MANUAL TRIGGER -> cycle parameters (Set) -> POST /integrations/email/poll -> IF refused -> outcome`,
+  `-> IF new mail arrived -> POST /integrations/telegram/notify -> IF nothing notified -> outcome`. It contains no
+  Gmail credential, no bot token, and no messaging node: the mailbox and the bot are configured in the
+  *application's* environment, and the workflow only asks for a cycle and reports what came back. That split is the
+  whole design - n8n supplies the schedule, the retry, and the "did it run" visibility, while authorization,
+  which messages to download, how a message is matched to a lead, what may be approved, and whether an operator
+  has already been told about a condition all stay in this repository. Three outcomes are named: a cycle that needs
+  an operator (a refused hold, a mailbox error, a contract refusal), nothing new, and the operator being notified.
+  A held automation answers `409` before Google is contacted, and the notify step is deduplicated app-side, so
+  running this graph every five minutes cannot re-page anybody about an unchanged record.
 - `04-recover-and-retry-jobs.json` — recovers stale `RUNNING` jobs (`POST /jobs/recover-stale`), inspects a target job (`GET /jobs/:id`), and safely retries/runs eligible `FAILED`, `QUEUED`, or `NEEDS_REVIEW` jobs (`POST /jobs/:id/retry`).
 
 ### Activating `05` - what an operator actually has to do
@@ -83,6 +94,35 @@ carries `"active": false`, and `check-n8n` refuses one that does not. To put inb
 Re-delivery is safe: the intake dedupes on the provider's event id, so pointing a webhook at this route twice,
 or replaying an execution, cannot double-count a reply. A re-run after a storage fault is likewise how a `FAILED`
 row gets resolved.
+### Activating `06` - scheduling a cycle without owning a mailbox
+
+`06` is exported inactive like the others, and it should stay inactive until the two checks pass on the machine
+that will run the application:
+
+```bash
+python3 -m orchestration.cli telegram-check            # configuration only; add --probe to ask Telegram
+python3 -m orchestration.cli email-check               # configuration only; add --probe for one bounded read
+python3 -m orchestration.cli telegram-command --command-text "/status" --user-id 1001
+```
+
+1. Give the application its own secrets, not the workflow: `AI_WEBSITE_AGENT_TELEGRAM_BOT_TOKEN`,
+   `AI_WEBSITE_AGENT_TELEGRAM_ALLOWED_USER_IDS` (preferred - it authorizes a person, not a chat), and for Gmail
+   `AI_WEBSITE_AGENT_GMAIL_CLIENT_ID`, `_CLIENT_SECRET`, `_REFRESH_TOKEN`, all with the **`gmail.readonly`** scope.
+   The exported file references `AI_WEBSITE_AGENT_API_URL` and `AI_WEBSITE_AGENT_API_TOKEN` only; nothing in it can
+   carry a mailbox credential, which is also why the adapter's own `query` is refused as a request body field.
+2. In n8n, replace `Manual Trigger` with a Schedule node at whatever cadence the mailbox deserves (a cycle costs
+   one `messages.list` call, or one `history` call once a cursor exists), keep the default `max_messages` of 25 or
+   lower it, and leave `dry_run` on for the first days: a dry cycle reports what it *would* record and writes
+   nothing, which is how you confirm the cursor, the matching, and the notification path before any of it lands in
+   the ledger.
+3. Read what it recorded with `python3 -m tracking.cli inbound-pending` and
+   `python3 -m orchestration.cli email-poll` output in the execution log; a `409 AUTOMATION_HELD` answer is the
+   brake working, not a fault. Turning on `telegram-serve` (or leaving notifications to this workflow) is an
+   either/or choice: both call `notify_once()`, and the durable suppression window is what keeps them from
+   duplicating each other.
+4. Activating the workflow starts *scheduling* only. It cannot send a reply, cannot authorize a live discovery
+   against a provider it was not given, and cannot approve anything - the approval buttons live in the bot's own
+   callback path, where the allow-list is checked per update.
 
 ## Local Verification When n8n Binary Is Not Installed
 
@@ -94,7 +134,7 @@ When a live self-hosted n8n runtime (`n8n` CLI or Docker container) is not runni
 ### Checking the workflow configuration before importing
 
 ```bash
-python3 -m orchestration.cli check-n8n                      # all five exports
+python3 -m orchestration.cli check-n8n                      # all six exports
 python3 -m orchestration.cli check-n8n --workflow path/to.json
 python3 -m orchestration.cli preflight                      # the same section, with more context
 ```

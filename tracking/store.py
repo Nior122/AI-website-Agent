@@ -383,6 +383,8 @@ def _empty_state() -> dict:
         "contact_blocks": {},
         "relationships": {},
         "inbound_events": {},
+        "automation_controls": {},
+        "provider_sync": {},
     }
 
 

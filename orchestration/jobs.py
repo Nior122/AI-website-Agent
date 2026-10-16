@@ -481,7 +481,16 @@ class JobService:
 
         Codes let an operator (and the attention/alert views) group and act on blocked work
         without parsing prose. Every code here means "not attempted": no side effect has happened.
+
+        The operator's hold is checked here, ahead of every other gate, because this is the one method every
+        dispatch path consults - `run`, `retry`, `POST /jobs/:id/run`, `run-job`, the worker, and the readiness
+        reports - so a single check here cannot be bypassed by a caller that picked a different entry point.
         """
+        from .controls import gate_reason
+
+        held = gate_reason(self.store)
+        if held:
+            return held
         store = self.store
         lead = store.state["leads"].get(job.get("lead_id")) if job.get("lead_id") else None
         project = store.state["projects"].get(job.get("project_id")) if job.get("project_id") else None

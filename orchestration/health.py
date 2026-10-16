@@ -401,6 +401,62 @@ def deployment_report(store, *, repository_root: Path | str = ".", include_evide
 ASSURANCE_LEVELS = ("code_readiness", "configuration_readiness", "connectivity", "preview_deployment")
 
 
+def channels_section(store, *, environment: dict[str, str] | None = None) -> dict:
+    """Whether an operator can *reach* this system (Telegram) and whether mail can reach it (Gmail).
+
+    Configuration only, and labelled as such: no provider is contacted to answer this. That distinction matters
+    more here than anywhere else in the report, because a token in the environment is not a working bot - the
+    token could be revoked, the allow-list could name the wrong account, and the mailbox could refuse every call.
+    The honest fields are therefore "configured" and "unverified", and ``telegram-check`` / ``email-check`` are
+    the commands that ask the provider.
+    """
+    from integrations.gmail import gmail_config
+    from integrations.telegram import telegram_config
+
+    from .controls import hold_view
+
+    source = os.environ if environment is None else environment
+    telegram = telegram_config(source)
+    gmail = gmail_config(source)
+    hold = hold_view(store)
+    sync = dict((((getattr(store, "state", {}) or {}).get("provider_sync") or {}).get("gmail_inbox")) or {})
+    return {
+        "verified": False,
+        "evidence": "read from this process's environment and the recorded control state; no provider was contacted",
+        "telegram": {
+            "configured": bool(telegram["configured"]),
+            "token_present": bool(telegram["token_present"]),
+            "token_length": telegram["token_length"],
+            "allowed_user_ids": telegram["allowed_user_ids"],
+            "allowed_chat_ids": telegram["allowed_chat_ids"],
+            "authorization_mode": ("user id and chat id must both match" if telegram["allowed_user_ids"]
+                                   and telegram["allowed_chat_ids"] else
+                                   "user ids only" if telegram["allowed_user_ids"] else
+                                   "chat ids only" if telegram["allowed_chat_ids"] else
+                                   "nothing - an empty allow-list authorizes nobody"),
+            "transport": "long polling via getUpdates; no webhook URL is exposed or required",
+            "live_account_verified": False,
+        },
+        "email": {
+            "configured": bool(gmail["configured"]),
+            "missing": gmail["missing"],
+            "account": gmail["account"],
+            "scope": gmail["scope"],
+            "query": gmail["query"],
+            "fetch_format": gmail["fetch_format"],
+            "capabilities": "read-only list/get/history; no send, delete, modify, or mark-as-read exists here",
+            "sync": {key: sync.get(key) for key in ("last_run_at", "last_history_id", "cycles", "last_error")
+                     if sync.get(key) is not None} or None,
+            "live_account_verified": False,
+        },
+        "automation_hold": {"held": hold["held"], "set_at": hold.get("set_at"), "set_by": hold.get("set_by"),
+                            "reason": hold.get("reason"), "unreadable": hold.get("unreadable", False),
+                            "verified": True},
+        "meaning": ("configured means this environment names the credential and the allow-list; whether the "
+                    "provider accepts them is only known by asking, which these commands do not do"),
+    }
+
+
 def integration_preflight(store, *, repository_root: Path | str = ".", host: str | None = None,
                           port: int | None = None, allow_non_loopback: bool = False,
                           project_id: str | None = None, now: datetime | None = None,
@@ -581,7 +637,29 @@ def integration_preflight(store, *, repository_root: Path | str = ".", host: str
     elif configuration.get("target_is_isolated") is False:
         blockers.append("The linked project is not the isolated preview project; publishing would target the wrong scope.")
 
-    # -- 5. Preview readiness for one project: the durable gate's own answer, unmodified.
+    # -- 5. Operator channels: can a human reach the bot, can mail arrive, and is dispatch held.
+    channels = channels_section(store, environment=environment)
+    sections["operator_channels"] = channels
+    if not channels["telegram"]["configured"]:
+        manual_steps.append("Optional: set AI_WEBSITE_AGENT_TELEGRAM_BOT_TOKEN and "
+                            "AI_WEBSITE_AGENT_TELEGRAM_ALLOWED_USER_IDS for a phone-side operator console "
+                            "(`python3 -m orchestration.cli telegram-check` asks Telegram whether the token works).")
+    elif not channels["telegram"]["allowed_user_ids"] and not channels["telegram"]["allowed_chat_ids"]:
+        blockers.append("A Telegram token is set with no allow-list, so the bot would refuse every operator. Name "
+                        "AI_WEBSITE_AGENT_TELEGRAM_ALLOWED_USER_IDS (or _ALLOWED_CHAT_IDS) deliberately.")
+    if not channels["email"]["configured"]:
+        manual_steps.append("Optional: authorize a mailbox with the read-only Gmail scope and set "
+                            "AI_WEBSITE_AGENT_GMAIL_REFRESH_TOKEN/_CLIENT_ID/_CLIENT_SECRET to receive replies "
+                            f"(missing: {', '.join(channels['email']['missing']) or 'none'}).")
+    if channels["automation_hold"]["held"]:
+        manual_steps.append(f"Automated dispatch is on hold (set {channels['automation_hold']['set_at']} by "
+                            f"{channels['automation_hold']['set_by']}); release it with "
+                            "`python3 -m orchestration.cli release-automation --actor <you>` before scheduling work.")
+    if channels["automation_hold"]["unreadable"]:
+        blockers.append("The automation control record is present but unreadable; inspect "
+                        "automation_controls.dispatch before trusting any hold answer.")
+
+    # -- 6. Preview readiness for one project: the durable gate's own answer, unmodified.
     if project_id:
         try:
             gate = store.authorize_preview_deployment(project_id)
@@ -849,7 +927,27 @@ def operator_attention(store, *, now: datetime | None = None, repository_root: P
     # Order is deliberate: a broken job outranks a project that is merely waiting, which outranks an
     # enquiry a human has to answer. The cap is applied after the merge, so `counts.total` above stays
     # accurate to what each section actually found.
-    items = [*job_items, *project_items, *deployment_attention, *engagement_items][:limit]
+    from .controls import hold_view
+
+    hold = hold_view(store)
+    control_items: list[dict[str, Any]] = []
+    if hold["held"] or hold.get("unreadable"):
+        # A hold is not a fault: it is a decision with a name and a timestamp, listed so nobody schedules work
+        # against a wall. It never pages, because CRITICAL_KINDS does not include "control".
+        control_items.append({
+            "kind": "control",
+            "code": "AUTOMATION_CONTROL_UNREADABLE" if hold.get("unreadable") else "AUTOMATION_HELD",
+            "title": ("The automation hold record cannot be read" if hold.get("unreadable")
+                      else "Automated dispatch is on hold"),
+            "message": (f"set_by={hold.get('set_by')} set_at={hold.get('set_at')} reason={hold.get('reason')}"
+                        if hold["held"] else "automation_controls.dispatch is present but not a readable record"),
+            "next_action": ("release with `python3 -m orchestration.cli release-automation --actor <you>` or "
+                            "/resume in Telegram; jobs a held attempt marked BLOCKED stay until an operator "
+                            "retries them" if hold["held"] else
+                            "inspect the control record; dispatch is not held by it"),
+            "recorded_at": hold.get("set_at"),
+        })
+    items = [*job_items, *project_items, *deployment_attention, *control_items, *engagement_items][:limit]
     grouped: dict[str, int] = {}
     for item in items:
         grouped[str(item.get("kind"))] = grouped.get(str(item.get("kind")), 0) + 1
@@ -860,7 +958,7 @@ def operator_attention(store, *, now: datetime | None = None, repository_root: P
         "counts": {**counts, "jobs": counts["total"], "projects": len(project_items),
                    "deployments": len(deployment_attention), "engagements": len(engagement_items),
                    "inbound": sum(1 for item in engagement_items if item.get("kind") == "inbound"),
-                   "by_kind": grouped},
+                   "automation_held": hold["held"], "by_kind": grouped},
         "projects": projects,
         "items": items,
         "meaning": "Attention means a recorded state that a human must clear; the system will not retry it on its own.",

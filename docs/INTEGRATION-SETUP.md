@@ -37,6 +37,14 @@ Only these are read. A variable that is absent is not an error unless the "Requi
 | `AI_WEBSITE_AGENT_OPERATOR_ID` | Default attribution for operator actions recorded by the CLI | optional | no |
 | `AI_WEBSITE_AGENT_LOG_DIR` / `_LOG_FILE` / `_LOG_LEVEL` | Structured operational log location and level | optional | no |
 | `AI_WEBSITE_AGENT_INBOUND_SIGNING_SECRET` | HMAC key an external relay uses to sign its `POST /engagement/inbound` delivery (`X-Inbound-Signature: sha256=<hex>`); when it is set, an unsigned or mismatched delivery is refused with `401` | only if an inbound adapter relays provider events | no |
+| `AI_WEBSITE_AGENT_TELEGRAM_BOT_TOKEN` | Telegram Bot API token from `@BotFather`; lets the bot read updates and answer the operator. Never stored in a record, a log line, or an exported workflow | operator channel: **yes** | **yes** |
+| `AI_WEBSITE_AGENT_TELEGRAM_ALLOWED_USER_IDS` | Comma-separated numeric Telegram **user** ids allowed to issue commands. This is the authorization that matters: it names a person. Empty or unset authorizes nobody | operator channel: **yes** (or the chat list below, or both) | no |
+| `AI_WEBSITE_AGENT_TELEGRAM_ALLOWED_CHAT_IDS` | Comma-separated numeric chat/conversation ids accepted in addition to the user allow-list - for a private group the `from` id still has to appear above | only for group operation | no |
+| `AI_WEBSITE_AGENT_GMAIL_CLIENT_ID` / `_CLIENT_SECRET` | An OAuth client whose *only* registered scope is `https://www.googleapis.com/auth/gmail.readonly`. The adapter has no send, delete, or modify method, and a wider scope is a different risk decision | inbound email: yes | **yes** |
+| `AI_WEBSITE_AGENT_GMAIL_REFRESH_TOKEN` | The long-lived read-only refresh token `gcloud`/OAuth playground mints for that client. Exchanged per cycle, never written to state or a log | inbound email: yes | **yes** |
+| `AI_WEBSITE_AGENT_GMAIL_QUERY` / `_MAX_RESULTS` / `_FETCH_FORMAT` | Optional operator defaults (`label:INBOX` / `25`, capped at Google's 500 / `metadata`). `metadata` reads Gmail's snippet only; `minimal` reads no text at all; `full` additionally decodes the first paragraph of the body. A cycle may not be *asked* to widen these over HTTP - a request body field that decides which messages a process downloads is not a workflow's choice | optional | no |
+| `AI_WEBSITE_AGENT_GMAIL_ACCOUNT` | Which mailbox to read (`me` by default). Set it when a service account or delegated mailbox is the one that was authorized | only for a shared/monitored mailbox | no |
+| `AI_WEBSITE_AGENT_TELEGRAM_API_ROOT` | Overrides the Bot API base URL for a local fake or a test relay. The default is `https://api.telegram.org`; nothing else has to change to run the bot offline | testing only | no |
 
 Local shell, POSIX:
 
@@ -155,6 +163,7 @@ goes to `/jobs` instead of your API and reads like an outage.
 | `n8n/workflows/03-core-lead-to-review-package-pipeline.json` | discovery → research → qualification → build → validation → review package | ends at *human review pending*; there is no deploy node |
 | `n8n/workflows/04-recover-and-retry-jobs.json` | `POST /jobs/recover-stale`, `GET /jobs/:id`, `POST /jobs/:id/retry` | retries only eligible jobs; a retried `DEPLOY` still passes the same durable gate |
 | `n8n/workflows/05-inbound-response-intake.json` | field allow-list → `POST /engagement/inbound` → branch on the disposition | records what a business said; it cannot approve, send, deliver, or decide anything, and it has no webhook node yet — see `n8n/README.md` for the activation steps |
+| `n8n/workflows/06-email-cycle-and-operator-notification.json` | cycle parameters → `POST /integrations/email/poll` → branch → `POST /integrations/telegram/notify` → branch | schedules the two operator channels; carries no Gmail or Telegram credential, cannot reply to anyone, and is deduplicated in the application so a frequent schedule cannot re-page an unchanged record |
 
 **Manual steps, in the n8n UI** (Workflows → Import from File, one file at a time):
 
@@ -175,9 +184,23 @@ goes to `/jobs` instead of your API and reads like an outage.
    `python3 -m tracking.cli inbound-pending`. Nothing is "connected" until you do this: no mailbox, social
    account, or provider webhook is wired to this repository, and no provider's inbound API has been verified
    from here.
+7. For `06`: first run `python3 -m orchestration.cli telegram-check` and `email-check` on the machine that will
+   hold the secrets, then `telegram-command --command-text "/status" --user-id <your numeric id>` to prove the
+   allow-list authorizes you and nothing else. Replace `Manual Trigger` with a Schedule node, leave `dry_run`
+   `"true"` for the first cycles, and only then activate. A real Gmail connection is yours to make and mine to
+   report honestly: authorize the read-only scope yourself, store the refresh token in the environment, and
+   confirm with `email-check --probe`. Until that probe succeeds from your machine, this repository has *an
+   adapter*, not a connected mailbox.
 
-No messaging, outreach, or customer-contact node exists in these five files, and outreach sending is
-disabled in this repository's configuration. `05` receives a delivery and records it; it never replies.
+Nothing in this build approves a demo over Telegram: the reviewer-authenticated approval surface that
+`deployment.authorization.write_approval()` needs does not exist over HTTP or in a bot callback, so the bot sends a
+read-only "demonstration ready for review" notification with the exact command to run. That gap is recorded in
+`TASKS.md` rather than papered over.
+
+No messaging, outreach, or customer-contact node exists in these six files, and outreach sending is
+disabled in this repository's configuration. `05` receives a delivery and records it; `06` reads a mailbox and tells
+the operator about it. Neither one replies, and no exported workflow can: the only node types they use are
+`manualTrigger`, `set`, `httpRequest`, and `if`.
 
 ---
 

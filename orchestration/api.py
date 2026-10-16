@@ -61,6 +61,49 @@ def inbound_signing_secret(env: dict[str, str] | None = None) -> str:
     return (os.environ if env is None else env).get(INBOUND_SIGNING_SECRET_ENV, "").strip()
 
 
+TELEGRAM_TOKEN_ENV = "AI_WEBSITE_AGENT_TELEGRAM_BOT_TOKEN"
+
+#: Body fields an integration caller may name. A mailbox query or fetch format is not one of them: they decide
+#: *which messages this process downloads*, so they are operator configuration, not request parameters, and a
+#: caller that could set either could pull one chosen message instead of the bounded summary.
+INTEGRATION_POLL_FIELDS = {"dry_run", "max_messages", "retry_pending"}
+INTEGRATION_NOTIFY_FIELDS = {"limit", "chat_id"}
+INTEGRATION_MAX_MESSAGES = 50
+
+
+def integration_report(store, *, environment: dict[str, str] | None = None) -> dict:
+    """What the operator channels are, without contacting anything. See ``orchestration.health.channels_section``."""
+    from .health import channels_section
+
+    return channels_section(store, environment=environment)
+
+
+def build_email_poller(store, *, max_messages: int | None = None):
+    """A poller for this request, or a coded refusal naming what is missing.
+
+    Constructing the client is where a credential would be read, so this is also where "no mailbox is connected"
+    becomes an answer instead of a stack trace.
+    """
+    from integrations.gmail import GmailClient, GmailError, gmail_config
+
+    from .email_inbound import EmailInboundPoller
+
+    config = gmail_config(os.environ)
+    if not config["configured"]:
+        raise BadRequest("This instance has no mailbox configured: missing "
+                         + ", ".join(config["missing"]) + ".", code="GMAIL_NOT_CONFIGURED",
+                         next_action=config["next_action"])
+    try:
+        client = GmailClient.from_environment()
+    except GmailError as error:
+        raise BadRequest(str(error), code=error.error_code,
+                         next_action=getattr(error, "next_action", None)) from None
+    limit = INTEGRATION_MAX_MESSAGES if max_messages is None else max(1, min(int(max_messages),
+                                                                             INTEGRATION_MAX_MESSAGES))
+    return EmailInboundPoller(client, store=store, query=config["query"], max_messages=limit,
+                              fetch_format=config["fetch_format"])
+
+
 #: Review decisions an automation caller may submit. Anything else is a bad request, not a 500.
 API_REVIEW_DECISIONS = {"APPROVED_FOR_PREVIEW", "APPROVED", "REJECTED", "CHANGES_REQUESTED"}
 
@@ -79,9 +122,11 @@ class BadRequest(ValueError):
     ``code`` is the stable machine-readable reason an automation caller can branch on.
     """
 
-    def __init__(self, message: str, *, code: str = "INVALID_REQUEST") -> None:
+    def __init__(self, message: str, *, code: str = "INVALID_REQUEST",
+                 next_action: str | None = None) -> None:
         super().__init__(message)
         self.error_code = code
+        self.next_action = next_action
 
 
 class RequestBodyTooLarge(ValueError):
@@ -390,6 +435,9 @@ def make_handler(
                             "executions": service.executions_for(path[1]),
                             "retry_eligibility": service.retry_eligibility(path[1]),
                         })
+                    if path == ["integrations", "status"]:
+                        # Configuration and recorded cursors only; a GET never contacts a provider.
+                        return self._json(200, integration_report(service.store))
                     if path == ["attention"]:
                         return self._json(200, operator_attention(service.store, repository_root=repo_path))
                     if path == ["deployment-status"]:
@@ -511,6 +559,10 @@ def make_handler(
                                 outreach_id=(query.get("outreach_id") or [None])[0],
                                 for_action=(query.get("for_action") or ["SEND"])[0],
                             ))
+                        if first == "integrations":
+                            raise BadRequest("Integrations are reported at GET /integrations/status; the ledger "
+                                             "namespace has no integration routes.",
+                                             code="LEDGER_ROUTE_NOT_FOUND")
                         if first == "inbound":
                             # The intake's own backlog: events this side could not route, or is not sure
                             # about. Read-only, bounded, and it never exposes a message body.
@@ -628,6 +680,88 @@ def make_handler(
                       event_ref=result.get("event_id") or result.get("external_message_id"))
             return self._json(200, result)
 
+        def _integration_body(self, permitted: set[str]) -> dict:
+            """Parse a small allow-listed body for an integration route, refusing anything else by name."""
+            payload = self._body()
+            unknown = sorted(set(payload) - permitted)
+            if unknown:
+                raise BadRequest(
+                    "These fields are not accepted here: " + ", ".join(unknown) + ". A mailbox query or fetch "
+                    "format decides which messages this process downloads, so they stay operator configuration.",
+                    code="INTEGRATION_PARAMETER_NOT_PERMITTED",
+                )
+            return payload
+
+        def _handle_email_poll(self) -> None:
+            """Run one mailbox cycle through the application's own intake - scheduled by n8n or cron, never implied.
+
+            The answer is counts, ids, and codes: it carries no message text, because a workflow execution log is
+            a poor place for a business's correspondence and the intake already stores what needs storing.
+            """
+            from .controls import held
+
+            payload = self._integration_body(INTEGRATION_POLL_FIELDS)
+            if held(service.store):
+                # A hold on automated processing means exactly that: no provider is contacted and no cycle runs.
+                return self._json(409, {
+                    "error": "Automated dispatch is on hold, so no mailbox cycle was started.",
+                    "error_code": "AUTOMATION_HELD",
+                    "next_action": "Release the hold (release-automation, or /resume in Telegram), then re-run.",
+                })
+            try:
+                poller = build_email_poller(service.store, max_messages=payload.get("max_messages"))
+            except BadRequest as error:
+                return self._json(400, {"error": self._client_detail(error), "error_code": error.error_code,
+                                        **({"next_action": error.next_action} if error.next_action else {})})
+            try:
+                if payload.get("retry_pending"):
+                    report = poller.retry_pending(limit=INTEGRATION_MAX_MESSAGES)
+                else:
+                    report = poller.poll_once(dry_run=bool(payload.get("dry_run")), notify=True)
+            except DatabasePersistenceError as error:
+                return self._json(503, {"error": "The cycle could not be persisted.",
+                                        "error_code": "STORAGE_UNAVAILABLE", "detail": self._detail(error),
+                                        "next_action": "Re-run the cycle: the provider's own message id keeps a "
+                                                       "retry from double-counting, and no cursor advanced."})
+            for row in report.get("results") or []:
+                if isinstance(row, dict):
+                    row.pop("excerpt", None)
+            report["next_action"] = report.get("next_action") or "Nothing needs an operator from this cycle."
+            log_event(severity="INFO" if not report.get("error_code") else "WARNING",
+                      operation="integration.email_poll", code=str(report.get("error_code") or "CYCLE_COMPLETE"),
+                      message=f"mailbox cycle: fetched={report.get('fetched', 0)} "
+                              f"recorded={report.get('recorded', 0)} unmatched={report.get('unmatched', 0)}")
+            return self._json(200, report)
+
+        def _handle_telegram_notify(self) -> None:
+            """Push what needs a person to the operator's chat. Read-only apart from the send itself."""
+            from integrations.telegram import ProviderError, TelegramBotApi, telegram_config
+
+            from .telegram_bot import TelegramOperatorBot
+
+            payload = self._integration_body(INTEGRATION_NOTIFY_FIELDS)
+            config = telegram_config(os.environ)
+            if not config["configured"]:
+                return self._json(409, {"error": "No Telegram bot is configured on this instance.",
+                                        "error_code": config["code"], "next_action": config["next_action"],
+                                        "token_present": config["token_present"]})
+            api = TelegramBotApi((os.environ.get(TELEGRAM_TOKEN_ENV) or "").strip(),
+                                 api_root=config["api_root"], timeout=10.0)
+            bot = TelegramOperatorBot(api, store=service.store,
+                                      allowed_user_ids=config["allowed_user_ids"],
+                                      allowed_chat_ids=config["allowed_chat_ids"])
+            try:
+                limit = int(payload.get("limit") or 6)
+                chat_id = int(payload["chat_id"]) if payload.get("chat_id") is not None else None
+            except (TypeError, ValueError) as error:
+                raise BadRequest("'limit' and 'chat_id' must be numbers.", code="INVALID_REQUEST") from error
+            try:
+                report = bot.notify_once(chat_id=chat_id, limit=limit)
+            except ProviderError as error:
+                return self._json(502, {"error": str(error), "error_code": error.code,
+                                        "retryable": bool(error.retryable)})
+            return self._json(200, report)
+
         def do_POST(self) -> None:  # noqa: N802
             if not self._require_auth():
                 return
@@ -641,6 +775,10 @@ def make_handler(
                         # The one write route in the engagement namespace, and it can only record what a
                         # business actually said. It reads its own body: see _handle_inbound_event.
                         return self._handle_inbound_event()
+                    if path == ["integrations", "email", "poll"]:
+                        return self._handle_email_poll()
+                    if path == ["integrations", "telegram", "notify"]:
+                        return self._handle_telegram_notify()
                     payload = self._body()
                     if path == ["jobs"]:
                         if "job_type" not in payload or "job_id" not in payload:

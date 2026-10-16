@@ -172,15 +172,82 @@ follow-ups, enforced by the one `outreach_eligibility()` guard every send path c
 unsubscribe covers only that provider's channel; a hedged or contradicted phrase blocks nothing and becomes a
 review item. Nothing replies, so an inbound "unsubscribe" cannot be answered by an automated confirmation.
 
+## Operator channel: Telegram as the operator's console, and the first inbound email adapter
+
+Telegram drives *this operator's* attention and actions; it is not a customer channel, and a message from
+anywhere in it - including from the allow-listed account - is never an approval, a reply, or a send.
+`orchestration/telegram_bot.py` is the whole surface: one `COMMANDS` registry (`/start /help /find /status /leads
+/inbox /followups /proposals /pause /resume /attention /review /approve /reject /changes /package /project /hold`)
+drives dispatch, help text, and the bot's command menu from the same table, so a command cannot exist in one list
+and be missing from another. `integrations/telegram.py` speaks the official Bot API over the project's stdlib HTTP
+helpers, and `orchestration/telegram_limits.py` is the single redaction boundary for anything leaving through it.
+
+Authorization runs before any business operation: `TelegramOperatorBot._authorized()` checks the numeric user id
+first and the chat id second against `AI_WEBSITE_AGENT_TELEGRAM_ALLOWED_USER_IDS` / `_ALLOWED_CHAT_IDS`, an empty
+allow-list authorizes nobody rather than everybody, and an unauthorized update is refused without dispatching a
+handler - no read, no write, no job. Outbound text carries counts, ids, statuses, and bounded quotes: addresses are
+masked to their tail, phone numbers to their last four digits, credential-shaped lines are replaced with a marker
+saying so, and absolute paths are removed, because a chat log is the least trustworthy place in the system to end
+up with a copy of a lead list.
+
+Approval is connected only where an approval record already exists. The buttons on `/review <outreach_id>` and the
+typed `/approve` / `/reject` / `/changes` commands go through `outreach.service.review()` - the same mechanism the
+CLI uses - after re-reading the draft and checking that the exact item the operator was shown is still the current
+state: callback data carries a `draft_fingerprint()` of the recipient, channel, lead, project, and body, so a
+button pressed on a stale prompt, on a draft whose content changed underneath it, or a second press of the same
+button is refused (`APPROVAL_STALE`, `APPROVAL_MISMATCH`, `APPROVAL_REPLAY`) rather than applied. A typed command
+must name the record and quote that fingerprint back (`CONFIRMATION_REQUIRED`), because a button is a
+confirmation and a typed word is not. Approving an outreach draft marks it `READY_TO_SEND`, which is *not* sent:
+sending remains absent from this build by design, and `outreach_eligibility()` re-checks everything at any future
+send path. **Project-demo approval deliberately stays outside the bot.** The review-package approval that gates a
+preview publish is written by `deployment.authorization.write_approval()` from a machine the reviewer controls, and
+this build exposes no reviewer-authenticated HTTP or CLI surface that could carry a Telegram user id into that
+record - the API's shared bearer token identifies a client, not a person. So the bot sends a read-only
+"demonstration ready for review" notification with the exact command to run and refuses to accept a decision in
+chat; that missing authenticated reviewer interface is recorded in `TASKS.md` as the prerequisite for demo
+approvals over any remote channel, and inventing a Telegram-side approval that writes no reviewable record was
+rejected as the worse failure.
+
+Automation holds are the one state change the bot is allowed to make on its own, and it makes it through
+`orchestration/controls.py`: `set_hold()` / `release_hold()` write one record in `automation_controls`, the job
+queue consults it as the first gate in `gate_failure()` (a held `run` returns `BLOCKED` with zero attempts),
+`POST /integrations/email/poll` refuses before contacting a provider, and releasing never resumes anything
+mid-flight - jobs are re-queued by the existing recovery paths. A hold suspends dispatch; it revokes no approval.
+
+`integrations/gmail.py` + `orchestration/email_inbound.py` are the first real inbound adapter: Gmail via OAuth with
+the `gmail.readonly` scope only, so the adapter has no `send`, `delete`, or `modify` method to misuse. One cycle
+lists the query's messages (or follows `historyId` from the stored cursor), normalizes each into the Phase 47
+payload contract (`message_to_inbound_event()`: Gmail's message id as `event_id`, `threadId` as
+`conversation_id`, the address alone as `sender`, the snippet or first paragraph as bounded body text, never a
+whole body), resolves the lead through **recorded references only** - the thread another intake row already
+belongs to, or a sender address recorded on exactly one lead - and refuses to pick one when two leads claim the
+thread or the address. Anything else goes to the intake's `UNMATCHED` queue; a business name in a subject line is
+never a reference. `In-Reply-To` is used only when it names a `Message-ID` this application actually recorded,
+because an RFC 822 id is not one of our record ids. Refusals, storage faults, and provider errors are recorded with
+codes and a `retryable` flag; the cursor advances only after a completed cycle, and a message whose write failed is
+parked on the sync record (`unwritten`) until `retry_pending()` lands it, so a database blip cannot quietly delete
+a customer's reply. A mailbox is **not connected in this environment**: no Google account was authorized here, so
+live Gmail connectivity is unverified and `email-check --probe` remains the operator's first step.
+
+`orchestration/health.channels_section()` reports what is configured (names and booleans, never values), what the
+last cycle recorded, and that no live account has been verified by this build; `integration_preflight` includes it
+as the `operator_channels` section. Notifications reuse `operator_attention()` and `orchestration/alerts.py`
+identity, and suppression is durable (`provider_sync.attention_seen` / `alert_seen`, a 24-hour window) because a
+cron run has no in-process memory - and a delivery Telegram refused is deliberately *not* marked seen, so the next
+cycle re-offers it instead of losing it.
+
 `POST /engagement/inbound` is the only engagement write exposed over HTTP, and it can record only what the
 business said: `GET` reads of the ledger stay read-only, and a workflow that could write `OUTREACH_SENT`,
 `PRESENTED`, or `WON` could declare its own success. The operator token authenticates the caller; an optional
 `X-Inbound-Signature` HMAC over the raw body additionally proves which bytes the provider sent, and is mandatory
 whenever `AI_WEBSITE_AGENT_INBOUND_SIGNING_SECRET` is set. `DELIVERY_RECEIPT_PROVIDERS` is empty by design: an
 inbound reply is not a delivery receipt, so `ACCEPTED_BY_PROVIDER` and `VERIFIED_DELIVERED` remain unreachable
-from every entry point in this repository. No mailbox, social account, or webhook provider is connected here -
+from every entry point in this repository. No mailbox account, social account, or webhook
+provider is authorized here -
 the five provider names are the shape an adapter must produce, and selecting one requires reading that
-provider's own API first.
+provider's own API first. Phase 48 added that reading for one of them - `EMAIL_INBOUND` via Gmail's read-only API -
+so the contract now has an adapter written against it and a documented `messages.list`/`history` capability report;
+the other four names remain shapes with no adapter, and no provider account is authorized from this repository.
 
 ## Website opportunity handoff
 

@@ -17,6 +17,31 @@ from .workers import LocalPipelineWorker
 from tracking.store import TrackingStore
 
 
+def telegram_config_cached() -> dict:
+    """The Telegram configuration for this process, secrets excluded. Thin wrapper for readability."""
+    from integrations.telegram import telegram_config
+
+    return telegram_config()
+
+
+def _telegram_api(config: dict):
+    """A live Bot API client for the configured token, or None when there is nothing to talk to."""
+    import os
+
+    from integrations.telegram import TelegramBotApi
+
+    token = (os.environ.get("AI_WEBSITE_AGENT_TELEGRAM_BOT_TOKEN") or "").strip()
+    if not token:
+        return None
+    return TelegramBotApi(token, api_root=config["api_root"], timeout=10.0)
+
+
+def _telegram_commands() -> list[str]:
+    from .telegram_bot import COMMANDS
+
+    return list(COMMANDS)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="AI Website Agent orchestration controls")
     parser.add_argument(
@@ -27,6 +52,10 @@ def main(argv: list[str] | None = None) -> int:
             # Operational controls: what is healthy, what is stuck, and what a human must clear.
             "health", "attention", "inspect-job", "deployment-status", "check-alerts", "preflight",
             "check-n8n",
+            # Operator channels and the brake: who may reach the pipeline, and whether it runs at all.
+            "hold-automation", "release-automation", "automation-status",
+            "telegram-check", "telegram-command", "telegram-serve", "telegram-notify",
+            "email-check", "email-poll",
         ],
         help="serve runs the API; health/attention/inspect-job/deployment-status/check-alerts/preflight "
              "report operational state without changing it; recover-stale/recover-workspace restore "
@@ -58,6 +87,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--brief", action="store_true", help="list-jobs/attention: compact operator view instead of full records.")
     parser.add_argument("--history", action="store_true", help="inspect-job: include the recorded execution attempts and retry eligibility.")
     parser.add_argument("--notify", action="store_true", help="check-alerts: emit each critical alert as a structured CRITICAL log event. No external channel is contacted.")
+    parser.add_argument("--telegram", action="store_true", help="check-alerts: also deliver each alert to the configured Telegram operator chat. Requires the bot token and allow-list in the environment.")
+    parser.add_argument("--actor", default=None, help="hold-automation/release-automation: who is responsible, recorded verbatim on the control record (e.g. 'grace@work' or 'telegram:123').")
+    parser.add_argument("--reason", default=None, help="hold-automation: why dispatch is being held, so a later reader knows what they are looking at.")
+    parser.add_argument("--note", default=None, help="A short note recorded with an action (never a credential, never a private message).")
+    parser.add_argument("--chat-id", type=int, default=None, help="telegram-notify: deliver to this chat instead of the first allow-listed one.")
+    parser.add_argument("--limit", type=int, default=None, help="Notification or list size bound.")
+    parser.add_argument("--command-text", default=None, help="telegram-command: the exact command line an operator would type, e.g. '/status job-0001'.")
+    parser.add_argument("--user-id", type=int, default=None, help="telegram-command: the Telegram user id to authorize against the allow-list. An unlisted id is refused before anything runs.")
+    parser.add_argument("--once", action="store_true", help="telegram-serve: one getUpdates cycle instead of a service loop.")
+    parser.add_argument("--cycles", type=int, default=None, help="telegram-serve: stop after this many cycles (supervised runs and containers).")
+    parser.add_argument("--poll-timeout", type=float, default=20.0, help="telegram-serve: long-poll seconds per getUpdates call (Telegram caps it at 50).")
+    parser.add_argument("--dry-run", action="store_true", help="email-poll: fetch, normalize, and match without recording anything.")
+    parser.add_argument("--max-messages", type=int, default=None, help="email-poll: how many messages one cycle may read (bounded by the adapter's own ceiling).")
+    parser.add_argument("--retry-pending", action="store_true", help="email-poll: re-submit the intake's unmatched and failed events instead of fetching new mail.")
+    parser.add_argument("--probe", action="store_true", help="telegram-check/email-check: actually ask the provider (getMe / one messages.list). Off by default so a check never sends or reads anything unexpectedly.")
     args = parser.parse_args(argv)
     if args.command == "serve":
         serve(
@@ -169,9 +213,32 @@ def main(argv: list[str] | None = None) -> int:
             return 1 if report.get("attention_count") else 0
         return 1 if report.get("requires_attention") else 0
     if args.command == "check-alerts":
+        # The alert pipeline stays the decision-maker throughout: `--telegram` only adds a sink, so dedupe,
+        # bounding, and sanitizing are the same code the log path runs and cannot be bypassed by asking for a
+        # phone message instead. Suppression that used to live only in memory is given a durable record here,
+        # because a cron run has no memory of the last one and an operator should not be pinged every five
+        # minutes about one stuck job.
         store = TrackingStore(args.state_path, auto_bootstrap_workspace=False, database_url=args.database_url)
-        report = check_alerts(store, repository_root=Path(args.repository_root),
-                              sinks=[LogAlertSink()] if args.notify else None, notify=args.notify)
+        from .telegram_bot import TelegramAlertSink, load_alert_seen, save_alert_seen
+
+        telegram = telegram_config_cached()
+        api = _telegram_api(telegram) if args.telegram else None
+        if args.telegram and api is None:
+            print(json.dumps({"status": "blocked", "code": "TELEGRAM_NOT_CONFIGURED",
+                              "next_action": telegram["next_action"]}, indent=2))
+            return 1
+        sinks = [LogAlertSink()] if args.notify else []
+        if api is not None:
+            sinks.append(TelegramAlertSink(api, chat_id=args.chat_id, fallback_chats=telegram["allowed_chat_ids"]))
+        seen = load_alert_seen(store) if sinks else set()
+        before = set(seen)
+        report = check_alerts(store, repository_root=Path(args.repository_root), sinks=sinks or None,
+                             notify=bool(args.notify), seen=seen)
+        report["sinks"] = [sink.name for sink in sinks]
+        report["dedupe_window"] = "recorded until the alert's own recorded_at changes, or the window expires"
+        if sinks and seen != before:
+            save_alert_seen(store, seen)
+            report["suppression_persisted"] = len(seen)
         print(json.dumps(report, indent=2, default=str))
         return 1 if report["critical_count"] else 0
     if args.command == "inspect-job":
@@ -201,6 +268,143 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     store = TrackingStore(args.state_path, database_url=args.database_url)
     service = JobService(store)
+
+    # -- operator channels and the automation hold -------------------------------------------------------
+    if args.command in {"hold-automation", "release-automation", "automation-status"}:
+        from .controls import blocked_by_hold, hold_view, release_hold, set_hold
+
+        from tracking.inbound import InboundEventError  # noqa: F401 - keeps the intake import surface warm for --help
+
+        if args.command == "hold-automation":
+            if not args.actor:
+                parser.error("hold-automation requires --actor: a brake somebody must be named for.")
+            view = set_hold(store, actor=args.actor, reason=args.reason, note=args.note)
+        elif args.command == "release-automation":
+            if not args.actor:
+                parser.error("release-automation requires --actor: record who put the system back in motion.")
+            view = release_hold(store, actor=args.actor, note=args.note)
+        else:
+            view = hold_view(store, changed=False)
+        view["blocked_jobs_by_hold"] = blocked_by_hold(store, limit=25)
+        print(json.dumps(view, indent=2, default=str))
+        return 1 if view.get("unreadable") else 0
+
+    if args.command in {"telegram-check", "telegram-command", "telegram-serve", "telegram-notify"}:
+        from .telegram_bot import TelegramOperatorBot
+
+        from integrations.telegram import (TelegramBotApi, telegram_config)
+
+        config = telegram_config()
+        if args.command == "telegram-check":
+            report = dict(config)
+            report["token"] = None  # never this, whatever happens
+            if config["token_present"] and args.probe:
+                try:
+                    api = TelegramBotApi(os.environ.get("AI_WEBSITE_AGENT_TELEGRAM_BOT_TOKEN", "").strip(),
+                                         api_root=config["api_root"], timeout=10.0)
+                    identity = api.get_me()
+                    report["bot"] = {"username": identity.get("username"), "id": identity.get("id"),
+                                   "verified": True}
+                except Exception as error:  # noqa: BLE001 - a probe failure is the answer, not a crash.
+                    from .telegram_bot import describe_provider_error
+
+                    report.update(describe_provider_error(error))
+                    report["bot"] = {"verified": False}
+            elif config["token_present"]:
+                report["bot"] = {"verified": False, "note": "pass --probe to ask Telegram whether this token works"}
+            report["commands_supported"] = sorted(_telegram_commands())
+            report["requests_sent"] = bool(args.probe and config["token_present"])
+            print(json.dumps(report, indent=2))
+            return 0 if config["configured"] else 1
+        allow_list = bool(config["allowed_user_ids"] or config["allowed_chat_ids"])
+        if args.command == "telegram-command":
+            # Rehearsing one command offline needs an allow-list, not a bot token: the rule under test is
+            # authorization, and with no transport nothing can leave the machine anyway.
+            if not allow_list:
+                print(json.dumps({"configured": False, "code": config["code"],
+                                  "next_action": config["next_action"], "token_present": config["token_present"]},
+                                 indent=2))
+                return 1
+        elif not config["configured"] and args.command != "telegram-serve":
+            print(json.dumps({"configured": False, "code": config["code"], "next_action": config["next_action"],
+                              "token_present": config["token_present"]}, indent=2))
+            return 1
+        api = None
+        if args.command != "telegram-check" and config["token_present"]:
+            api = TelegramBotApi(os.environ.get("AI_WEBSITE_AGENT_TELEGRAM_BOT_TOKEN", "").strip(),
+                                 api_root=config["api_root"], timeout=max(1.0, float(args.poll_timeout)))
+        bot = TelegramOperatorBot(api, store=store, allowed_user_ids=config["allowed_user_ids"],
+                                 allowed_chat_ids=config["allowed_chat_ids"])
+        if args.command == "telegram-command":
+            if not args.command_text or args.user_id is None:
+                parser.error("telegram-command requires --command-text and --user-id.")
+            answer = bot.dispatch(args.command_text, user_id=args.user_id,
+                                 chat_id=args.chat_id, deliver=args.telegram)
+            answer["transport"] = ("bot api configured" if api is not None
+                                   else "no bot token - the answer was computed and printed, nothing was sent")
+            print(json.dumps(answer, indent=2, default=str))
+            return 0 if answer.get("code") not in {"AUTHORIZATION_REFUSED", "COMMAND_FAULT"} else 1
+        if args.command == "telegram-notify":
+            report = bot.notify_once(chat_id=args.chat_id, limit=args.limit or 6)
+            print(json.dumps(report, indent=2, default=str))
+            return 0 if report.get("code") in {"NOTIFIED", "NOTHING_NEW"} else 1
+        outcome = bot.run_forever(cycle_limit=(1 if args.once else args.cycles),
+                                 timeout=float(args.poll_timeout))
+        print(json.dumps(outcome, indent=2, default=str))
+        return 0
+
+    if args.command in {"email-check", "email-poll"}:
+        from integrations.gmail import (GmailClient, GmailError, describe_error, gmail_config)
+
+        config = gmail_config()
+        if args.command == "email-check":
+            report = dict(config)
+            report["requests_sent"] = bool(args.probe and config["configured"])
+            if config["configured"] and args.probe:
+                # One message id, nothing more: the probe answers "does this credential work", not "what is in
+                # the mailbox", and no message body is fetched or printed.
+                try:
+                    client = GmailClient.from_environment()
+                    listing = client.list_messages(config["query"], max_results=1)
+                    report["probe"] = {"reachable": True, "result_size_estimate": listing.get("result_size_estimate"),
+                                      "sample": "one message id was listed; no body was read"}
+                    report["client"] = client.status()
+                except (GmailError, ValueError) as error:
+                    report["probe"] = {"reachable": False, **describe_error(error)}
+            elif config["configured"]:
+                report["probe"] = {"reachable": None, "note": "pass --probe to ask Gmail whether this credential works"}
+            print(json.dumps(report, indent=2, default=str))
+            return 0 if config["configured"] else 1
+        if not config["configured"]:
+            print(json.dumps({"configured": False, "code": config["code"], "missing": config["missing"],
+                              "next_action": config["next_action"]}, indent=2))
+            return 1
+        from .api import build_email_poller
+
+        from .telegram_bot import TelegramOperatorBot
+
+        notifier = None
+        telegram = telegram_config_cached()
+        if telegram.get("configured"):
+            bot = TelegramOperatorBot(_telegram_api(telegram), store=store,
+                                     allowed_user_ids=telegram["allowed_user_ids"],
+                                     allowed_chat_ids=telegram["allowed_chat_ids"])
+            notifier = lambda: bot.notify_once()  # noqa: E731 - an injected one-shot, not a helper in disguise
+        try:
+            poller = build_email_poller(store, max_messages=args.max_messages)
+            poller.notifier = notifier
+            if args.retry_pending:
+                report = poller.retry_pending(limit=args.limit or 25)
+            else:
+                report = poller.poll_once(dry_run=args.dry_run)
+        except (GmailError, ValueError) as error:
+            report = {"recorded": 0, "fetched": 0, **describe_error(error),
+                      "next_action": getattr(error, "next_action", None) or "Retry the cycle; nothing was skipped."}
+            print(json.dumps(report, indent=2, default=str))
+            return 1
+        print(json.dumps(report, indent=2, default=str))
+        return 1 if report.get("error_code") else 0
+
     if args.command == "create-job":
         if not args.job_type or not args.job_id:
             parser.error("create-job requires --job-type and --job-id.")

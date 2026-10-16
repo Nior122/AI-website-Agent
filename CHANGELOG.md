@@ -3,6 +3,94 @@
 All notable project changes are recorded here. Dates use ISO 8601 (`YYYY-MM-DD`).
 
 ## [Unreleased]
+## [Unreleased]
+
+### Added — 2026-10-16 (Phase 48: Telegram operator control, the first live email adapter, and the brake both of them respect)
+
+- `orchestration/telegram_bot.py` is the operator's console: one `COMMANDS` registry drives dispatch, `/help`, and
+  the bot's own command menu, so a command cannot exist in one list and be missing from another. `/start /help
+  /find /status /leads /inbox /followups /proposals /attention /review /approve /reject /changes /package /project
+  /hold /pause /resume` — eighteen entries, all reads of surfaces that already existed (job queue, `pipeline`/
+  `outstanding`/`operator_backlog`, the outreach review record, `operator_attention()`) except the one write the bot
+  is allowed to make on its own: a held automation. Every answer is bounded, footers name the narrower command to
+  run next, and no answer contains a credential, a full private message, or a lead list copied out of the ledger.
+- Authorization runs before a business operation, on every update type. `AI_WEBSITE_AGENT_TELEGRAM_ALLOWED_USER_IDS`
+  names the humans (that is the list that decides), `..._ALLOWED_CHAT_IDS` additionally admits specific
+  conversations; an unset or empty allow-list authorizes nobody. A callback is re-authorized separately from a
+  message because a callback is its own update, an arbitrary message is answered with `MESSAGE_NOT_A_COMMAND` and
+  never treated as a decision, and an unauthorized update is refused without touching the store — asserted in
+  tests by checking that a refused user's request created no job, no read, and no record.
+- `/find` cannot start an unrestricted discovery. Location and category must both be stated, an ambiguous
+  two-word request (`/find Port Harcourt`) is refused with `FIND_ARGUMENT_AMBIGUOUS` rather than resolved by a
+  coin flip, a count above the bot's own bound is refused, `--live` still requires the deployment's
+  `AI_WEBSITE_AGENT_ALLOW_LIVE_DISCOVERY` permit, a fixture run needs `--source-file`, and a repeated identical
+  request returns the same queued job id instead of queueing a second one.
+- Approvals go through the existing review record and nowhere else. `/review <outreach_id>` shows a bounded prompt
+  with `Approve for sending` / `Reject` / `Ask for changes`; the callback data carries a `draft_fingerprint()` over
+  the recipient, channel, lead, project, and body, so a press on a stale prompt, on a draft whose content changed
+  underneath it, or a second press of the same button is refused (`APPROVAL_STALE`, `APPROVAL_MISMATCH`,
+  `APPROVAL_REPLAY`) instead of applied. Typed approvals must quote that fingerprint back
+  (`CONFIRMATION_REQUIRED`). Every accepted decision goes through `outreach.service.review()` with
+  `reviewed_by: telegram:<user id>` and `reviewer_identity_source: telegram_operator_allowlist`, then edits the
+  prompt so no pressable button is left behind — and `READY_TO_SEND` still is not *sent*: sending remains absent
+  from this build, `outreach_eligibility()` re-checks at any future send path, and a test asserts that a button
+  press creates no delivery evidence and contacts no lead. Project-demo approval deliberately stays out of the
+  bot, because no reviewer-authenticated approval surface exists over HTTP; the bot sends a read-only
+  "demonstration ready for review" notification with the exact command, and the missing interface is recorded in
+  `TASKS.md` as open work.
+- `orchestration/controls.py` is one record (`automation_controls`) that everything else consults: `dispatch`
+  blocked as the first gate in `jobs.gate_failure()` (a held `run` returns `BLOCKED` with zero attempts), the
+  email cycle refusing with `409 AUTOMATION_HELD` before contacting Google, and `operator_attention()` carrying the
+  hold plus `AUTOMATION_CONTROL_UNREADABLE` when the record cannot be read. A hold suspends dispatch and revokes no
+  approval; `hold-automation` and `release-automation` both require `--actor`.
+- `integrations/http.py`, `integrations/telegram.py`, and `integrations/gmail.py` are stdlib-only provider
+  transports with timeouts, byte caps, and typed failures (`ProviderError` carrying `code`, `retryable`,
+  `retry_after`, `status`), so an operator sees "rate limited, back off 30s" rather than a stack trace. The Gmail
+  client requests `gmail.readonly` and exposes `messages.list`, `messages.get`, `history`, and
+  `profile.historyId` — and no write method: `status()` names `messages.send`, `messages.delete`, and
+  `messages.modify` under `explicitly_absent`, and a test asserts the class has no `send`/`reply`/`delete`
+  attribute to misuse.
+- `orchestration/email_inbound.py` is the first real inbound adapter, and it is a translator rather than a
+  decision-maker: it fetches by `historyId` cursor (falling back to the query when a provider refuses a stale
+  cursor), normalizes each message through `message_to_inbound_event()` (Gmail's `id` as the event id, `threadId`
+  as the conversation, the address alone as `sender`, the snippet or first paragraph as bounded text — never a
+  whole body), resolves the lead **only** through references the application already recorded, and hands the event
+  to `tracking.inbound.InboundIntake`. Anything it cannot prove goes to the intake's queue (`unmatched`), and
+  `In-Reply-To` is used only when it names a `Message-ID` this application itself recorded. The cursor advances
+  only after a completed cycle; a message whose write failed is parked on the sync record as `unwritten` and
+  re-offered by `retry_pending()`, so a database blip cannot silently delete a reply.
+- `orchestration/telegram_limits.py` is the single outbound boundary: credential-shaped lines are replaced with a
+  marker that says so, absolute local paths removed, email addresses masked to a recognisable tail, phone numbers
+  to their last four digits, and length bounded below Telegram's own cap. Notification dedupe
+  (`attention_identity()`) uses the same field set as `orchestration/alerts.py`, and the suppression set is written
+  to the store with a bounded window, because a cron run has no in-process memory — while a delivery Telegram
+  refused is deliberately not marked seen, so the next cycle re-offers it.
+- Three routes and nine commands carry this over the existing bearer token:
+  `GET /integrations/status`, `POST /integrations/email/poll`, `POST /integrations/telegram/notify` (each with a
+  small field allow-list — `INTEGRATION_PARAMETER_NOT_PERMITTED` names any other key, because a mailbox `query`
+  decides which private messages a process downloads and is not a workflow's choice; `excerpt` is stripped from
+  every answer), and `telegram-check / telegram-command / telegram-serve / telegram-notify / email-check /
+  email-poll / hold-automation / release-automation / automation-status`, plus `check-alerts --telegram
+  [--notify]`, which adds the bot as a *sink* on the existing alert pipeline instead of starting a second one.
+  `orchestration.health.channels_section()` reports configuration as names and booleans with
+  `live_account_verified: false`, and `preflight` grew an `operator_channels` section.
+- `n8n/workflows/06-email-cycle-and-operator-notification.json` (11 nodes, `"active": false`, no credential anywhere) schedules the two cycles and branches on their answers:
+  `Manual Trigger → Cycle Parameters → POST /integrations/email/poll`, then `IF Cycle Refused` - true to
+  `Outcome - Cycle Needs Attention`, false to `IF New Mail Arrived`, which either posts
+  `POST /integrations/telegram/notify` and branches on `IF Nothing Notified` (`Outcome - Operator Notified` /
+  `Outcome - Already Reported`) or ends at `Outcome - Nothing New`. Triggers, scheduling, retries, and delivery of the notification stay in n8n; authentication, which messages to
+  download, how a message is matched, what may be approved, and whether an operator was already told all stay in
+  the application. `docs/INTEGRATION-SETUP.md` §1 and §4 now list the Telegram and Gmail variables and the
+  activation steps, and `n8n/README.md` explains why activating `06` starts scheduling and nothing more.
+- **Not verified in this environment, by design:** no Telegram bot token and no Google credential exist here, so
+  live `getUpdates`/`sendMessage` and live Gmail reads remain unproven against the real providers — the adapters
+  were developed and tested against fake transports, and `email-check --probe` / `telegram-check --probe` remain
+  the operator's first live steps. `tests/test_phase48_operator_channels.py` adds 86 offline tests (86 passing,
+  575 total) covering authorization, command validation, approval staleness and replay, dedupe across a restart,
+  transport faults, opt-out propagation, persistence failure and retry, Gmail normalization, matching
+  (including the two-leads-one-thread refusal), the Phase 47 contract, redaction, and the sixth export's structure
+  and execution against a live local API server.
+
 
 ### Added — 2026-10-16 (Phase 47: Authorized Inbound Communications, One Provider-Neutral Intake, and the Operator Backlog the Ledger Was Already Holding)
 

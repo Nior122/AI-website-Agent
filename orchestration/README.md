@@ -275,6 +275,45 @@ route still records events and each record says `signature.verified: false` with
 verification is data, not a silence. `GET /engagement/inbound?limit=` reads back the intake's own backlog
 (unmatched, failed, uncertain opt-outs) and returns ids, dispositions, and next actions rather than message bodies.
 
+## Operator channels: Telegram control, email polling, and the two routes that serve them
+
+Phase 48 added three routes for the operator-facing surfaces, and they are deliberately *thin*: they schedule and
+report on work the application already knows how to do, and no business rule lives in them.
+
+- `GET /integrations/status` — read-only configuration and last-cycle state for both channels, from
+  `orchestration.health.channels_section()`: which variables are set (never their values), whether Telegram is
+  configured and how authorization is decided, what the Gmail adapter's cursor has recorded, whether automation is
+  held, and a `verified: false` with the reason, because this build has not talked to either provider on the user's
+  behalf.
+- `POST /integrations/email/poll` — one Gmail cycle through `EmailInboundPoller`: fetch, normalize, match through
+  recorded references, submit each event to `tracking.inbound.InboundIntake`. It accepts only
+  `dry_run`, `max_messages` (bounded by `INTEGRATION_MAX_MESSAGES`), `fetch_format`, `use_history`, `query`, and
+  `source`; any other key is refused with `INTEGRATION_PARAMETER_NOT_PERMITTED`, because a mailbox `query` decides
+  which messages this process downloads and that stays the operator's configuration, not a workflow's. The answer
+  is counts, ids, dispositions, and codes - `excerpt` is stripped from each result, since a workflow's execution
+  log is a poor place for correspondence. It answers `409 AUTOMATION_HELD` **before** contacting Google, and
+  `503` when the store refuses to persist.
+- `POST /integrations/telegram/notify` — pushes what `operator_attention()` already holds through
+  `TelegramOperatorBot.notify_once()`, with the same small field allow-list (`chat_id`, `limit`). It answers
+  `409` with the named configuration problem (`telegram_config()["code"]`) rather than half-running, and it never
+  accepts message text: the content and the dedupe live in the application so no workflow can spam an operator.
+
+The CLI is the same surface without HTTP (`python3 -m orchestration.cli`): `telegram-check` (`--probe` actually
+calls `getMe`), `telegram-command` (run one command as one user id, offline unless `--telegram` is passed -
+authorization still applies, which is what makes it a usable pre-flight for the allow-list), `telegram-serve`
+(`--once`, `--cycles`, `--poll-timeout`), `telegram-notify`, `email-check` (`--probe` for one bounded
+`messages.list`), `email-poll` (`--dry-run`, `--max-messages`, `--retry-pending`), `hold-automation` /
+`release-automation` (both require `--actor`, because a brake nobody is attributed to is a brake nobody can
+release), `automation-status`, and `check-alerts --telegram [--notify]`, which adds the bot as a *sink* on the
+existing alert pipeline - it does not start a second alert system, and it persists which alerts it delivered so a
+one-shot cron run cannot re-page the operator about a fault already mentioned.
+
+`integrations/` holds the provider-facing code (`http.py`'s timeout-bounded stdlib transport and typed
+`ProviderError`, `telegram.py`, `gmail.py`), `orchestration/telegram_bot.py` and
+`orchestration/telegram_limits.py` hold the bot and its redaction boundary, and `orchestration/email_inbound.py`
+holds the cycle. Nothing in them sends a message to a lead, replies to a customer, or writes an approval without
+the existing review record.
+
 ### What "needs an operator" now includes
 
 `operator_attention()` grew past jobs, projects, and publishes to the engagement records themselves

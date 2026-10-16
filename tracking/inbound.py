@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 from typing import Any
 
 from tracking.engagement import (
@@ -94,7 +95,13 @@ KNOWN_FIELDS = FORBIDDEN_FIELDS | {
     "provider", "event_id", "occurred_at", "received_at", "channel", "lead_id", "project_id", "outreach_id",
     "conversation_id", "external_message_id", "in_reply_to", "summary", "body", "message_ref",
     "classification", "unsubscribe_confirmed", "idempotency_key", "signature_verified",
+    "sender", "match_basis",
 }
+
+#: A sender address, as the provider reports it. Kept because an email adapter needs to say *what it matched on*,
+#: and refused as anything more than a claim: nothing here asks the provider whether the address was verified.
+SENDER_ADDRESS_LIMIT = 320
+MATCH_BASIS_LIMIT = 60
 
 #: Header an adapter signs its delivery with. The value is ``sha256=<hex of HMAC-SHA256(body bytes)>``.
 INBOUND_SIGNATURE_HEADER = "X-Inbound-Signature"
@@ -298,7 +305,7 @@ def normalize_event(payload: dict[str, Any], *, received_at: str | None = None) 
             "An inbound event needs `body` or `summary`: a record with nothing said in it is not a response.",
             code="EVENT_EMPTY",
         )
-    for field in ("summary", "body", "message_ref"):
+    for field in ("summary", "body", "message_ref", "sender"):
         value = payload.get(field)
         if value and find_secret_shaped_text(str(value)):
             raise InboundEventError(
@@ -309,6 +316,33 @@ def normalize_event(payload: dict[str, Any], *, received_at: str | None = None) 
     message_ref = payload.get("message_ref")
     if message_ref is not None:
         message_ref = validate_bounded_text(message_ref, field="message_ref", limit=MAX_REF_CHARS)
+
+    # Who the provider says wrote it. `Display Name <addr@domain>` is unwrapped because a display name is a
+    # customer's formatting, not an identity; the address is stored lower-cased so a re-delivery with different
+    # capitalisation is still recognisably the same event. No verification is claimed or implied.
+    sender = payload.get("sender")
+    sender_domain = None
+    if sender is not None:
+        sender = str(sender).strip()
+        bracketed = re.search(r"<([^<>]+)>", sender)
+        if bracketed:
+            sender = bracketed.group(1).strip()
+        sender = sender.lower()
+        if len(sender) > SENDER_ADDRESS_LIMIT:
+            raise InboundEventError(
+                f"`sender` is {len(sender)} characters; the intake accepts at most {SENDER_ADDRESS_LIMIT}.",
+                code="EVENT_FIELD_TOO_LONG",
+            )
+        if sender and "@" not in sender:
+            raise InboundEventError(
+                "`sender` must be an address the provider reported (optionally wrapped in angle brackets); a "
+                "free-text name is not a contact and belongs in `summary`.",
+                code="EVENT_SENDER_INVALID",
+            )
+        sender_domain = sender.rsplit("@", 1)[1] if "@" in sender else None
+    match_basis = payload.get("match_basis")
+    if match_basis is not None:
+        match_basis = validate_bounded_text(match_basis, field="match_basis", limit=MATCH_BASIS_LIMIT)
 
     received = normalize_datetime(received_at or now(), field="received_at")
     # The event's own time is preserved and kept distinct from the moment we accepted it; a caller that omits it
@@ -388,6 +422,9 @@ def normalize_event(payload: dict[str, Any], *, received_at: str | None = None) 
         "body_sha256": body_sha,
         "excerpt": redact_contact_details((body or summary or "")[:MAX_QUOTE_CHARS]) if (body or summary) else None,
         "message_ref": message_ref,
+        "sender": sender or None,
+        "sender_domain": sender_domain,
+        "adapter_match_basis": match_basis,
         "triage": baseline,
         "classification_hint": classification_hint,
         "unsubscribe_confirmed": bool(payload.get("unsubscribe_confirmed")),
@@ -529,9 +566,20 @@ class InboundIntake:
                                     f"project_id '{event['project_id']}' is not a tracked project.")
             return str(project.get("lead_id") or ""), "project_id", None
         if event["conversation_id"]:
+            claims: dict[str, int] = {}
             for row in (self.store.state.get("engagements") or {}).values():
                 if isinstance(row, dict) and row.get("conversation_id") == event["conversation_id"] and row.get("lead_id"):
-                    return str(row["lead_id"]), "conversation_id", None
+                    claims[str(row["lead_id"])] = claims.get(str(row["lead_id"]), 0) + 1
+            if len(claims) == 1:
+                return next(iter(claims)), "conversation_id", None
+            if len(claims) > 1:
+                # The same thread is recorded against two businesses (a shared mailbox, a forwarded intro, or a
+                # past mis-link). Taking the first match would write a reply into the wrong business's history,
+                # which is worse than an unmatched row an operator can fix in seconds.
+                return None, None, ("UNMATCHED", "AMBIGUOUS_CONVERSATION",
+                                    f"thread '{event['conversation_id']}' is recorded against {len(claims)} leads "
+                                    f"({', '.join(sorted(claims)[:4])}); the event is parked for an operator to "
+                                    "link rather than attached to a guess")
         return None, None, None
 
     def _opt_out_decision(self, event: dict[str, Any], lead_id: str | None) -> dict[str, Any]:
@@ -579,9 +627,19 @@ class InboundIntake:
             "project_id": event["project_id"],
             "outreach_id": event["outreach_id"],
             "conversation_id": event["conversation_id"],
+            # Persisted beside the rest of the linkage: an event that names a draft must keep saying so, or the
+            # reason a reply landed on that lead becomes unreconstructable later.
+            "in_reply_to": event.get("in_reply_to"),
             "engagement_id": engagement_id,
             "linkage_basis": linkage_basis,
-            "message_ref": event["message_ref"],
+            "message_ref": event.get("message_ref"),
+            "sender": event.get("sender"),
+            "sender_domain": event.get("sender_domain"),
+            # Provenance, never a verdict: the provider reported this address and the adapter named this basis.
+            # Nothing here confirmed that the person who wrote owns the lead.
+            "sender_identity": "provider_asserted" if event.get("sender") else None,
+            "adapter_match_basis": event.get("adapter_match_basis"),
+            "adapter_match_source": "adapter_asserted" if event.get("adapter_match_basis") else None,
             "body_chars": event["body_chars"],
             "body_sha256": event["body_sha256"],
             "excerpt": event["excerpt"],
@@ -636,7 +694,7 @@ class InboundIntake:
     #: What a bounded read of one intake event carries. Deliberately no body text: an excerpt, a hash, and
     #: the ids a human needs to open the original in the provider.
     PENDING_FIELDS = ("dedupe_key", "provider", "provider_event_id", "channel", "disposition", "error_code",
-                      "lead_id", "engagement_id", "received_at", "excerpt", "next_action")
+                      "lead_id", "engagement_id", "received_at", "sender", "excerpt", "next_action")
 
     def pending(self, *, dispositions: tuple[str, ...] = ("UNMATCHED", "FAILED", "OPT_OUT_UNCERTAIN"),
                  limit: int = 25) -> dict[str, Any]:
