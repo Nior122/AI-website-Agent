@@ -27,7 +27,11 @@ import socket
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import Request
+# ``urlopen`` is reached through the module rather than imported by name on purpose: a from-import binds the
+# function at import time, which means a test or an operator guard that patches ``urllib.request.urlopen`` after
+# this module is loaded would be wiring shut a door nobody walks through. Call-time lookup is the honest form.
+import urllib.request
 
 #: Hosts a workflow may address. The runner sends the API bearer token with every request, so anything
 #: outside the machine is a policy refusal rather than a runtime failure.
@@ -562,7 +566,7 @@ class N8nWorkflowRunner:
         _assert_loopback_target(url, allow_remote=self.allow_remote)
         req = Request(url, data=body_bytes, headers=headers, method=method)
         try:
-            with urlopen(req, timeout=self.timeout_seconds) as resp:
+            with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
                 raw = resp.read()
         except (HTTPError, URLError, socket.timeout, TimeoutError, OSError) as error:
             detail = _describe_failure(error, method=method, url=url, timeout_seconds=self.timeout_seconds)

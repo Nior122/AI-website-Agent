@@ -16,9 +16,11 @@ Truth rules the code enforces rather than merely documents:
 * an outcome that claims something a customer said or agreed needs evidence, and ``WON`` needs a
   contract/invoice/payment reference as well;
 * a recorded opt-out cancels open follow-ups for that channel and blocks new ones, including sends;
-* a failed send is recorded as a failure: it never reads as a contact, and only a real provider receipt (which
-  this repository cannot read) could ever move a record from "reported by an operator" to "accepted" or
-  "delivered";
+* a failed send is recorded as a failure: it never reads as a contact. "Accepted by the provider" is a stronger
+  claim than an operator's report, so it needs a ``provider_receipt`` - the message id *and* which headers were
+  read back to match it to this draft - and :mod:`orchestration.outbound` produces one only by retrieving the
+  message through the read-only Gmail adapter. ``VERIFIED_DELIVERED`` has no path at all: Gmail issues no
+  delivery, read, or open receipt, so a record stops at "accepted" and says so;
 * the relationship stage a lead is at is not a free-text field someone sets: it is derived from the records above
   it, and a human can only move it by handing over the record that proves the step;
 * free text is redacted of email addresses and phone numbers on the way in, because the ledger's subject is
@@ -44,7 +46,7 @@ ENGAGEMENT_COLLECTIONS = ("engagements", "proposals", "follow_ups", "outcomes", 
 EVENT_KINDS = {
     "OUTREACH_PREPARED", "OUTREACH_SENT", "RESPONSE_RECEIVED", "FOLLOW_UP_SCHEDULED", "FOLLOW_UP_COMPLETED",
     "FOLLOW_UP_CANCELLED", "PROPOSAL_CREATED", "PROPOSAL_PRESENTED", "PROPOSAL_DECISION", "OUTCOME_RECORDED",
-    "OUTREACH_SEND_FAILED", "RELATIONSHIP_STAGE_CHANGED",
+    "OUTREACH_SEND_FAILED", "OUTREACH_SEND_UNCERTAIN", "RELATIONSHIP_STAGE_CHANGED",
     "OPT_OUT_RECORDED", "OPT_OUT_REVOKED", "NOTE",
 }
 DIRECTIONS = {"OUTBOUND", "INBOUND", "INTERNAL"}
@@ -84,10 +86,12 @@ EVIDENCE_REQUIRED_OUTCOMES = OUTCOME_STATUSES - {"UNRESOLVED", "NO_RESPONSE"}
 WON_EVIDENCE_KINDS = {"CONTRACT", "INVOICE", "PAYMENT", "CUSTOMER_MESSAGE"}
 OUTCOME_DECISIVE = {"WON", "LOST", "DECLINED", "OPTED_OUT"}
 
-#: What an operator may report about a send, in increasing order of strength. `REPORTED_SENT` and `FAILED` are
-#: statements a human can make; the last two need a provider receipt and are therefore refused until an actual
-#: provider integration can supply one - which is the whole difference between "the API took my request" and
-#: "the message arrived".
+#: What may be recorded about a send, in increasing order of strength. `REPORTED_SENT` and `FAILED` are
+#: statements a human can make. `ACCEPTED_BY_PROVIDER` needs a provider receipt attached - the id the provider
+#: returned plus the read-back that matched it to this draft - which is the whole difference between "the API
+#: took my request" and "the message arrived". `VERIFIED_DELIVERED` is refused outright: no receipt of that kind
+#: exists in Gmail's API, so the status is writable only by a provider that actually reports delivery, and this
+#: repository has no such provider.
 SEND_RESULTS = {"REPORTED_SENT", "FAILED", "ACCEPTED_BY_PROVIDER", "VERIFIED_DELIVERED"}
 PROVIDER_ONLY_RESULTS = {"ACCEPTED_BY_PROVIDER", "VERIFIED_DELIVERED"}
 #: Planned is what an approved draft looks like before anyone acts; attempted is an action with no confirmed
@@ -384,6 +388,7 @@ class EngagementLedger:
         classification: str | None = None,
         needs_human_review: bool | None = None,
         in_reply_to: str | None = None,
+        provider_receipt: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Append one auditable event. Repeats of the same logical event return the stored record."""
         lead = self._lead(lead_id)
@@ -408,6 +413,7 @@ class EngagementLedger:
         provider_clean = validate_bounded_text(provider, field="provider", limit=40).lower() if provider else None
         external_id = sanitize_detail(external_message_id, field="external_message_id", limit=120) if external_message_id else None
         conversation = validate_record_id(conversation_id, kind="conversation_id") if conversation_id else None
+        receipt = self._provider_receipt(provider_receipt)
         delivery_clean = None
         if delivery_status:
             delivery_clean = validate_bounded_text(delivery_status, field="delivery_status", limit=40).upper()
@@ -416,10 +422,18 @@ class EngagementLedger:
                     f"Unsupported delivery status '{delivery_clean}'. Permitted: {', '.join(sorted(DELIVERY_STATUSES))}.",
                     code="DELIVERY_STATUS_UNSUPPORTED",
                 )
-            if delivery_clean in {"ACCEPTED_BY_PROVIDER", "VERIFIED_DELIVERED"}:
+            if delivery_clean == "VERIFIED_DELIVERED":
                 raise LedgerError(
-                    f"'{delivery_clean}' is a provider's own statement. This repository has no provider receipt "
-                    "reader, so nothing can write it; record what the operator saw (REPORTED_BY_OPERATOR) instead.",
+                    "'VERIFIED_DELIVERED' would quote a delivery, read, or open receipt. Gmail does not offer "
+                    "one, so no integration in this repository can obtain it; record ACCEPTED_BY_PROVIDER with "
+                    "the provider's id and read-back instead.",
+                    code="PROVIDER_RECEIPT_UNAVAILABLE",
+                )
+            if delivery_clean == "ACCEPTED_BY_PROVIDER" and receipt is None:
+                raise LedgerError(
+                    "'ACCEPTED_BY_PROVIDER' is a provider's own statement, so it is recorded only with the "
+                    "receipt behind it: the message id the provider returned and which headers were read back to "
+                    "match it to this draft. Without that, record what the operator saw (REPORTED_BY_OPERATOR).",
                     code="PROVIDER_RECEIPT_UNAVAILABLE",
                 )
         detail_clean = sanitize_detail(detail, field="detail") if detail else None
@@ -454,7 +468,11 @@ class EngagementLedger:
             "conversation_id": conversation,
             "delivery_status": delivery_clean,
             "detail": detail_clean,
-            "provider_verified": False,
+            "provider_receipt": receipt,
+            # True only when the receipt's own read-back was validated by this module - never because a caller
+            # said the provider was happy.
+            "provider_verified": bool(receipt and receipt.get("verified")),
+            "unresolved": kind == "OUTREACH_SEND_UNCERTAIN",
             "classification": classification,
             "classification_source": ("operator_asserted" if classification else "no_classifier_in_this_repository")
                                       if kind == "RESPONSE_RECEIVED" else None,
@@ -508,6 +526,51 @@ class EngagementLedger:
             rows.append(row)
         return rows
 
+    def _provider_receipt(self, receipt: Any) -> dict[str, Any] | None:
+        """Normalize the provider evidence that alone can strengthen a send report to "accepted".
+
+        The shape is small and demanded rather than trusted: an id, the source that read it back, the timestamp of
+        that read, and the fields that were compared. A caller *can* invent this object - the ledger has no way to
+        phone Google - which is why this module treats it as a claim with its evidence attached and
+        :mod:`orchestration.outbound` as the only writer that actually performs the read-back. What the guard buys
+        is that a bare assertion ("the API said ok") is never recorded as provider acceptance: the claim has to
+        name what was observed, so an audit can go and look at it.
+        """
+        if receipt is None:
+            return None
+        if not isinstance(receipt, dict):
+            raise LedgerError("A provider receipt must be an object naming the id, the source, the read-back "
+                              "fields, and when they were read.", code="PROVIDER_RECEIPT_INVALID")
+        unknown = sorted(set(receipt) - {"source", "message_id", "read_back_at", "verified_fields", "detail"})
+        if unknown:
+            raise LedgerError(f"Provider receipt carries unrecognized field(s): {', '.join(unknown)}. Permitted: "
+                              "source, message_id, read_back_at, verified_fields, detail.",
+                              code="PROVIDER_RECEIPT_FIELD_NOT_PERMITTED")
+        message_id = receipt.get("message_id")
+        source = receipt.get("source")
+        fields = receipt.get("verified_fields")
+        if not message_id or not source:
+            raise LedgerError("A provider receipt needs the message id and the source that read it back.",
+                              code="PROVIDER_RECEIPT_INVALID")
+        if not isinstance(fields, list) or not fields:
+            raise LedgerError("A provider receipt has to name which headers were compared (for example "
+                              "['to', 'subject']); an id alone proves only that *a* message exists.",
+                              code="PROVIDER_RECEIPT_INVALID")
+        cleaned = {key: value for key, value in (
+            ("source", validate_bounded_text(source, field="provider_receipt.source", limit=60).lower()),
+            ("message_id", sanitize_detail(message_id, field="provider_receipt.message_id", limit=120)),
+            ("verified_fields", sorted({str(item).strip().lower() for item in fields if str(item).strip()})[:10]),
+            ("detail", sanitize_detail(receipt.get("detail"), field="provider_receipt.detail")
+                      if receipt.get("detail") else None),
+        ) if value}
+        if "to" not in cleaned["verified_fields"]:
+            raise LedgerError("A provider receipt has to confirm the recipient; verifying only a subject would "
+                              "accept somebody else's message.", code="PROVIDER_RECEIPT_INVALID")
+        cleaned["read_back_at"] = normalize_datetime(receipt.get("read_back_at") or now(),
+                                                      field="provider_receipt.read_back_at")
+        cleaned["verified"] = True
+        return cleaned
+
     def _known_project(self, project_id: str) -> dict[str, Any]:
         project = (self.store.state.get("projects") or {}).get(project_id)
         if not isinstance(project, dict):
@@ -540,8 +603,13 @@ class EngagementLedger:
         *,
         outreach_id: str | None = None,
         for_action: str = "SEND",
+        allow_unresolved: bool = False,
     ) -> dict[str, Any]:
         """Ask the only question a scheduler is allowed to ask before it touches a prospect.
+
+        ``allow_unresolved`` is for one caller: :meth:`mark_outreach_sent` recording a *failure*, which is how an
+        open attempt gets closed. Recording that a send did not happen can never double-contact anybody, so the
+        unresolved-attempt guard would block the only message that resolves it. Any other caller leaves it false.
 
         The ledger's own refusals and any future send path read this same function, so there is no weaker
         duplicate check to slip past. It re-reads state first (a review decision made a moment ago must be
@@ -602,6 +670,26 @@ class EngagementLedger:
                 blockers.append("OUTREACH_LEAD_MISMATCH")
                 checks[-1]["status"] = "BLOCKED"
                 checks[-1]["detail"] = f"outreach {outreach_id} belongs to lead '{outreach.get('lead_id')}', not '{lead['lead_id']}'."
+
+            if for_action == "SEND" and not allow_unresolved:
+                state = str(outreach.get("send_state") or "")
+                # The send executor marks an attempt before it contacts the provider and clears it when the ledger
+                # has the answer, so an abandoned "SENDING" with no provider id is a crashed attempt: sending again
+                # risks mailing the same prospect twice, and only a human reconciliation can resolve it. An attempt
+                # that *does* have a provider id stays closable, because reconciliation is what closes it - and a
+                # draft left UNCERTAIN is blocked from a fresh send by the executor's own gate, not by this one.
+                stuck = state == "SENDING" and not outreach.get("send_provider_message_id")
+                checks.append({
+                    "check": "UNRESOLVED_SEND",
+                    "status": "BLOCKED" if stuck else "CLEAR",
+                    "detail": (f"an earlier send attempt for {outreach_id} is marked SENDING with no provider "
+                               "answer; reconcile it (`email-reconcile`) rather than sending again" if stuck else
+                               ("no unresolved send attempt on this draft" if state != "UNCERTAIN" else
+                                "this draft's last attempt is UNCERTAIN and needs an operator's reconciliation "
+                                "before anything new goes out")),
+                })
+                if stuck:
+                    blockers.append("SEND_UNRESOLVED")
         else:
             checks.append({
                 "check": "HUMAN_APPROVAL",
@@ -937,8 +1025,20 @@ class EngagementLedger:
         result: str = "REPORTED_SENT",
         provider: str | None = None,
         failure_note: str | None = None,
+        idempotency_key: str | None = None,
+        provider_receipt: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Record what a human says happened to an approved draft - and stop exactly there.
+        """Record what happened to an approved draft - and stop exactly there.
+
+        ``result="ACCEPTED_BY_PROVIDER"`` is permitted only with a ``provider_receipt`` naming the id and the
+        headers that were read back; that is the only claim this module will strengthen beyond an operator's word,
+        and only on evidence. ``idempotency_key`` lets a retried send call return the record that already exists
+        instead of writing a second event for one logical send.
+
+        Three adjacent facts stay apart: a *prepared* draft is not a send, a *reported* send is not a delivery,
+        and a *failure* is never written as a contact. `result="FAILED"` records the attempt honestly: the
+        outreach record becomes `SEND_FAILED`, the lead is not marked as having been reached, and a later report
+        on the same draft can still turn it into a send without duplicating the outreach record.
 
         Three adjacent facts stay apart: a *prepared* draft is not a send, a *reported* send is not a delivery,
         and a *failure* is never written as a contact. `result="FAILED"` records the attempt honestly: the
@@ -954,11 +1054,17 @@ class EngagementLedger:
                 f"Unsupported send result '{outcome}'. Permitted: {', '.join(sorted(SEND_RESULTS))}.",
                 code="SEND_RESULT_UNSUPPORTED",
             )
-        if outcome in PROVIDER_ONLY_RESULTS:
+        receipt = self._provider_receipt(provider_receipt)
+        if outcome == "VERIFIED_DELIVERED" or (outcome in PROVIDER_ONLY_RESULTS and receipt is None):
             raise LedgerError(
-                f"'{outcome}' would quote a provider's own acceptance or delivery receipt. This repository has "
-                "no provider receipt reader, so it cannot be recorded truthfully here; report what the operator "
-                "observed (result=REPORTED_SENT) and keep the receipt where it lives.",
+                (f"'{outcome}' would quote a delivery, read, or open receipt that Gmail does not provide; no "
+                 "status stronger than ACCEPTED_BY_PROVIDER is reachable, whatever a caller asserts."
+                 if outcome == "VERIFIED_DELIVERED" else
+                 f"'{outcome}' quotes the provider's own acceptance, so it needs provider_receipt (the message id "
+                 "plus the headers read back to match it to this draft). Without it, report what the operator saw "
+                 "(result=REPORTED_SENT).")
+                if outcome in PROVIDER_ONLY_RESULTS else
+                f"Unsupported send result '{outcome}'.",
                 code="PROVIDER_RECEIPT_UNAVAILABLE",
             )
         status = outreach.get("status")
@@ -981,7 +1087,8 @@ class EngagementLedger:
         lead_id = str(outreach.get("lead_id") or "")
         # One guard for every send path: opt-out, contact budget, approval, project state - re-read now rather
         # than trusted from whatever the caller remembered.
-        verdict = self.outreach_eligibility(lead_id, channel, outreach_id=cleaned_id, for_action="SEND")
+        verdict = self.outreach_eligibility(lead_id, channel, outreach_id=cleaned_id, for_action="SEND",
+                                            allow_unresolved=outcome == "FAILED")
         if not verdict["eligible"]:
             code = str(verdict["blockers"][0])
             detail = next((row["detail"] for row in verdict["checks"] if row["status"] == "BLOCKED"), "")
@@ -989,6 +1096,11 @@ class EngagementLedger:
         evidence: list[dict[str, Any]] = []
         if evidence_note:
             evidence.append({"kind": "OPERATOR_NOTE", "note": evidence_note})
+        if receipt:
+            evidence.append({"kind": "OPERATOR_NOTE",
+                             "note": (f"provider receipt: {receipt['source']} read back {receipt['read_back_at']} "
+                                      f"for message id {receipt['message_id']}, compared "
+                                      f"{', '.join(receipt['verified_fields'])}")[:MAX_NOTE_CHARS]})
         if evidence_url:
             evidence.append({"kind": "URL", "source_url": evidence_url})
         if failure_note:
@@ -1010,6 +1122,8 @@ class EngagementLedger:
             })
         when = normalize_datetime(occurred_at or now(), field="occurred_at")
         attempts = int(outreach.get("send_attempts") or 0) + 1
+        # A provider id is quoted in the event as the operator reported it; whether it *matches* this draft is a
+        # separate claim, and only a read-back receipt (`provider_receipt`) makes it.
         event = self.record_event(
             lead_id,
             kind="OUTREACH_SEND_FAILED" if outcome == "FAILED" else "OUTREACH_SENT",
@@ -1024,9 +1138,16 @@ class EngagementLedger:
             outreach_id=cleaned_id,
             provider=provider_clean,
             external_message_id=provider_message_id,
-            delivery_status="FAILED_REPORTED" if outcome == "FAILED" else "REPORTED_BY_OPERATOR",
+            delivery_status=("FAILED_REPORTED" if outcome == "FAILED" else
+                             "ACCEPTED_BY_PROVIDER" if outcome == "ACCEPTED_BY_PROVIDER" else
+                             "REPORTED_BY_OPERATOR"),
             detail=sanitize_detail(failure_note or evidence_note, field="detail"),
+            idempotency_key=idempotency_key,
+            provider_receipt=provider_receipt,
         )
+        if event.get("duplicate"):
+            # One logical send, however many times the caller retries the call.
+            return {**outreach, "unchanged": True, "send_event": event}
         outreach.update({
             "status": "SEND_FAILED" if outcome == "FAILED" else "SENT_REPORTED",
             "send_engagement_id": event["engagement_id"],
@@ -1037,6 +1158,16 @@ class EngagementLedger:
                                     if provider_message_id else None),
             "send_attempts": attempts,
             "contact_established": outcome != "FAILED",
+            # The executor's attempt marker ends here: the ledger row above is now the durable answer, so
+            # "SENDING"/"UNCERTAIN" cannot be left dangling by a successful close, from any path.
+            "send_state": "SENT" if outcome != "FAILED" else "FAILED",
+            "send_state_detail": (f"{outcome} recorded via mark_outreach_sent" if outcome != "FAILED" else
+                                  "a reported failure; the human approval still stands, so a deliberate retry "
+                                  "reuses this record"),
+            "provider_verified": bool(event.get("provider_verified")),
+            "delivery_receipt": receipt and {"source": receipt["source"], "message_id": receipt["message_id"],
+                                             "read_back_at": receipt["read_back_at"],
+                                             "verified_fields": receipt["verified_fields"]},
         })
         if outcome == "FAILED":
             outreach["failed_at"] = when
@@ -1050,7 +1181,9 @@ class EngagementLedger:
             "send_event": event,
             "counts_as_contact": outcome != "FAILED",
             "delivery_note": (
-                "Reported by an operator; no provider receipt was verified by this system."
+                (f"Provider id {receipt['message_id']} was read back from {receipt['source']} and matched on "
+                 f"{', '.join(receipt['verified_fields'])}; that is acceptance, not delivery." if receipt else
+                 "Reported by an operator; no provider receipt was verified by this system.")
                 if outcome != "FAILED" else
                 "A failed delivery is recorded as a failure: it is not a contact, and it does not make the lead "
                 "unreachable - it makes the next attempt a decision."

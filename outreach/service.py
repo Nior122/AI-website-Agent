@@ -1,8 +1,32 @@
-"""Prepare and review outreach drafts; sending is intentionally absent."""
+"""Prepare and review outreach drafts; sending is intentionally absent.
+
+One record per project and channel holds the recipient, subject, body, and the evidence the wording rests on, plus
+two digests: ``content_fingerprint`` (the text as generated) and ``approved_content_fingerprint`` (the text a
+human approved). ``review`` is the only writer of an approval and ``readiness`` the only gate on drafting -
+:meth:`orchestration.outbound.ApprovedOutboundSender` reads both and writes neither. ``_safe`` keeps fabricated
+claims and non-https preview links out of a message that a stranger will read.
+
+This module still cannot send. Recording ``READY_TO_SEND`` means a person approved specific content; it does not
+put anything in anybody's mailbox, and it is not what the sender checks *alone* - the sender re-reads the lead, the
+hold, the contact budget, the opt-out list, and this digest before it contacts a provider.
+"""
 from datetime import datetime, timezone
 import re
 
 from tracking.store import next_numeric_id
+
+#: The fields that decide what a recipient would read. Deliberately excludes status and review metadata: an
+#: approval covers *content*, and a status transition must not look like an edit (or an edit like a transition).
+CONTENT_KEYS=("outreach_id","lead_id","project_id","build_id","deployment_id","channel","recipient","subject","preview_url","draft_message")
+def content_fingerprint(record):
+  """Hash the approved content. See telegram_bot.draft_fingerprint for the record-state checksum used by buttons.
+
+  A caller cannot forge a match by re-hashing: the point is staleness, not authorization. Storing the digest at
+  review time means "this human approved these words" survives any later edit of the same record.
+  """
+  import hashlib
+  material="\x1f".join(str((record or {}).get(key) or "") for key in CONTENT_KEYS)
+  return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
 
 CHANNELS={"EMAIL","WHATSAPP","INSTAGRAM","FACEBOOK","LINKEDIN","SMS","OTHER"}
 UNSAFE=("award-winning","guaranteed","customers","revenue","years in business","number one","certified")
@@ -29,8 +53,8 @@ class OutreachService:
   if not evidence: raise ValueError("INSUFFICIENT_RESEARCH")
   ident=next_numeric_id(self.store.state.get("outreach") or {}, "outreach"); body=self._draft(lead,dep["deployment_url"],channel,tone,evidence)
   self._safe(body,lead["business_name"],dep["deployment_url"])
-  item={"outreach_id":ident,"project_id":project_id,"lead_id":lead["lead_id"],"build_id":dep["build_id"],"deployment_id":dep["deployment_id"],"channel":channel,"recipient":self._contact(lead,channel),"subject":f"A website preview for {lead['business_name']}" if channel=="EMAIL" else None,"draft_message":body,"personalization_points":evidence,"preview_url":dep["deployment_url"],"status":"AWAITING_REVIEW","generated_at":now(),"review_notes":None,"revision_of":existing[-1]["outreach_id"] if existing else None}
-  self.store.state["outreach"][ident]=item; self.store._save(); return item
+  item={"outreach_id":ident,"project_id":project_id,"lead_id":lead["lead_id"],"build_id":dep["build_id"],"deployment_id":dep["deployment_id"],"channel":channel,"recipient":self._contact(lead,channel),"subject":f"A website preview for {lead['business_name']}" if channel=="EMAIL" else None,"draft_message":body,"personalization_points":evidence,"preview_url":dep["deployment_url"],"status":"AWAITING_REVIEW","generated_at":now(),"review_notes":None,"content_fingerprint":None,"approved_content_fingerprint":None,"revision_of":existing[-1]["outreach_id"] if existing else None}
+  item["content_fingerprint"]=content_fingerprint(item); self.store.state["outreach"][ident]=item; self.store._save(); return item
  def review(self,outreach_id,status,notes=None,reviewed_by=None,identity_source=None):
   """Record a human's decision on one draft. `reviewed_by` says who, `identity_source` says how we know.
 
@@ -43,7 +67,10 @@ class OutreachService:
   self._safe(x["draft_message"],self.store.state["leads"][x["lead_id"]]["business_name"],x["preview_url"])
   who=str(reviewed_by).strip()[:120] if reviewed_by else None
   via=str(identity_source).strip()[:60] if identity_source else None
-  x.update({"status":"READY_TO_SEND" if status=="APPROVED" else status,"review_notes":notes,"reviewed_at":now(),"reviewed_by":who,"reviewer_identity_source":via}); self.store._save(); return x
+  # The approval is bound to the content it covered. A later change to the recipient, subject, body, or preview
+  # URL makes the stored digest disagree with the record, which is what "stale" means for a send: not a new
+  # opinion, a different message.
+  x.update({"status":"READY_TO_SEND" if status=="APPROVED" else status,"review_notes":notes,"reviewed_at":now(),"reviewed_by":who,"reviewer_identity_source":via,"content_fingerprint":content_fingerprint(x),"approved_content_fingerprint":(content_fingerprint(x) if status=="APPROVED" else None)}); self.store._save(); return x
  def _evidence(self,l):
   e=[]
   if l.get("website_status") in {"NO_WEBSITE","WEBSITE_POOR","WEBSITE_OUTDATED","WEBSITE_NEEDS_IMPROVEMENT","WEBSITE_BASIC"}: e.append({"claim":"Public research identified a website opportunity.","source_urls":l.get("research_source_urls") or l.get("source_urls",[]),"confidence":"high"})

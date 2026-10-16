@@ -3,7 +3,130 @@
 All notable project changes are recorded here. Dates use ISO 8601 (`YYYY-MM-DD`).
 
 ## [Unreleased]
-## [Unreleased]
+
+### Added — 2026-10-16 (Phase 49: approved outbound email, the demo approval that unlocks a preview, and what a send may claim)
+
+- **Sending got its own interface, and the read-only one stayed read-only.** `integrations/gmail_transport.py`
+  now holds what both clients used to duplicate - the OAuth token exchange, the timeout-bounded request path, the
+  loopback-only proxy refusal, Gmail's error codes, and the call/error counters - with the scope, its three
+  environment names, and the not-configured code as class attributes rather than module constants, so neither
+  subclass owns an endpoint the other should not have. `integrations/gmail.py` is `GmailClient` with its four read
+  verbs and no `send()`; `integrations/gmail_send.py` is `GmailSendAdapter` with exactly one method, `send()`, no
+  read verb, its own `AI_WEBSITE_AGENT_GMAIL_SEND_*` credentials, and structural refusals of a second recipient,
+  caller-set `Cc`/`Bcc`/`From`/`Reply-To`, an oversize body, a fabricated `Message-ID`, and any message it did not
+  compose. `GmailSendAdapter.verify_authorization()` exchanges a token and sends nothing - the strongest claim
+  available without a mailbox - and `describe()` states `read_capable: false` and
+  `delivery_receipt_available: false` so a report can be checked instead of trusted.
+- **A minimum-consent scope, requested as one.** `GMAIL_SEND_SCOPE` is `https://www.googleapis.com/auth/gmail.send`
+  and nothing else; the send client refuses to run on the read-only token, the read client has no send call to
+  make, and the docs say plainly that minting that consent is an account decision no code here can perform.
+  `AI_WEBSITE_AGENT_EMAIL_SEND_ENABLED` switches the interface on, and without it the state is `disabled` even
+  with all three credentials present - configuration existing is never reported as a working channel
+  (`inbound_only` / `disabled` / `configured` / `unverified` / `verified` are the five answers).
+- **`orchestration/outbound.py` is the only sender, and it is a reader of existing rules, not a new authority.**
+  `ApprovedOutboundSender` annotates a draft with the checks a human approval cannot answer - is the content still
+  the content that was approved, is there an active opt-out for this lead or this address, is dispatch held, is the
+  preview still live and the build still current, is the contact budget spent, is an earlier attempt unresolved -
+  then composes the message from the record, marks the attempt durably, and makes at most one provider request. It
+  consults `tracking.engagement.outreach_eligibility(..., for_action="SEND")` for every send, so no surface is
+  weaker than a hand-typed send report, and it derives its suppression view from the ledger's own
+  `contact_blocks` instead of keeping a list to forget. A real send needs the word `SEND` and
+  `AI_WEBSITE_AGENT_ALLOW_LIVE_OUTREACH` / `--allow-live`, neither of which is a request field, so a workflow, a
+  script, or a caller cannot escalate itself into being able to send.
+- **Approvals are now bound to content.** `outreach.service.content_fingerprint()` digests recipient, subject,
+  body, preview URL, channel, and personalization points; `create()` stores it and `review()` stores
+  `approved_content_fingerprint` beside the reviewer's attribution, so an edit after approval is refused
+  (`APPROVAL_STALE`, or `APPROVAL_UNBOUND` for a draft predating the binding) rather than quietly sent, and a
+  caller can pass `expected_fingerprint` to refuse a draft that moved between reading and confirming. Unrelated
+  record fields stay outside the digest on purpose: it hashes what the recipient would read.
+- **Provider acceptance is recorded as acceptance, never as delivery.** `tracking/engagement.py` gained
+  `ACCEPTED_BY_PROVIDER` and `VERIFIED_DELIVERED` as named results, `OUTREACH_SEND_UNCERTAIN` as an event kind,
+  `provider_receipt` / `external_message_id` / `evidence` on events, and the rule that
+  `ACCEPTED_BY_PROVIDER` requires an actual receipt (`PROVIDER_RECEIPT_UNAVAILABLE` otherwise) while
+  `VERIFIED_DELIVERED` is unreachable from any entry point because Gmail offers no delivery or open receipt to
+  read. A send whose id was read back through the read-only client and matched on recipient and subject is
+  `ACCEPTED_BY_PROVIDER` with `provider_verified: true`; one that merely got an id is `REPORTED_SENT`; a timeout
+  after submission is `SEND_UNCERTAIN` - recorded before the request as `SENDING`, never resent, and closable only
+  by `reconcile()`, which reads the account and refuses to guess when no id exists
+  (`PROVIDER_ID_UNAVAILABLE`) or when the message behind the id goes to somebody else
+  (`RECONCILIATION_MISMATCH`). Exactly-once sending is not claimed: the guarantee is one request per confirmed
+  send, with the ambiguity of an unanswered one preserved rather than resolved by retrying.
+- **A failed send stays an attempt, not a contact.** `SEND_FAILED` consumes a budget slot, leaves the draft
+  approved and the stage unmoved, keeps `contact_established` false, and makes the next attempt a deliberate
+  decision on the same record instead of a fresh review - which is the distinction Phase 46 established and this
+  phase had to keep while widening it.
+- **Telegram became a send console and a demo-approval surface.** 24 commands now, all authorized before any
+  record is touched: `/outbox` (masked rows with their live verdicts), `/send <id>` (arm, preview, or a
+  fingerprint-bound confirm button), `/sent <id>`, and `/reconcile [<id>]`; `/optout` requires the evidence line
+  and the resulting block immediately shows up as `CONTACT_BLOCKED` on the draft it blocks. A typed confirmation
+  word that is not the accepted one now answers `CONFIRMATION_MISMATCH` instead of silently re-arming, and a
+  preview approval requires the operator's note about what they looked at.
+- **The demo approval Phase 48 deliberately refused is now available, through the mechanism that already owned
+  it.** `/demo <project_id>` shows the durable gate's own answer (`store.authorize_preview_deployment()`), then
+  records the decision with `store.record_review(..., reviewer="telegram:<user id>",
+  identity_source="telegram_operator_allowlist", action="PREVIEW_DEPLOYMENT")` - the identical call the CLI makes,
+  so the build-local `deployment-approval.json` the publish step verifies is materialized by the store. A
+  confirmation code derived from build, validation, deployment, and stage means a stale prompt or a moved record
+  approves nothing (`DEMO_STALE`); an unlisted account authorizes nothing; a supplied URL authorizes nothing; and
+  approving a demo neither approves nor sends outreach, which is asserted by the outbox still being empty
+  afterwards. The capability file keeps `identity_verified: false`, because an allow-listed Telegram id is
+  attributable but is not an identity provider, and `VERIFIED_IDENTITY_SOURCES` remains empty.
+- **The API grew four routes and no content path.** `POST /integrations/email/send`, `.../reconcile`,
+  `.../send-check`, and `GET /integrations/outbox`. The send body accepts six fields and refuses anything else by
+  name, so no caller can supply the recipient, subject, or body a human did not approve; refusals keep their
+  shape (`400` contract and not-found, `409` for the states that forbid a send, including `AUTOMATION_HELD` and
+  `LIVE_EFFECTS_DISABLED`, `500 SEND_FAULT` for an internal fault), every answer masks the recipient, omits the
+  body, and carries `retry_allowed: false` with `attempt_may_have_landed` so a client can tell "nothing left this
+  machine" from "the answer is unknown". There is no route that sends without the machine's flag.
+- **Five CLI commands, and none of them runs by accident:** `email-send-check`, `email-outbox`, `email-send`,
+  `email-send-status`, `email-reconcile`, printing JSON on stdout with exit `0` for a read, a dry run, or a
+  recorded outcome, `1` for a refusal, `2` for a command that named no draft. No import, startup, or test
+  discovery can reach a provider; `tests/test_phase49_approved_sending.py` asserts that on purpose.
+- **`n8n/workflows/07-approved-outbound-send.json`** (exported, inactive, credential-free) asks the application for
+  one send and routes on the answer: refusal, accepted, reported-only, then the operator notification with the
+  durable app-side dedupe. Its `Set` node ships `dry_run=true` and an empty confirmation word, and
+  `tests/test_phase42_integration_setup_and_preflight.py` now fails if either default drifts, if a credential
+  appears in the file, or if any node type outside `manualTrigger`/`set`/`httpRequest`/`if` shows up - so the
+  exported artifact is inert by construction, not by instruction.
+- **`operator_attention()` grew a fifth kind.** `health.outbound_attention_items()` reports
+  `APPROVAL_AWAITING_SEND`, `APPROVAL_STALE`, `APPROVAL_UNBOUND`, `SEND_UNCERTAIN`, and `SEND_FAILED` in the
+  existing item shape (plus `outreach_id`), each with the next action and no message text, and `kind: "outbound"`
+  stays out of `CRITICAL_KINDS` so an approval waiting on a human never pages anybody. `channels_section()` grew
+  the `email.sending` block - state, scope, what is missing, `results_unreachable: ["VERIFIED_DELIVERED"]`,
+  `live_sending_verified: false` until `email-send-check` has actually run here - and `integration_preflight`
+  carries it.
+- **Two defects found while verifying this phase, both fixed rather than worked around.**
+  `orchestration/n8n_runner.py` imported `urlopen` by name, so a test or guard that patched
+  `urllib.request.urlopen` after that module was first imported had wired shut a door nobody walked through; it
+  now resolves the function at call time. And `ApprovedOutboundSender` was building its adapter with
+  `enabled=True` whenever credentials existed, which would have let the presence of a token switch on the
+  operator's own `AI_WEBSITE_AGENT_EMAIL_SEND_ENABLED` flag - the flag is now passed through, and a send against a
+  switched-off interface is refused with `SENDING_DISABLED` naming the variable.
+
+### Verified in this phase — all offline, all with fakes in place of providers
+
+95 new tests (`tests/test_phase49_approved_sending.py`) plus the widened Phase 42 export assertions, with the
+full local suite at 671 passing. Covered: the composition round-trip (a decoded `raw` with an RFC 2047 subject and
+a real `List-Unsubscribe`), every structural refusal in the send adapter, the read-only client still having no send
+verb and the send client no read verb, approval binding and staleness, all eleven eligibility gates, the durable
+marker being visible *at the moment the provider is called* (asserted from inside the fake), the four post-send
+results and their evidence requirements, reconcile including a simulated crash mid-send, the Telegram surface
+(buttons, typed commands, stale and unauthorized presses, the demo approval's review entry and capability file,
+opt-out blocking the next send, and no prospect body or address in any chat reply), the four HTTP routes over this
+repository's own loopback handler, the five CLI commands, and the exported workflow executed by this repository's
+runner against this repository's handler - which is how "a fresh import cannot mail anybody, and a run that asks to
+send is refused by configuration" became a checked fact instead of a claim.
+
+### Not verified, stated plainly
+
+No Google account, OAuth client, Telegram bot, n8n runtime, or live mailbox was contacted, so no credential here
+has ever been exercised: `AI_WEBSITE_AGENT_GMAIL_SEND_*` values in this workspace are absent, `email-send-check`
+answers `inbound_only`, and the sending state can be `configured` at best from this sandbox. Consequently the
+following remain untested against a provider: the real `gmail.send` consent screen and quota behaviour, whether
+Google returns an id in the shape assumed (the code treats a missing id as uncertainty, which is the safe side),
+threading against a live thread, and delivery/read status - the last of which no provider here can report at all.
+`VERIFIED_DELIVERED` remains unreachable from every surface, and nothing in this phase changes the standing rule
+that a preview deployment still needs an operator with dashboard access.
 
 ### Added — 2026-10-16 (Phase 48: Telegram operator control, the first live email adapter, and the brake both of them respect)
 
@@ -90,7 +213,6 @@ All notable project changes are recorded here. Dates use ISO 8601 (`YYYY-MM-DD`)
   transport faults, opt-out propagation, persistence failure and retry, Gmail normalization, matching
   (including the two-leads-one-thread refusal), the Phase 47 contract, redaction, and the sixth export's structure
   and execution against a live local API server.
-
 
 ### Added — 2026-10-16 (Phase 47: Authorized Inbound Communications, One Provider-Neutral Intake, and the Operator Backlog the Ledger Was Already Holding)
 

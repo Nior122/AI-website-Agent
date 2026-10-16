@@ -69,6 +69,56 @@ TELEGRAM_TOKEN_ENV = "AI_WEBSITE_AGENT_TELEGRAM_BOT_TOKEN"
 INTEGRATION_POLL_FIELDS = {"dry_run", "max_messages", "retry_pending"}
 INTEGRATION_NOTIFY_FIELDS = {"limit", "chat_id"}
 INTEGRATION_MAX_MESSAGES = 50
+#: What a caller may say to the send route: *which* approved draft, and whether it is only a preview. Nothing
+#: else - no recipient, no subject, no body, no channel. Those live on the record a human reviewed, and a route
+#: that let a workflow supply them would let a workflow decide what a prospect reads.
+INTEGRATION_SEND_FIELDS = {"outreach_id", "dry_run", "expected_fingerprint", "confirmation", "actor", "note"}
+INTEGRATION_RECONCILE_FIELDS = {"outreach_id", "limit"}
+INTEGRATION_CHECK_FIELDS: set[str] = set()
+#: Refusals that mean "the records say no", as opposed to "your request was malformed". A workflow that sees one
+#: of these must not retry: an attempt that is *uncertain* is answered with the same 409 as a blocked one, and
+#: `retry_allowed: false`, precisely so a scheduler cannot turn a timeout into two emails to the same person.
+OUTBOUND_STATE_CODES = {"NOT_APPROVED", "APPROVAL_STALE", "APPROVAL_UNBOUND", "CONTACT_BLOCKED",
+                        "ADDRESS_SUPPRESSED", "SEND_UNCERTAIN", "SENDING_DISABLED", "ALREADY_SENT",
+                        "DRAFT_UNSAFE", "RECIPIENT_UNPARSEABLE", "PREVIEW_UNAVAILABLE", "DEPLOYMENT_STALE",
+                        "LEAD_NO_LONGER_QUALIFIED", "LIVE_EFFECTS_DISABLED", "SEND_CLIENT_UNAVAILABLE",
+                        "MESSAGE_NOT_COMPOSABLE", "OUTREACH_ALREADY_SENT", "OUTREACH_NOT_APPROVED",
+                        "CONTACT_LIMIT_REACHED", "SEND_UNRESOLVED", "PROJECT_CLOSED", "OUTREACH_LEAD_MISMATCH",
+                        "PROVIDER_RECEIPT_UNAVAILABLE", "EVIDENCE_REQUIRED",
+                        # A hold is a state, not a malformed request: the same 409 the mailbox-cycle route gives.
+                        "AUTOMATION_HELD"}
+OUTBOUND_NOT_FOUND_CODES = {"OUTREACH_NOT_FOUND", "OUTREACH_ID_REQUIRED"}
+
+
+def _send_report(answer: dict) -> dict:
+    """What the send route tells a caller: state, ids, and codes - never a contact address or a body.
+
+    The recipient is masked here rather than inside the executor because this is the only place it is
+    *unnecessary*: the operator already knows which draft they named, and a log or a workflow execution record
+    should not hold a prospect's address.
+    """
+    from .telegram_limits import mask_address
+
+    keep = ("dry_run", "send_state", "code", "outreach_id", "lead_id", "engagement_id", "provider_message_id",
+            "result", "verified", "provider_verified", "verify_detail", "content_fingerprint", "delivery_status",
+            "outreach_status", "contact_established", "counts_as_contact", "delivery_note", "reason", "unchanged",
+            "next_action", "capability_note")
+    report = {key: answer[key] for key in keep if key in answer}
+    for key in ("would_contact",):
+        if answer.get(key):
+            report[key + "_masked"] = mask_address(str(answer[key]))
+    report.setdefault("send_state", "UNKNOWN")
+    report["recipient_omitted"] = True
+    if report.get("code") == "SEND_UNCERTAIN":
+        report["retry_allowed"] = False
+        report["attempt_may_have_landed"] = True
+    return report
+
+
+def _mask_or_none(value) -> str | None:
+    from .telegram_limits import mask_address
+
+    return mask_address(str(value)) if value else None
 
 
 def integration_report(store, *, environment: dict[str, str] | None = None) -> dict:
@@ -76,6 +126,30 @@ def integration_report(store, *, environment: dict[str, str] | None = None) -> d
     from .health import channels_section
 
     return channels_section(store, environment=environment)
+
+
+def live_outreach_allowed(env: dict[str, str] | None = None) -> bool:
+    """Whether this machine is allowed to put an outbound email in a stranger's inbox.
+
+    An environment switch rather than a request field, so no caller - not a workflow, not an operator's script,
+    not this API - can escalate itself into being able to send. The Telegram surface reads the same flag.
+    """
+    import os
+
+    source = os.environ if env is None else env
+    return (source.get("AI_WEBSITE_AGENT_ALLOW_LIVE_OUTREACH") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def build_outbound_sender(store, *, allow_live: bool | None = None):
+    """The application's one send path, wired to the same store, ledger, and outreach service as every other.
+
+    Nothing is contacted while building it: the Gmail send credential is only opened when a real send is asked
+    for, which is what lets ``dry_run`` and the outbox read stay free of any provider.
+    """
+    from .outbound import ApprovedOutboundSender
+
+    return ApprovedOutboundSender(store, allow_live=(live_outreach_allowed() if allow_live is None
+                                                     else bool(allow_live)))
 
 
 def build_email_poller(store, *, max_messages: int | None = None):
@@ -438,6 +512,20 @@ def make_handler(
                     if path == ["integrations", "status"]:
                         # Configuration and recorded cursors only; a GET never contacts a provider.
                         return self._json(200, integration_report(service.store))
+                    if path == ["integrations", "outbox"]:
+                        # A reading of the ledger, never a queue this process drains: GET cannot send anything,
+                        # and every row says why it is or is not sendable right now.
+                        from .outbound import OutboundRefusal
+
+                        try:
+                            report = build_outbound_sender(service.store).outbox(
+                                limit=(query.get("limit") or ["10"])[0])
+                        except OutboundRefusal as error:
+                            return self._json(400, {"error": str(error), "error_code": error.code})
+                        report["outbox"] = [{key: value for key, value in row.items() if key != "recipient"}
+                                           | {"recipient_masked": _mask_or_none(row.get("recipient"))}
+                                           for row in report["outbox"]]
+                        return self._json(200, report)
                     if path == ["attention"]:
                         return self._json(200, operator_attention(service.store, repository_root=repo_path))
                     if path == ["deployment-status"]:
@@ -560,7 +648,8 @@ def make_handler(
                                 for_action=(query.get("for_action") or ["SEND"])[0],
                             ))
                         if first == "integrations":
-                            raise BadRequest("Integrations are reported at GET /integrations/status; the ledger "
+                            raise BadRequest("Integrations are reported at GET /integrations/status, and the "
+                                             "approved-but-unsent list at GET /integrations/outbox; the ledger "
                                              "namespace has no integration routes.",
                                              code="LEDGER_ROUTE_NOT_FOUND")
                         if first == "inbound":
@@ -733,6 +822,100 @@ def make_handler(
                               f"recorded={report.get('recorded', 0)} unmatched={report.get('unmatched', 0)}")
             return self._json(200, report)
 
+        def _handle_email_send(self) -> None:
+            """Send one *already approved* draft, or preview it. The approval is not in this body.
+
+            The caller names an ``outreach_id`` and optionally confirms a content fingerprint; everything about
+            the message itself - recipient, subject, wording, channel - is read from the record a human reviewed.
+            The executor then re-reads the lead, the opt-out list, the contact budget, the hold, and the approval
+            digest before it contacts Gmail, and it writes the attempt down first, so this route cannot be used
+            to send un-reviewed text and a retry of it cannot mail the same prospect twice.
+            """
+            from .controls import held
+            from .outbound import OutboundRefusal
+
+            payload = self._integration_body(INTEGRATION_SEND_FIELDS)
+            dry_run = bool(payload.get("dry_run"))
+            # No dry_run exception here, even though a dry run would contact nobody: this route's answer while a
+            # hold is on is "held", for every kind of send call, so an operator cannot read a difference between
+            # the two as a difference in the hold's strength. Reads stay open - see GET /integrations/outbox.
+            if held(service.store):
+                return self._json(409, {"error": "Automated dispatch is on hold, so no send was attempted.",
+                                        "error_code": "AUTOMATION_HELD", "retry_allowed": False,
+                                        # Both flags are the point of this answer: a held send is not a failed
+                                        # send, and nothing was handed to a provider that would have to be
+                                        # reconciled before any retry is considered.
+                                        "attempt_may_have_landed": False,
+                                        "next_action": "release the hold, then decide again; nothing was sent and "
+                                                       "no attempt was recorded"})
+            sender = build_outbound_sender(service.store)
+            try:
+                answer = sender.send(str(payload.get("outreach_id") or "").strip(),
+                                     actor_id=str(payload.get("actor") or "api-caller")[:120],
+                                     identity_source="integration_api_bearer_token",
+                                     dry_run=dry_run,
+                                     expected_fingerprint=payload.get("expected_fingerprint"),
+                                     confirmation=payload.get("confirmation"),
+                                     note=payload.get("note"))
+            except OutboundRefusal as error:
+                status = 400 if error.code in OUTBOUND_NOT_FOUND_CODES else (
+                    409 if error.code in OUTBOUND_STATE_CODES else 400)
+                return self._json(status, {"error": str(error), "error_code": error.code,
+                                           "retry_allowed": False,
+                                           "attempt_may_have_landed": error.code == "SEND_UNCERTAIN",
+                                           **({"next_action": error.next_action} if error.next_action else {})})
+            except Exception as error:  # noqa: BLE001 - a fault is typed, never a stack trace to the client
+                log_event(severity="ERROR", operation="http.post", code="OUTBOUND_SEND_FAULT",
+                          message="the send executor faulted", detail=self._detail(error))
+                return self._json(500, {"error": "The send could not be carried out.", "error_code": "SEND_FAULT",
+                                        "retry_allowed": False,
+                                        "next_action": "check `email-send-status` before anything is retried: an "
+                                                       "answer that never arrived is not an answer"})
+            body = _send_report(answer)
+            log_event(severity="INFO" if body["send_state"] == "SENT" else "WARNING",
+                      operation="http.post", code=f"SEND_{str(body['send_state']).upper()}",
+                      message=f"outreach {payload.get('outreach_id')} send attempt: {body['send_state']}",
+                      outreach_id=payload.get("outreach_id"), lead_id=body.get("lead_id"))
+            return self._json(200, body)
+
+        def _handle_email_reconcile(self) -> None:
+            """Ask the account what happened to an unanswered send. Read-only, and never a resend."""
+            from .outbound import OutboundRefusal
+
+            payload = self._integration_body(INTEGRATION_RECONCILE_FIELDS)
+            sender = build_outbound_sender(service.store)
+            try:
+                report = sender.reconcile(str(payload.get("outreach_id") or "").strip() or None,
+                                          limit=payload.get("limit") or 25)
+            except OutboundRefusal as error:
+                return self._json(400 if error.code in OUTBOUND_NOT_FOUND_CODES else 409,
+                                  {"error": str(error), "error_code": error.code,
+                                   **({"next_action": error.next_action} if error.next_action else {})})
+            except Exception as error:  # noqa: BLE001
+                return self._json(500, {"error": "The account could not be consulted.",
+                                        "error_code": "RECONCILE_FAULT", "detail": self._detail(error)})
+            return self._json(200, report)
+
+        def _handle_email_send_check(self) -> None:
+            """Exchange the send credential's token and send nothing. The honest limit of a connectivity check.
+
+            A success here means "Google accepted this machine's send-only refresh token". It says nothing about
+            whether any message was delivered, and it is not what makes sending allowed - the approval records and
+            the live-effect flag are.
+            """
+            sender = build_outbound_sender(service.store)
+            try:
+                answer = sender.verify()
+            except Exception as error:  # noqa: BLE001 - a credential fault is a configuration answer
+                return self._json(503, {"error": self._detail(error) or "the send credential could not be used",
+                                        "error_code": str(getattr(error, "code", "SEND_CHECK_FAILED")),
+                                        "sent": False,
+                                        "next_action": getattr(error, "next_action", None) or
+                                                       "re-authorize the send-only scope on this machine"})
+            return self._json(200, {**answer, "sent": False,
+                                    "capability_note": "a token exchange only: no message was composed, sent, or "
+                                                        "read"})
+
         def _handle_telegram_notify(self) -> None:
             """Push what needs a person to the operator's chat. Read-only apart from the send itself."""
             from integrations.telegram import ProviderError, TelegramBotApi, telegram_config
@@ -777,6 +960,12 @@ def make_handler(
                         return self._handle_inbound_event()
                     if path == ["integrations", "email", "poll"]:
                         return self._handle_email_poll()
+                    if path == ["integrations", "email", "send"]:
+                        return self._handle_email_send()
+                    if path == ["integrations", "email", "reconcile"]:
+                        return self._handle_email_reconcile()
+                    if path == ["integrations", "email", "send-check"]:
+                        return self._handle_email_send_check()
                     if path == ["integrations", "telegram", "notify"]:
                         return self._handle_telegram_notify()
                     payload = self._body()

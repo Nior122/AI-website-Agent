@@ -411,6 +411,7 @@ def channels_section(store, *, environment: dict[str, str] | None = None) -> dic
     the commands that ask the provider.
     """
     from integrations.gmail import gmail_config
+    from integrations.gmail_send import send_config
     from integrations.telegram import telegram_config
 
     from .controls import hold_view
@@ -418,6 +419,7 @@ def channels_section(store, *, environment: dict[str, str] | None = None) -> dic
     source = os.environ if environment is None else environment
     telegram = telegram_config(source)
     gmail = gmail_config(source)
+    sending = send_config(source)
     hold = hold_view(store)
     sync = dict((((getattr(store, "state", {}) or {}).get("provider_sync") or {}).get("gmail_inbox")) or {})
     return {
@@ -444,16 +446,43 @@ def channels_section(store, *, environment: dict[str, str] | None = None) -> dic
             "scope": gmail["scope"],
             "query": gmail["query"],
             "fetch_format": gmail["fetch_format"],
-            "capabilities": "read-only list/get/history; no send, delete, modify, or mark-as-read exists here",
+            "capabilities": "inbound: read-only list/get/history; no send, delete, modify, or mark-as-read "
+                            "exists in that adapter",
             "sync": {key: sync.get(key) for key in ("last_run_at", "last_history_id", "cycles", "last_error")
                      if sync.get(key) is not None} or None,
+            "inbound_adapter": "integrations/gmail.py (read-only by construction)",
+            # Separate because it is a separate interface with separate credentials: the read-only client cannot
+            # send, and a send scope cannot read. One block per capability is what keeps that visible in a report.
+            "sending": {
+                "state": sending["state"],
+                "scope": sending["scope"],
+                "enabled": sending["enabled"],
+                "configured": sending["configured"],
+                "missing": sending["missing"],
+                "account": sending["account"],
+                "unsubscribe_url_configured": bool(sending["unsubscribe_url"]),
+                "verification": "unverified unless `email-send-check` has run on this machine",
+                "outbound_adapter": "integrations/gmail_send.py (one method: send)",
+                "send_enabled_for_jobs_or_workflows": (sending["state"] in {"configured", "verified"}
+                                                       and sending["enabled"]),
+                "live_effect_flag": "AI_WEBSITE_AGENT_ALLOW_LIVE_OUTREACH",
+                "live_effect_enabled": (source.get("AI_WEBSITE_AGENT_ALLOW_LIVE_OUTREACH") or "").strip()
+                                       in {"1", "true", "yes", "on"},
+                "results_provable": ["REPORTED_SENT", "ACCEPTED_BY_PROVIDER"],
+                "results_unreachable": ["VERIFIED_DELIVERED"],
+                "delivery_receipt_available": False,
+                "next_action": sending["next_action"],
+            },
             "live_account_verified": False,
+            "live_sending_verified": False,
         },
         "automation_hold": {"held": hold["held"], "set_at": hold.get("set_at"), "set_by": hold.get("set_by"),
                             "reason": hold.get("reason"), "unreadable": hold.get("unreadable", False),
                             "verified": True},
         "meaning": ("configured means this environment names the credential and the allow-list; whether the "
-                    "provider accepts them is only known by asking, which these commands do not do"),
+                    "provider accepts them is only known by asking, which these commands do not do. Receiving "
+                    "and sending are reported separately because they are separately authorized: an inbound "
+                    "mailbox that works says nothing about a send credential, and vice versa."),
     }
 
 
@@ -917,6 +946,7 @@ def operator_attention(store, *, now: datetime | None = None, repository_root: P
     job_items, counts = job_attention_items(store, now=now, limit=limit)
     project_items = project_attention_items(store, limit=limit)
     engagement_items = engagement_attention_items(store, limit=limit)
+    outbound_items = outbound_attention_items(store, limit=limit)
     deployment_attention: list[dict] = []
     if include_deployment:
         deployment_attention = deployment_report(
@@ -947,7 +977,8 @@ def operator_attention(store, *, now: datetime | None = None, repository_root: P
                             "inspect the control record; dispatch is not held by it"),
             "recorded_at": hold.get("set_at"),
         })
-    items = [*job_items, *project_items, *deployment_attention, *control_items, *engagement_items][:limit]
+    items = ([*job_items, *project_items, *deployment_attention, *control_items, *engagement_items,
+              *outbound_items][:limit])
     grouped: dict[str, int] = {}
     for item in items:
         grouped[str(item.get("kind"))] = grouped.get(str(item.get("kind")), 0) + 1
@@ -957,12 +988,104 @@ def operator_attention(store, *, now: datetime | None = None, repository_root: P
         "requires_attention": bool(items),
         "counts": {**counts, "jobs": counts["total"], "projects": len(project_items),
                    "deployments": len(deployment_attention), "engagements": len(engagement_items),
+                   "outbound": len(outbound_items),
+                   "sends_uncertain": sum(1 for item in outbound_items if item.get("code") == "SEND_UNCERTAIN"),
                    "inbound": sum(1 for item in engagement_items if item.get("kind") == "inbound"),
                    "automation_held": hold["held"], "by_kind": grouped},
         "projects": projects,
         "items": items,
         "meaning": "Attention means a recorded state that a human must clear; the system will not retry it on its own.",
     }
+
+
+def outbound_attention_items(store, *, limit: int = ATTENTION_LIMIT) -> list[dict]:
+    """Approved sends waiting on a person, and attempts the provider left unresolved - same item shape as the rest.
+
+    Four conditions, all read from records rather than inferred from the passage of time:
+    ``APPROVAL_AWAITING_SEND`` (a human approved content nobody has sent - this is not urgent and must not become
+    urgent by itself), ``APPROVAL_STALE`` or ``APPROVAL_UNBOUND`` (the approval no longer covers the draft's
+    words), ``SEND_UNCERTAIN`` (submitted with no definitive answer: the one condition that must not be left
+    alone, because resending could mail the same prospect twice), and ``SEND_FAILED`` (a reported failure awaiting
+    a deliberate retry). Nothing here enqueues, sends, retries, or releases anything, and no address or body is
+    named: the outreach id is the pointer, as it is everywhere else in this report.
+    """
+    from outreach.service import content_fingerprint
+
+    items: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(code: str, message: str, action: str, *, row: dict, status: Any, recorded_at: Any) -> None:
+        key = (code, str(row.get("outreach_id") or ""))
+        if key in seen:
+            return
+        seen.add(key)
+        project = (store.state.get("projects") or {}).get(str(row.get("project_id") or "")) or {}
+        items.append({
+            "kind": "outbound",
+            "code": code,
+            "project_id": row.get("project_id"),
+            "lead_id": row.get("lead_id"),
+            "build_id": row.get("build_id"),
+            "validation_id": None,
+            "deployment_id": row.get("deployment_id"),
+            "status": status,
+            "stage": project.get("current_stage"),
+            "review_status": project.get("review_status"),
+            "message": message,
+            "recorded_at": recorded_at,
+            "age_seconds": recorded_age_seconds(recorded_at),
+            "next_action": action,
+            "outreach_id": row.get("outreach_id"),
+        })
+
+    for row in (store.state.get("outreach") or {}).values():
+        if not isinstance(row, dict) or str(row.get("channel") or "") != "EMAIL":
+            continue
+        state = str(row.get("send_state") or "")
+        status = str(row.get("status") or "")
+        if state in {"SENDING", "UNCERTAIN"}:
+            add("SEND_UNCERTAIN",
+                f"Outreach {row.get('outreach_id')} was submitted to the provider for lead {row.get('lead_id')} "
+                "and gave no definitive answer"
+                + (f" (provider id {row.get('send_provider_message_id')})" if row.get("send_provider_message_id")
+                   else " (no provider id was returned)") + f": {str(row.get('send_state_detail') or '')[:160]}",
+                "run `python3 -m orchestration.cli email-reconcile` or /reconcile in Telegram; do not resend - "
+                "Gmail has no idempotency key, so a retry could mail the same prospect twice",
+                row=row, status=state or "SENDING", recorded_at=row.get("send_attempted_at") or row.get("reviewed_at"))
+        elif state == "FAILED":
+            add("SEND_FAILED",
+                f"Outreach {row.get('outreach_id')} for lead {row.get('lead_id')} was reported as a failed send "
+                f"({str(row.get('failure_detail') or row.get('send_state_detail') or '')[:160]}); the human "
+                "approval still stands.",
+                "decide deliberately: /sent shows the recorded answer, and a retry reuses this draft rather than "
+                "starting a new review",
+                row=row, status="SEND_FAILED", recorded_at=row.get("failed_at") or row.get("reviewed_at"))
+        elif status == "READY_TO_SEND":
+            approved_digest = row.get("approved_content_fingerprint")
+            if not approved_digest:
+                add("APPROVAL_UNBOUND",
+                    f"Outreach {row.get('outreach_id')} was approved before approvals were bound to a content "
+                    "digest, so no send path will act on it",
+                    "have a human approve the current draft again (/review, then the approve button)",
+                    row=row, status=status, recorded_at=row.get("reviewed_at") or row.get("generated_at"))
+            elif approved_digest != content_fingerprint(row):
+                add("APPROVAL_STALE",
+                    f"The approved content of outreach {row.get('outreach_id')} no longer matches the draft: the "
+                    "recipient, subject, body, or preview URL moved after the review",
+                    "/review the draft and have a human decide on the current content; an approval is never "
+                    "re-used for different words",
+                    row=row, status=status, recorded_at=row.get("reviewed_at"))
+            else:
+                add("APPROVAL_AWAITING_SEND",
+                    f"Outreach {row.get('outreach_id')} for lead {row.get('lead_id')} was approved "
+                    f"{row.get('reviewed_at') or 'at a recorded time'} by "
+                    f"{row.get('reviewed_by') or 'an unattributed reviewer'} and no send is recorded for it; "
+                    "nothing sends from this notice",
+                    "an operator names the draft and confirms it (/outbox then /send, or email-send with "
+                    "--allow-live); a workflow cannot take this item as a cue to send",
+                    row=row, status=status, recorded_at=row.get("reviewed_at") or row.get("generated_at"))
+    items.sort(key=lambda item: (str(item.get("code")), str(item.get("outreach_id"))))
+    return items[:max(1, int(limit))]
 
 
 def workflow_execution_report(store, *, now: datetime | None = None) -> dict:

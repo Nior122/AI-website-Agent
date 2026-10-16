@@ -56,6 +56,23 @@ DECISION_BUTTONS = {
     "rj": ("REJECTED", "rejected"),
     "ch": ("CHANGES_REQUESTED", "sent back for changes"),
 }
+#: Every other button this bot understands, as ``prefix -> (action, button label)``. Each one carries the id and
+#: the fingerprint of the record it was drawn for, and every press re-checks that pair before acting: a keyboard
+#: in a chat thread is a *shortcut to a decision*, never the decision itself.
+ACTION_BUTTONS = {
+    "dm": ("demo_approve", "Approve for preview"),
+    "pq": ("publish_queue", "Queue preview publish"),
+    "pv": ("send_preview", "Show what would be sent"),
+    "se": ("send_arm", "Send this"),
+    "sc": ("send_confirm", "Confirm: send it now"),
+    "rc": ("send_reconcile", "Ask the account what happened"),
+}
+#: The confirmation word a typed send command needs, beside the content fingerprint. A repeated command must not
+#: mail the same prospect twice, so the second act has to be a different act.
+SEND_CONFIRMATION_WORD = "SEND"
+#: The machine-level switch a real send additionally needs. Kept out of the bot's own settings on purpose: an
+#: operator who wants this deployment to be unable to send, whatever a chat says, can turn it off globally.
+LIVE_OUTREACH_ENV = "AI_WEBSITE_AGENT_ALLOW_LIVE_OUTREACH"
 CONFIRM_WORD_LIMIT = 24
 
 
@@ -88,6 +105,12 @@ COMMANDS: dict[str, tuple[str, str, bool]] = {
     "reject": ("Reject one draft, twice confirmed", "<outreach_id> [--note ...] --confirm <code>", True),
     "changes": ("Send one draft back for changes, twice confirmed", "<outreach_id> [--note ...] --confirm <code>", True),
     "package": ("Demo and review-package references for a project", "<project_id>", False),
+    "demo": ("Approve the current build for preview publishing", "<project_id> [--note ...] [--confirm <code>]", True),
+    "outbox": ("Approved drafts that have not been sent, and what blocks each", "[limit]", False),
+    "send": ("Preview or perform one approved send, twice confirmed", "<outreach_id> [--dry | --confirm send]", True),
+    "sent": ("What the provider actually said about one send", "<outreach_id>", False),
+    "reconcile": ("Ask the account about a send that got no answer", "[outreach_id]", False),
+    "optout": ("Record that a business asked not to be contacted", "<lead_id> --note ... [--confirm <code>]", True),
     "pause": ("Hold automated dispatch", "[reason]", True),
     "resume": ("Release the hold", "", True),
     "hold": ("Is the system held, and by whom", "", False),
@@ -106,7 +129,8 @@ class TelegramOperatorBot:
                  ledger: EngagementLedger | None = None, intake: Any = None, outreach: Any = None,
                  allowed_user_ids: Iterable[int] = (), allowed_chat_ids: Iterable[int] = (),
                  actor: str = "telegram", notification_seen: set[str] | None = None,
-                 row_limit: int = DEFAULT_ROWS) -> None:
+                 row_limit: int = DEFAULT_ROWS, outbound_client: Any = None,
+                 readback_client: Any = None) -> None:
         self.api = api
         self.store = store
         self.jobs = jobs or JobService(store)
@@ -116,6 +140,10 @@ class TelegramOperatorBot:
         self.allowed_user_ids = {int(value) for value in allowed_user_ids if str(value).strip()}
         self.allowed_chat_ids = {int(value) for value in allowed_chat_ids if str(value).strip()}
         self.actor = str(actor or "telegram")[:120]
+        #: Injectable for tests and for an operator running the bot behind a proxy; never a second send path.
+        self.outbound_client = outbound_client
+        self.readback_client = readback_client
+        self._outbound_service = None
         self.row_limit = max(1, min(int(row_limit or DEFAULT_ROWS), MAX_ROWS))
         #: In-process only, by design: the durable record of a condition is the job/project/inbound row itself,
         #: and a second store of "things we already told you" would be a second source of truth.
@@ -139,6 +167,27 @@ class TelegramOperatorBot:
 
             self.outreach = OutreachService(self.store)
         return self.outreach
+
+    def _outbound(self):
+        """The send executor, built on first use so a bot that only reads never needs Gmail credentials.
+
+        ``allow_live`` is not the bot's decision: it mirrors the machine-level flag, so an operator who has not
+        turned sending on for this deployment gets a refusal that names the flag instead of a message in a
+        prospect's inbox. Everything else - approval, opt-out, budget, staleness - is the executor's and the
+        ledger's, re-read at send time.
+        """
+        if self._outbound_service is None:
+            from .outbound import ApprovedOutboundSender
+
+            self._outbound_service = ApprovedOutboundSender(
+                self.store, outreach=self._outreach(), ledger=self.ledger, allow_live=self.live_outreach_allowed(),
+                client=self.outbound_client, readback_client=self.readback_client)
+        return self._outbound_service
+
+    def live_outreach_allowed(self) -> bool:
+        import os
+
+        return (os.environ.get(LIVE_OUTREACH_ENV) or "").strip().lower() in {"1", "true", "yes", "on"}
 
     # ------------------------------------------------------------------ entry points
 
@@ -221,10 +270,14 @@ class TelegramOperatorBot:
         if not self._authorized(user_id=user_id, chat_id=chat_id):
             return self._refuse_unauthorized(chat_id=chat_id, user_id=user_id, update_id=callback_query_id)
         prefix, _, remainder = str(data or "").partition(":")
-        if prefix not in DECISION_BUTTONS:
+        if prefix not in DECISION_BUTTONS and prefix not in ACTION_BUTTONS:
             self._ack(callback_query_id, text="That button is not one of mine.", alert=True)
             return {"handled": False, "code": "CALLBACK_UNKNOWN"}
         outreach_id, _, fingerprint = remainder.rpartition(":")
+        if prefix in ACTION_BUTTONS:
+            return self._action_callback(ACTION_BUTTONS[prefix][0], outreach_id.strip(), fingerprint.strip(),
+                                         user_id=user_id, chat_id=chat_id, message_id=message_id,
+                                         callback_query_id=callback_query_id, prefix=prefix)
         answer = self._record_decision(DECISION_BUTTONS[prefix][0], outreach_id.strip(), fingerprint.strip(),
                                       user_id=user_id)
         self._ack(callback_query_id, text=answer["notice"], alert=answer.get("alert", False))
@@ -889,9 +942,10 @@ class TelegramOperatorBot:
         if not isinstance(record, dict):
             return {"text": f"No outreach record '{outreach_id}'. /review lists what exists.",
                     "code": "OUTREACH_NOT_FOUND"}
-        remainder, note = _split_note(" ".join(tokens[1:]))
+        rest, confirm_from_line = _split_confirm(" ".join(tokens[1:]))
+        remainder, note = _split_note(rest)
         flags, _positional = _parse_flags(remainder)
-        confirm = str(flags.get("confirm") or "").strip()
+        confirm = str(confirm_from_line or flags.get("confirm") or "").strip()
         if not confirm:
             prompt = self._review_prompt(record)
             prompt["text"] = ("Confirm against the state you are reading. To record this decision, re-send with "
@@ -953,6 +1007,492 @@ class TelegramOperatorBot:
                 "status": reviewed.get("status")}
 
     # ------------------------------------------------------------------ helpers
+
+    # ------------------------------------------------------------------ demo approval (the gated preview publish)
+
+    def _command_demo(self, argument: str, *, user_id: int | None, chat_id: int | None = None,
+                      **_: Any) -> dict[str, Any]:
+        """/demo <project_id> [--note ...] [--confirm <code>]: the approval a preview publish needs.
+
+        The decision goes through the store's own review mechanism - :meth:`tracking.store.TrackingStore.record_review`
+        with ``APPROVED`` + ``PREVIEW_DEPLOYMENT`` - because that is where a reviewer-authenticated decision is
+        turned into the build-local capability the publish step verifies. Nothing in this command publishes, and
+        supplying a URL or a project id is not an approval: the confirmation code is the project's state digest, so
+        a press that arrives after the build, validation, or stage moved is refused as stale.
+        """
+        tokens = argument.split()
+        if not tokens:
+            raise TelegramBotError("Name the project: /demo project-0002 --note \"looked at the copy\" "
+                                   "--confirm <code>.", code="PROJECT_ID_REQUIRED")
+        project_id = tokens[0]
+        project = (self.store.state.get("projects") or {}).get(project_id)
+        if not isinstance(project, dict):
+            return {"text": f"No project '{project_id}'. /leads and /status show what this system is working on.",
+                    "code": "PROJECT_NOT_FOUND"}
+        rest, confirm_from_line = _split_confirm(" ".join(tokens[1:]))
+        remainder, note = _split_note(rest)
+        flags, _positional = _parse_flags(remainder)
+        confirm = str(confirm_from_line or flags.get("confirm") or "").strip()
+        gate = self._demo_gate(project_id)
+        prompt = self._demo_prompt(project_id, gate)
+        if not confirm:
+            prompt["text"] = ("Nothing has been approved yet. If the demo is right, re-send with "
+                              f"--confirm {prompt['fingerprint']}\n\n" + prompt["text"])
+            prompt["code"] = "CONFIRMATION_REQUIRED"
+            prompt.pop("reply_markup", None)
+            return prompt
+        if len(confirm) > CONFIRM_WORD_LIMIT:
+            raise TelegramBotError(f"A confirmation code is at most {CONFIRM_WORD_LIMIT} characters.",
+                                   code="CONFIRMATION_INVALID")
+        if confirm != prompt["fingerprint"]:
+            prompt["text"] = ("That code does not match the project's current state, so nothing was approved "
+                              f"(current code {prompt['fingerprint']}). The build, validation, deployment, or "
+                              "stage moved since you were shown it.\n\n" + prompt["text"])
+            prompt["code"] = "DEMO_STALE"
+            return prompt
+        return self._record_demo_approval(project_id, note=note or None, user_id=user_id, chat_id=chat_id)
+
+    def _demo_gate(self, project_id: str) -> dict[str, Any]:
+        """The answer the publish step itself will compute, read-only. ``None`` when the store refuses to say."""
+        try:
+            return self.store.authorize_preview_deployment(project_id)
+        except Exception as error:  # noqa: BLE001 - a gate that cannot be read is a fact to report, not a crash
+            return {"authorized": False, "code": "GATE_UNREADABLE",
+                    "reason": sanitize_diagnostic(error).get("detail") or "the durable approval could not be read",
+                    "next_action": "check the tracking state file; nothing publishes on an unreadable gate"}
+
+    def _demo_prompt(self, project_id: str, gate: dict[str, Any]) -> dict[str, Any]:
+        snapshot = self.store.snapshot(project_id)
+        project, build = snapshot.get("project") or {}, snapshot.get("latestBuild") or {}
+        validation, deployment = (snapshot.get("latestValidation") or {},
+                                  snapshot.get("latestDeployment") or {})
+        lead = snapshot.get("lead") or {}
+        fingerprint = demo_fingerprint(project)
+        lines = [
+            f"{project_id} - {_name(lead)}",
+            f"Stage: {project.get('current_stage')} · review: {project.get('review_status')} · build "
+            f"{project.get('assigned_build_id') or 'unassigned'} (status {build.get('status') or 'unrecorded'})",
+            f"Validation: {(validation or {}).get('status') or 'none'} · deployment: "
+            f"{(deployment or {}).get('deployment_status') or 'none'}",
+            f"Gate right now: {gate.get('code') or 'UNKNOWN'} - {str(gate.get('reason') or 'authorized')[:220]}",
+        ]
+        if (deployment or {}).get("deployment_url"):
+            lines.append(f"Published preview: {deployment['deployment_url']}")
+        lines.append("Approving here records your decision through the same review mechanism the CLI uses, which "
+                     "materializes the approval the publish step verifies. It does not publish anything by itself, "
+                     "and no URL, job, or workflow can approve on your behalf.")
+        buttons = inline_keyboard([[(ACTION_BUTTONS["dm"][1], f"dm:{project_id}:{fingerprint}")]])
+        return {"text": "\n".join(lines), "reply_markup": buttons, "code": "DEMO_PROMPT", "project_id": project_id,
+                "fingerprint": fingerprint, "gate_code": gate.get("code"), "authorized": bool(gate.get("authorized"))}
+
+    def _record_demo_approval(self, project_id: str, *, note: str | None, user_id: int | None,
+                              chat_id: int | None = None) -> dict[str, Any]:
+        gate = self._demo_gate(project_id)
+        snapshot = self.store.snapshot(project_id)
+        project = snapshot.get("project") or {}
+        assigned = project.get("assigned_build_id")
+        if gate.get("code") == "ALREADY_DEPLOYED":
+            return {"text": (f"{project_id} already has a published preview for build {assigned}; there is "
+                             "nothing to approve for publishing. The URL is in /package "
+                             f"{project_id}, and outreach preparation needs the post-deployment APPROVED decision "
+                             "(that is a different action from this one)."),
+                    "code": "DEMO_ALREADY_PUBLISHED", "project_id": project_id}
+        if project.get("current_stage") != "READY_FOR_REVIEW":
+            return {"text": (f"{project_id} is at {project.get('current_stage')}; a preview publish approval is "
+                             "only accepted for a build that has finished validating and is waiting at "
+                             "READY_FOR_REVIEW. /package shows what is waiting."),
+                    "code": "DEMO_NOT_AT_REVIEW_GATE", "project_id": project_id}
+        # The fallback note that keeps other decisions attributable is not enough here: a preview approval is the
+        # step that lets a build be published, and "approved from Telegram" with nothing about what was read would
+        # leave the next reader with a claim and no evidence. So this one command requires the note explicitly.
+        if not str(note or "").strip():
+            return {"text": ("A preview approval needs your note saying what you looked at, because the durable "
+                             "record is what a later reader has to go on. Re-send with --note \"...\"."),
+                    "code": "REVIEW_NOTES_REQUIRED", "alert": True}
+        notes = _note_for(note, user_id)
+        try:
+            entry = self.store.record_review(project_id, "APPROVED", notes, reviewer=f"telegram:{user_id}",
+                                             build_id=assigned, action="PREVIEW_DEPLOYMENT",
+                                             identity_source="telegram_operator_allowlist")
+        except ValueError as error:
+            # The store's own gate is the authority; its reason is the operator's answer, verbatim but masked.
+            return {"text": f"The review mechanism refused this approval: {safe_outbound_text(str(error))}",
+                    "code": "DEMO_APPROVAL_REFUSED", "alert": True}
+        log_event(severity="INFO", operation="telegram.demo_approval", code="DEMO_APPROVAL_RECORDED",
+                  message=f"project {project_id} approved for preview publishing",
+                  project_id=project_id, build_id=assigned, chat_id=chat_id, actor=f"telegram:{user_id}")
+        fresh = self._demo_gate(project_id)
+        lines = [f"Approval recorded for {project_id} (build {assigned}) by telegram:{user_id}.",
+                 f"Publish gate now says: {fresh.get('code') or 'UNKNOWN'}.",
+                 "Nothing has been published yet. The publish step re-verifies this approval itself, so a queue "
+                 "that runs later still needs the artifact to be unchanged."]
+        buttons = inline_keyboard([[(ACTION_BUTTONS["pq"][1],
+                                    f"pq:{project_id}:{demo_fingerprint(self.store.state['projects'][project_id])}")]])
+        lines.append("Queueing the publish job is a separate press; the job will not run while automated dispatch "
+                     "is held, and a held attempt is recorded as blocked rather than dropped.")
+        return {"text": "\n".join(lines), "reply_markup": buttons, "code": "DEMO_APPROVAL_RECORDED",
+                "project_id": project_id, "review_id": (entry or {}).get("review_id"),
+                "edit_text": f"Demo approved for {project_id} (build {assigned}) by telegram:{user_id}. "
+                             "Publish gate: " + str(fresh.get("code")),
+                "edit_markup": {"inline_keyboard": []}}
+
+    def _queue_publish(self, project_id: str, *, user_id: int | None, chat_id: int | None) -> dict[str, Any]:
+        """Enqueue the existing DEPLOY job for the approved build. Enqueue only - the worker publishes."""
+        gate = self._demo_gate(project_id)
+        if not gate.get("authorized") and gate.get("code") != "ALREADY_DEPLOYED":
+            return {"text": (f"Refused: the durable gate says {gate.get('code') or 'UNKNOWN'}, so a publish job "
+                             "would only fail. /demo shows what the gate needs."),
+                    "code": "PUBLISH_NOT_AUTHORIZED", "alert": True}
+        project = (self.store.state.get("projects") or {}).get(project_id) or {}
+        assigned = project.get("assigned_build_id")
+        job_id = f"job-deploy-{project_id}-{assigned}".replace(":", "-")
+        try:
+            job = self.jobs.create("DEPLOY", job_id=job_id, project_id=project_id, lead_id=project.get("lead_id"),
+                                   build_id=assigned, dry_run=False,
+                                   idempotency_key=f"telegram-demo-publish:{project_id}:{assigned}",
+                                   input={"requested_by": f"telegram:{user_id}",
+                                           "approval_source": "telegram_preview_approval",
+                                           "note": "queued from Telegram after an explicit preview approval"})
+        except ValueError as error:
+            return {"text": f"The queue refused: {safe_outbound_text(str(error))}", "code": "PUBLISH_JOB_REFUSED",
+                    "alert": True}
+        log_event(severity="INFO", operation="telegram.publish_queue", code="PUBLISH_JOB_QUEUED",
+                  message=f"DEPLOY job queued for {project_id}", job_id=job.get("job_id"), project_id=project_id,
+                  chat_id=chat_id, actor=f"telegram:{user_id}")
+        return {"text": (f"Queued {job.get('job_id')} (DEPLOY, build {assigned}, not a dry run). It runs when a "
+                         "worker takes it, and only if the approval still matches the artifact; a hold stops it "
+                         "and records the reason. /status {job} to watch it.").replace("{job}", str(job.get("job_id"))),
+                "code": "PUBLISH_JOB_QUEUED", "job_id": job.get("job_id")}
+
+    # ---------------------------------------------------------------- approved outbound sends
+
+    def _command_outbox(self, argument: str, **_: Any) -> dict[str, Any]:
+        """/outbox [limit]: the approved drafts, each with the reason it is or is not sendable now."""
+        limit = _int((argument.split() or [None])[0]) or self.row_limit
+        try:
+            report = self._outbound().outbox(limit=min(max(1, limit), MAX_ROWS))
+        except Exception as error:  # noqa: BLE001 - an unreadable outbox is reported, never guessed
+            return {"text": f"The outbox could not be read: {safe_outbound_text(str(error))}",
+                    "code": "OUTBOX_UNREADABLE"}
+        rows = report.get("outbox") or []
+        if not rows:
+            return {"text": (f"No {report['status']} email draft exists. /review shows drafts awaiting a "
+                             "decision; an approval is what puts a draft here."), "code": "OUTBOX_EMPTY"}
+        lines = [f"{report['total']} approved draft(s); sending needs an explicit confirmation per draft."]
+        for row in rows:
+            state = row.get("send_state")
+            blockers = [str(item.get("code")) for item in row.get("blockers") or []]
+            lines.append(f"• {row['outreach_id']} | {_name({'business_name': row.get('business_name')})} | "
+                         f"{mask_address(row.get('recipient') or '')} | {row.get('status')}"
+                         + (f" | {state}" if state else "")
+                         + (f" | blocked: {', '.join(blockers)}" if blockers else " | ready"))
+        if report.get("automation_held"):
+            lines.append(f"Hold in effect: {report['gate_reason']}")
+        lines.append(f"Sending is {report['sending_state']} on this machine"
+                     + ("" if report["sending_enabled"] else " - no message can leave until it is configured, "
+                                                               "enabled, and checked")
+                     + ("." if report["live_effect_enabled"] else
+                        f"; {LIVE_OUTREACH_ENV} is not set, so a confirmed send is still refused"))
+        lines.append("Open one to read it and arm a send: /send <outreach_id>. Nothing here sends anything.")
+        return {"text": "\n".join(lines), "code": "OUTBOX_LIST", "count": len(rows),
+                "sendable": report.get("sendable"), "sending_state": report.get("sending_state")}
+
+    def _command_send(self, argument: str, *, user_id: int | None, chat_id: int | None = None,
+                      **_: Any) -> dict[str, Any]:
+        """/send <outreach_id> [--dry | --confirm send]. Two acts, never one.
+
+        The first appearance arms it: it shows the recipient, the subject, the fingerprint, and the live
+        eligibility answer - never the prospect's message body, which stays out of a chat thread like every other
+        outbound body in this bot. The second act (the confirm button or ``--confirm send``) performs one send,
+        and only if nothing moved in between.
+        """
+        tokens = argument.split()
+        if not tokens:
+            raise TelegramBotError("Name the draft: /send outreach-0001 --dry", code="OUTREACH_ID_REQUIRED")
+        outreach_id = tokens[0]
+        rest, confirm_from_line = _split_confirm(" ".join(tokens[1:]))
+        remainder, note_from_line = _split_note(rest)
+        flags, _positional = _parse_flags(remainder)
+        note = note_from_line or (flags.get("note") if isinstance(flags.get("note"), str) else None)
+        dry_run = "dry" in flags or str(flags.get("mode") or "").lower() == "dry"
+        supplied = str(confirm_from_line or flags.get("confirm") or "").strip()
+        if supplied.upper() == SEND_CONFIRMATION_WORD:
+            return self._perform_send(outreach_id, user_id=user_id, chat_id=chat_id, dry_run=False, note=note)
+        answer = self._arm_send(outreach_id, user_id=user_id, dry_run=dry_run)
+        if supplied and answer.get("code") == "SEND_ARMED":
+            # A word that is nearly right gets its own answer instead of the same prompt an unconfirmed command
+            # produces: an operator should not have to guess which half of their command was ignored.
+            answer["text"] = (f"That is not the confirmation word this build accepts, so nothing was sent. The word "
+                              f"is {SEND_CONFIRMATION_WORD}, exactly - and pressing the button below does the same "
+                              "thing as typing it.\n\n" + answer["text"])
+            answer["code"] = "CONFIRMATION_MISMATCH"
+        return answer
+
+    def _arm_send(self, outreach_id: str, *, user_id: int | None, dry_run: bool = False) -> dict[str, Any]:
+        try:
+            view = self._outbound().preview(outreach_id)
+        except Exception as error:  # noqa: BLE001 - a refusal from the executor is an operator-facing answer
+            return self._outbound_refusal(error)
+        blockers = [str(item.get("code")) for item in view.get("blockers") or []]
+        composition = view.get("composition") or {}
+        lines = [
+            f"{outreach_id} - {_name({'business_name': view.get('business_name')})} ({view.get('channel')})",
+            f"To: {mask_address(view.get('recipient') or '')} · lead {view.get('lead_id')} · project "
+            f"{view.get('project_id')}",
+            f"Subject: {view.get('subject') or '(none)'}",
+            f"Approved: {view.get('reviewed_at') or 'unrecorded'} by {view.get('reviewed_by') or 'unattributed'} "
+            f"({view.get('reviewer_identity_source') or 'identity source unrecorded'})",
+            f"Content fingerprint: {view.get('content_fingerprint')}",
+        ]
+        if view.get("status") == "SEND_FAILED":
+            lines.append("This draft's last attempt failed; sending again reuses the same approval and counts as "
+                         "another attempt.")
+        if blockers:
+            lines.append("Blocked: " + ", ".join(blockers))
+            lines.append("Fix what the block names. A send is never forced past it - an opt-out outranks any "
+                         "approval, and a stale approval is not re-used.")
+        else:
+            lines.append(f"Provider request shape: {composition.get('provider')} "
+                         f"{composition.get('endpoint')} ({composition.get('size_bytes')} bytes, "
+                         f"threading: {(composition.get('threading') or {}).get('basis')}, "
+                         f"List-Unsubscribe: {'set' if composition.get('list_unsubscribe_present') else 'not set'})")
+            if not dry_run:
+                lines.append("The body is not reproduced here: this bot does not put a prospect's message in a "
+                             "chat thread. Read it in the review package or with `python3 -m tracking.cli "
+                             f"outreach {view.get('project_id')} --outreach-id {outreach_id}`.")
+        if dry_run:
+            answer = self._perform_send(outreach_id, user_id=user_id, dry_run=True)
+            answer["text"] = "\n".join(lines) + "\n\n" + answer["text"]
+            return answer
+        if blockers:
+            return {"text": "\n".join(lines), "code": "SEND_BLOCKED", "outreach_id": outreach_id,
+                    "blockers": blockers}
+        buttons = inline_keyboard([[(ACTION_BUTTONS["sc"][1],
+                                    f"sc:{outreach_id}:{view.get('content_fingerprint')}"),
+                                    ("Preview only (no provider contact)",
+                                     f"pv:{outreach_id}:{view.get('content_fingerprint')}")]])
+        lines.append("Pressing confirm sends one email to that address. There is no undo, and no retry: an "
+                     "unanswered provider response is reconciled, never resent.")
+        return {"text": "\n".join(lines), "reply_markup": buttons, "code": "SEND_ARMED",
+                "outreach_id": outreach_id, "fingerprint": view.get("content_fingerprint")}
+
+    def _perform_send(self, outreach_id: str, *, user_id: int | None, chat_id: int | None = None,
+                      dry_run: bool = False, note: str | None = None) -> dict[str, Any]:
+        """One attempt, from a button or a typed command alike. The executor holds every gate."""
+        try:
+            answer = self._outbound().send(outreach_id, actor_id=f"telegram:{user_id}",
+                                          identity_source="telegram_operator_allowlist", dry_run=dry_run,
+                                          confirmation=SEND_CONFIRMATION_WORD if not dry_run else None,
+                                          note=note)
+        except Exception as error:  # noqa: BLE001 - OutboundRefusal and ledger faults both land here
+            return self._outbound_refusal(error)
+        if dry_run:
+            composition = answer.get("composition") or {}
+            return {"text": (f"Dry run for {outreach_id}: would compose {composition.get('size_bytes')} bytes to "
+                             f"{mask_address(str(answer.get('would_contact') or ''))} via "
+                             f"{composition.get('provider')}/{composition.get('endpoint')}. No provider was "
+                             "contacted, no budget consumed, nothing recorded. Fingerprint "
+                             f"{answer.get('content_fingerprint')}."),
+                    "code": "SEND_DRY_RUN", "outreach_id": outreach_id}
+        state = answer.get("send_state")
+        lines = [f"{outreach_id}: {state}" + (f" ({answer.get('code')})" if answer.get("code") else "")]
+        if state == "SENT":
+            lines.append(f"Result: {answer.get('result')} · provider message id: "
+                         f"{answer.get('provider_message_id') or 'none returned'} · verified: "
+                         f"{bool(answer.get('provider_verified'))}")
+            lines.append(str(answer.get("delivery_note") or ""))
+            lines.append("That is the provider's answer to being handed the message. It is not a delivery, read, "
+                         "or open receipt, and this system cannot claim one.")
+        elif state == "UNCERTAIN":
+            lines.append(f"Reason: {answer.get('reason')}")
+            lines.append(str(answer.get("next_action") or "reconcile it; do not resend"))
+        elif state == "FAILED":
+            lines.append(f"The provider refused it: {answer.get('reason')}")
+            lines.append("Recorded as a failure: the lead was not reached, the approval still stands, and the "
+                         "attempt counted against the contact budget.")
+        buttons = (inline_keyboard([[(ACTION_BUTTONS["rc"][1],
+                                     f"rc:{outreach_id}:{answer.get('content_fingerprint') or ''}")]])
+                   if state == "UNCERTAIN" else None)
+        log_event(severity="INFO" if state == "SENT" else "WARNING", operation="telegram.outbound_send",
+                  code=f"SEND_{str(state).upper()}", message=f"outreach {outreach_id} send attempt: {state}",
+                  outreach_id=outreach_id, lead_id=answer.get("lead_id"), chat_id=chat_id,
+                  actor=f"telegram:{user_id}")
+        return {"text": "\n".join(piece for piece in lines if piece), "code": f"SEND_{str(state).upper()}",
+                "outreach_id": outreach_id, "reply_markup": buttons,
+                "edit_text": f"{outreach_id}: {state}" + (f" ({answer.get('result')})" if answer.get("result")
+                                                           else ""), "edit_markup": {"inline_keyboard": []}}
+
+    def _outbound_refusal(self, error: BaseException) -> dict[str, Any]:
+        """Turn any executor or ledger refusal into an operator answer. Nothing here retries anything."""
+        code = str(getattr(error, "code", "") or "SEND_REFUSED")
+        detail = safe_outbound_text(str(error))
+        next_action = getattr(error, "next_action", None)
+        text = f"Refused ({code}): {detail}" + (f"\nNext: {next_action}" if next_action else "")
+        return {"text": text[:1800], "code": code, "alert": True}
+
+    def _command_sent(self, argument: str, **_: Any) -> dict[str, Any]:
+        """/sent <outreach_id>: what the provider said about one draft, and what that does not prove."""
+        tokens = argument.split()
+        if not tokens:
+            raise TelegramBotError("Name the draft: /sent outreach-0001", code="OUTREACH_ID_REQUIRED")
+        try:
+            report = self._outbound().status(tokens[0])
+        except Exception as error:  # noqa: BLE001
+            return self._outbound_refusal(error)
+        row = (report.get("sends") or [{}])[0]
+        lines = [f"{row.get('outreach_id')}: {row.get('status')}"
+                 + (f" / send_state {row.get('send_state')}" if row.get("send_state") else ""),
+                 f"result: {row.get('result') or 'none'} · provider_verified: {bool(row.get('verified'))} · "
+                 f"delivery_status: {row.get('delivery_status') or 'unrecorded'} · attempts: "
+                 f"{row.get('send_attempts')}",
+                 f"provider message id: {row.get('provider_message_id') or 'none'} · asked by "
+                 f"{row.get('actor') or 'unrecorded'} ({row.get('identity_source') or 'no source'})"]
+        if row.get("detail"):
+            lines.append(f"detail: {str(row['detail'])[:220]}")
+        lines.append("An id that was read back proves the provider accepted this message. Nothing here can prove "
+                     "delivery, reading, or a reply - and no elapsed time will ever be reported as one of those.")
+        return {"text": "\n".join(lines), "code": "SEND_STATUS", "outreach_id": row.get("outreach_id"),
+                "verified": bool(row.get("verified")), "send_state": row.get("send_state")}
+
+    def _command_reconcile(self, argument: str, **_: Any) -> dict[str, Any]:
+        """/reconcile [outreach_id]: look in the account for a send that got no definitive answer."""
+        target = (argument.split() or [None])[0]
+        try:
+            report = self._outbound().reconcile(target) if target else self._outbound().reconcile()
+        except Exception as error:  # noqa: BLE001
+            return self._outbound_refusal(error)
+        rows = report.get("rows") or []
+        if not rows:
+            return {"text": "No send attempt is unresolved, so there is nothing to reconcile. That is the good "
+                            "answer; it does not mean every earlier send worked.", "code": "RECONCILE_EMPTY"}
+        lines = [f"{len(rows)} unresolved attempt(s) looked at; {len(report.get('reconciled') or [])} resolved."]
+        for row in rows:
+            lines.append(f"• {row.get('outreach_id')} | {row.get('send_state')} | "
+                         + (f"resolved as {row.get('outcome')}" if row.get("resolved")
+                            else f"{row.get('code')}: {str(row.get('detail') or row.get('next_action'))[:160]}"))
+        lines.append("A resolved attempt is recorded through the same ledger path as a send; an unresolved one "
+                     "stays unresolved and keeps blocking that draft. Nothing here ever resends.")
+        return {"text": "\n".join(lines), "code": "RECONCILE_REPORT",
+                "resolved": len(report.get("reconciled") or []), "unresolved": len(report.get("unresolved") or [])}
+
+    def _command_optout(self, argument: str, *, user_id: int | None, **_: Any) -> dict[str, Any]:
+        """/optout <lead_id> --note "<what they said>" [--confirm <code>].
+
+        A prospect's request not to be contacted outranks every approval in this system, so recording one takes
+        one confirmation and no reason at all - but it takes *evidence*, because the ledger's opt-out row is what
+        a later reader audits. Revoking one is not offered here at all: that belongs to the CLI, with a named
+        reason, so a chat message can never re-open a blocked contact.
+        """
+        tokens = argument.split()
+        if not tokens:
+            raise TelegramBotError("Name the lead: /optout lead-0002 --note \"asked us to stop emailing\"",
+                                   code="LEAD_ID_REQUIRED")
+        lead_id = tokens[0]
+        rest, confirm_from_line = _split_confirm(" ".join(tokens[1:]))
+        remainder, note = _split_note(rest)
+        flags, _positional = _parse_flags(remainder)
+        confirm = str(confirm_from_line or flags.get("confirm") or "").strip()
+        if not note:
+            return {"text": ("An opt-out needs the words that say so, because it changes what the pipeline is "
+                             'allowed to do. Re-send with --note "what they asked for".'),
+                    "code": "EVIDENCE_REQUIRED", "alert": True}
+        fingerprint = optout_fingerprint(lead_id)
+        if confirm != fingerprint:
+            return {"text": ("This blocks every open follow-up for that lead and stops future contact. Re-send "
+                             f"with --confirm {fingerprint} to record it.\n\nLead {lead_id}: "
+                             f"{_name((self.store.state.get('leads') or {}).get(lead_id) or {})}"),
+                    "code": "CONFIRMATION_REQUIRED"}
+        try:
+            block = self.ledger.record_opt_out(lead_id, channel="EMAIL",
+                                               reason="recorded by the operator from Telegram",
+                                               evidence_note=f"telegram:{user_id}: {note}"[:400])
+        except LedgerError as error:
+            return {"text": f"The ledger refused that ({getattr(error, 'code', 'LEDGER_ERROR')}): {error}",
+                    "code": getattr(error, "code", "LEDGER_ERROR"), "alert": True}
+        except ValueError as error:
+            return {"text": f"Refused: {safe_outbound_text(str(error))}", "code": "OPERATION_REFUSED",
+                    "alert": True}
+        log_event(severity="INFO", operation="telegram.opt_out", code="OPT_OUT_RECORDED",
+                  message=f"opt-out recorded for {lead_id}", lead_id=lead_id, actor=f"telegram:{user_id}")
+        return {"text": (f"Opt-out recorded for {lead_id} ({block.get('block_id')}). Sends and follow-ups for "
+                         "that lead and channel are blocked from now on; the block is the ledger's, not the bot's, "
+                         "so every path honours it. Lifting it takes a named reason in the CLI."),
+                "code": "OPT_OUT_RECORDED", "lead_id": lead_id, "block_id": block.get("block_id")}
+
+    def _action_callback(self, action: str, identifier: str, fingerprint: str, *, user_id: int | None,
+                         chat_id: int | None, message_id: int | None, callback_query_id: str,
+                         prefix: str) -> dict[str, Any]:
+        """One press, one action, re-authorized and re-checked here.
+
+        ``handle_callback`` already refused an unlisted account for this update; a press is not treated as
+        inherited trust. The fingerprint is re-derived from the record as it is *now*, so a keyboard left in a
+        thread from yesterday cannot approve or send anything whose content has moved.
+        """
+        if not identifier:
+            self._ack(callback_query_id, text="That button did not name a record.", alert=True)
+            return {"handled": False, "code": "CALLBACK_UNBOUND"}
+
+        def result(answer: dict[str, Any]) -> dict[str, Any]:
+            self._ack(callback_query_id, text=str(answer.get("text") or answer.get("notice") or "")[:200],
+                      alert=bool(answer.get("alert")))
+            return {"handled": True, "code": answer.get("code") or "ACTION_RECORDED",
+                    "notice": answer.get("text") or answer.get("notice"), "reply_markup": answer.get("reply_markup"),
+                    "edit_text": answer.get("edit_text"), "edit_markup": answer.get("edit_markup"),
+                    "action": action, "identifier": identifier}
+
+        if action == "demo_approve":
+            project = (self.store.state.get("projects") or {}).get(identifier)
+            if not isinstance(project, dict) or demo_fingerprint(project) != fingerprint:
+                return result({"code": "DEMO_STALE", "alert": True,
+                               "text": ("That project changed since this prompt was drawn, so the press records "
+                                        "nothing. /demo " + identifier + " to decide on the current state.")})
+            return result(self._record_demo_approval(identifier, note=None, user_id=user_id, chat_id=chat_id))
+        if action == "publish_queue":
+            project = (self.store.state.get("projects") or {}).get(identifier)
+            if not isinstance(project, dict) or demo_fingerprint(project) != fingerprint:
+                return result({"code": "DEMO_STALE", "alert": True,
+                               "text": "The project state moved; nothing was queued. /demo " + identifier
+                                       + " to see the gate again."})
+            return result(self._queue_publish(identifier, user_id=user_id, chat_id=chat_id))
+        record = (self.store.state.get("outreach") or {}).get(identifier)
+        if not isinstance(record, dict):
+            return result({"code": "OUTREACH_NOT_FOUND", "alert": True,
+                           "text": f"No outreach record '{identifier}'. Nothing changed."})
+        from .outbound import content_fingerprint
+
+        if content_fingerprint(record) != fingerprint:
+            return result({"code": "APPROVAL_STALE", "alert": True,
+                           "text": (f"{identifier} changed since that screen was drawn, so this press acts on "
+                                    f"nothing. Current fingerprint {content_fingerprint(record)}; /send "
+                                    f"{identifier} to look again.")})
+        if action in {"send_preview", "send_arm"}:
+            view = self._outbound().preview(identifier)
+            text = _send_prompt_text(view, dry=True)
+            blockers = [str(item.get("code")) for item in view.get("blockers") or []]
+            if blockers:
+                return result({"code": "SEND_BLOCKED", "alert": True,
+                               "text": text + "\nNothing was sent and nothing will be from this keyboard."})
+            if action == "send_arm":
+                armed = self._arm_send(identifier, user_id=user_id)
+                return {"handled": True, "code": str(armed.get("code") or "SEND_ARMED"),
+                        "notice": armed.get("text"), "reply_markup": armed.get("reply_markup"),
+                        "edit_text": armed.get("text"), "edit_markup": armed.get("reply_markup"),
+                        "action": action, "identifier": identifier}
+            buttons = inline_keyboard([[("Send this (shows the full check first)",
+                                        f"se:{identifier}:{view.get('content_fingerprint')}")]])
+            return {"handled": True, "code": "SEND_PREVIEW", "notice": text, "reply_markup": buttons,
+                    "edit_text": text, "edit_markup": buttons, "action": action, "identifier": identifier}
+        if action == "send_confirm":
+            return result(self._perform_send(identifier, user_id=user_id, chat_id=chat_id, dry_run=False))
+        if action == "send_reconcile":
+            answer = self._outbound().reconcile(identifier)
+            row = (answer.get("rows") or [{}])[0]
+            return result({"code": str(row.get("code") or ("RECONCILED" if row.get("resolved") else "RECONCILE_FAILED")),
+                           "text": (f"{identifier}: " + (f"resolved as {row.get('outcome')} from "
+                                                          f"{row.get('evidence')}" if row.get("resolved") else
+                                                          f"{row.get('code')}: {row.get('next_action') or row.get('detail')}"))})
+        return result({"code": "ACTION_UNSUPPORTED", "alert": True,
+                       "text": f"I do not know the action '{action}'."})
 
     def _lead_for(self, record: dict[str, Any]) -> dict[str, Any]:
         return (self.store.state.get("leads") or {}).get(str(record.get("lead_id") or "")) or {}
@@ -1076,8 +1616,46 @@ def draft_fingerprint(record: dict[str, Any]) -> str:
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:10]
 
 
+def demo_fingerprint(record: dict[str, Any]) -> str:
+    """The state a preview approval is about: build, validation, deployment, stage, and prior approval.
+
+    Same purpose as :func:`draft_fingerprint` one level up the pipeline - make staleness *decidable* - and the
+    same non-secret: it is a checksum of a record the operator was shown, not a token. A press whose code does not
+    match means something moved under it, which is the only way a chat thread can turn into a wrong publish.
+    """
+    material = "\x1f".join(str((record or {}).get(key) or "") for key in
+                           ("project_id", "lead_id", "assigned_build_id", "latest_validation_id",
+                            "latest_deployment_id", "current_stage", "review_status", "approved_build_id",
+                            "approved_action"))
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:10]
+
+
+def optout_fingerprint(lead_id: str) -> str:
+    """A short confirmation code bound to one lead id, so an opt-out is aimed at a named business."""
+    return hashlib.sha256(f"opt-out\x1f{lead_id}".encode("utf-8")).hexdigest()[:8]
+
+
 def decision_status(decision: str) -> str:
     return {"APPROVED": "READY_TO_SEND", "REJECTED": "REJECTED", "CHANGES_REQUESTED": "CHANGES_REQUESTED"}[decision]
+
+
+def _send_prompt_text(view: dict[str, Any], *, dry: bool) -> str:
+    """The one-draft summary a button shows. No body: contact details stay out of the chat thread."""
+    lines = [f"{view.get('outreach_id')} - {view.get('business_name') or 'unknown business'}",
+             f"To: {mask_address(view.get('recipient') or '')}",
+             f"Subject: {view.get('subject') or '(none)'} · approved {view.get('reviewed_at') or 'unrecorded'}",
+             f"Fingerprint: {view.get('content_fingerprint')}"]
+    blockers = [str(item.get("code")) for item in view.get("blockers") or []]
+    if blockers:
+        lines.append("Blocked: " + ", ".join(blockers))
+    else:
+        lines.append("Sendable." + (" Nothing was sent by showing you this." if dry else
+                                   " Confirm to send once."))
+    if dry:
+        composition = view.get("composition") or {}
+        lines.append(f"Would compose {composition.get('size_bytes')} bytes for "
+                     f"{composition.get('provider')}/{composition.get('endpoint')}; no provider contact.")
+    return "\n".join(piece for piece in lines if piece)
 
 
 def _decision_line(outreach_id: str, record: dict[str, Any], verb: str) -> str:
@@ -1215,6 +1793,20 @@ def _parse_flags(text: str) -> tuple[dict[str, Any], list[str]]:
         positional.append(token)
         index += 1
     return flags, positional
+
+
+def _split_confirm(text: str) -> tuple[str, str]:
+    """Pull ``--confirm <code>`` out of a line before :func:`_split_note` swallows it into the note.
+
+    The order the help text documents - ``/demo p --note "..." --confirm abc`` - otherwise lands the confirmation
+    code inside the free-text note, because a note deliberately runs to the end of the line. Splitting the
+    confirmation out first keeps both readable and neither ambiguous.
+    """
+    match = re.search(r"--confirm(?:=|\s+)(\S+)", str(text or ""))
+    if not match:
+        return str(text or "").strip(), ""
+    remainder = (str(text[:match.start()]) + " " + str(text[match.end():])).strip()
+    return remainder, match.group(1).strip()
 
 
 def _split_note(text: str) -> tuple[str, str]:

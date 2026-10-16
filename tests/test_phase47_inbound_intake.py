@@ -436,7 +436,10 @@ class AttentionTests(InboundTestCase):
         for item in report["items"]:
             self.assertTrue(base <= set(item), sorted(base - set(item)))
             # The extras name the record the item is about, which is what makes the item actionable.
-            self.assertTrue(set(item) - base <= {"dedupe_key", "follow_up_id", "proposal_id", "engagement_id"},
+            # (Phase 49 added "outreach_id" to the permitted identifiers: a send item is about one draft, and
+            # naming it is what lets an operator act without guessing which record the code was talking about.)
+            self.assertTrue(set(item) - base <= {"dedupe_key", "follow_up_id", "proposal_id", "engagement_id",
+                                                  "outreach_id"},
                             sorted(set(item) - base))
 
     def test_attention_is_bounded_deduped_and_not_an_alert(self) -> None:

@@ -44,6 +44,12 @@ Only these are read. A variable that is absent is not an error unless the "Requi
 | `AI_WEBSITE_AGENT_GMAIL_REFRESH_TOKEN` | The long-lived read-only refresh token `gcloud`/OAuth playground mints for that client. Exchanged per cycle, never written to state or a log | inbound email: yes | **yes** |
 | `AI_WEBSITE_AGENT_GMAIL_QUERY` / `_MAX_RESULTS` / `_FETCH_FORMAT` | Optional operator defaults (`label:INBOX` / `25`, capped at Google's 500 / `metadata`). `metadata` reads Gmail's snippet only; `minimal` reads no text at all; `full` additionally decodes the first paragraph of the body. A cycle may not be *asked* to widen these over HTTP - a request body field that decides which messages a process downloads is not a workflow's choice | optional | no |
 | `AI_WEBSITE_AGENT_GMAIL_ACCOUNT` | Which mailbox to read (`me` by default). Set it when a service account or delegated mailbox is the one that was authorized | only for a shared/monitored mailbox | no |
+| `AI_WEBSITE_AGENT_GMAIL_SEND_CLIENT_ID` / `_CLIENT_SECRET` | A **second** OAuth client, registered with only `https://www.googleapis.com/auth/gmail.send`. The read-only client's token is never reused for sending and this code will not try: the send adapter has no list, get, or search method, and the read-only adapter has no send method, so the two credentials cannot stand in for each other | outbound sending: **yes** | **yes** |
+| `AI_WEBSITE_AGENT_GMAIL_SEND_REFRESH_TOKEN` | The send-only refresh token for that client. Exchanged per send (and by `email-send-check`, which exchanges one and sends nothing); never written to state, a log line, or an exported workflow | outbound sending: **yes** | **yes** |
+| `AI_WEBSITE_AGENT_EMAIL_SEND_ENABLED` | The operator's switch for the send interface itself (`true`/`1`). Off, the state is `disabled` even with all three credentials present, and `send()` refuses with `SENDING_DISABLED` | outbound sending: **yes** | no |
+| `AI_WEBSITE_AGENT_ALLOW_LIVE_OUTREACH` | A second, independent switch read from this machine's environment: whether a *send executor* may put a message in a stranger's inbox at all. Not a request field, a workflow parameter, or a Telegram argument - no caller can escalate itself into being able to send | outbound sending: **yes** | no |
+| `AI_WEBSITE_AGENT_EMAIL_SEND_FROM` / `_REPLY_TO` | Optional: the address to put in `From`/`Reply-To` when it is not the authenticated account's default. `From` is set only when configured, because letting Gmail use the account's own address is the truthful default; a caller may not set either per message | optional | no |
+| `AI_WEBSITE_AGENT_EMAIL_UNSUBSCRIBE_URL` | The one link that makes `List-Unsubscribe` (plus the one-click header) real. Unset, the header is *omitted* and every send result carries `unsubscribe_notice` saying so - a missing header is reported, never fabricated | recommended | no |
 | `AI_WEBSITE_AGENT_TELEGRAM_API_ROOT` | Overrides the Bot API base URL for a local fake or a test relay. The default is `https://api.telegram.org`; nothing else has to change to run the bot offline | testing only | no |
 
 Local shell, POSIX:
@@ -433,6 +439,12 @@ deployed to Render from within this workspace, and no claim is made that it is r
 | What a human must clear | `python3 -m orchestration.cli attention --brief` | reads; exit 1 when non-empty |
 | Worker died mid-job | `python3 -m orchestration.cli recover-stale` | marks stranded jobs `NEEDS_REVIEW` (`HEARTBEAT_UNDATED`, `HEARTBEAT_EXPIRED`) |
 | Retry what is eligible | `python3 -m orchestration.cli retry-job --job-id <id>` | one attempt, recorded |
+| Does the send credential work? | `python3 -m orchestration.cli email-send-check` | one token exchange; **sends nothing**; `verified`/`unverified`/`inbound_only`/`disabled` |
+| What has been approved and not sent? | `python3 -m orchestration.cli email-outbox [--outbox-status READY_TO_SEND]` | reads; recipients masked, every row carries its live eligibility verdict and content digest |
+| What would this send do? | `python3 -m orchestration.cli email-send --outreach-id <id> --dry-run` | composes the exact request; no provider, no budget, no ledger write |
+| Send it (an operator's act) | `python3 -m orchestration.cli email-send --outreach-id <id> --confirm SEND --allow-live` | one attempt, recorded before the provider is contacted; exit 1 on any refusal |
+| What did the provider say? | `python3 -m orchestration.cli email-send-status [--outreach-id <id>]` | reads the send namespace and the ledger; names what stays unreachable |
+| Close an unanswered attempt | `python3 -m orchestration.cli email-reconcile [<id>]` | reads the account through the read-only interface; **never resends** |
 | Provider outcome and history | `python3 -m orchestration.cli deployment-status` | reads records and the per-build ledger |
 | Correlation for one job | `python3 -m orchestration.cli inspect-job --job-id <id> --history` | reads executions and retry eligibility |
 | Workspace/artifact integrity | `python3 -m tracking.cli check-workspace` | verifies artifact hashes |
@@ -533,4 +545,74 @@ A workspace that has run §8 and cannot reach the provider should stop there wit
 sandbox, a CI runner, or a fresh clone - not a condition to route around by creating `.vercel/project.json`
 by hand, storing a token in the repository, or reporting a dry run as a deployment.
 
-Outreach remains draft-only, and sending is disabled by configuration; this guide does not enable it.
+Outreach drafting remains what it always was: a human approves content, and nothing sends from an approval
+alone. §10 documents the four things that must be true before an approved draft can be sent, and what a send is
+allowed to claim afterwards. This guide describes them; it does not enable them.
+
+---
+
+## 10. Approved outbound sending
+
+Sending exists as an operator-confirmed action on a draft a human already approved. It is reachable from three
+surfaces - `/outbox`, `/send`, and `email-send` - all of which call the same executor
+(`orchestration/outbound.py`), so no surface has a weaker check than another. Four conditions have to hold at the
+moment of the send, and each is read from records rather than from a workflow's memory:
+
+| Condition | What proves it | What the answer looks like when it fails |
+| --- | --- | --- |
+| A human approved *this content* | `approved_content_fingerprint` on the outreach row equals the digest of the recipient, subject, body, and preview URL now | `APPROVAL_STALE` (content moved) or `APPROVAL_UNBOUND` (approved before digests existed) - both refuse before any request is composed |
+| The lead may still be contacted | the ledger's `contact_blocks`, the address suppression derived from them, and `outreach_eligibility(..., for_action="SEND")` | `CONTACT_BLOCKED`, `ADDRESS_SUPPRESSED`, `CONTACT_LIMIT_REACHED`, `SEND_UNRESOLVED`; an opt-out outranks any approval and nothing here releases one |
+| This machine may send at all | `AI_WEBSITE_AGENT_EMAIL_SEND_ENABLED` (the interface), `AI_WEBSITE_AGENT_ALLOW_LIVE_OUTREACH` or `--allow-live` (the executor), and the absence of an automation hold | `disabled`/`inbound_only` in `email-send-check`, `LIVE_EFFECTS_DISABLED`, `409 AUTOMATION_HELD` - each with the exact variable or command to change |
+| The thing being linked still exists | `PREVIEW` (a deployed `https://` URL) and `BUILD_CURRENT` (the approved build is still the assigned one) | `PREVIEW_UNAVAILABLE`, `DEPLOYMENT_STALE`, `LEAD_NO_LONGER_QUALIFIED` |
+
+### What a send may say afterwards
+
+| Recorded result | Evidence required | It does **not** mean |
+| --- | --- | --- |
+| `REPORTED_SENT` | the provider accepted the request and returned an id, and that is all this process has | anything about the mailbox that received it |
+| `ACCEPTED_BY_PROVIDER` | the id was read back through the **read-only** interface and matched on `To` and `Subject` | delivery to an inbox, not to spam, and certainly not that it was read |
+| `SEND_FAILED` | the provider refused before accepting (a 4xx on the request) | a completed approach: the draft stays approved, the attempt counts against the budget, and a retry re-uses the record |
+| `SEND_UNCERTAIN` | the request was submitted and no definitive answer came back (a reset, a 5xx, a body with no id) | permission to resend. It is reconciled with `email-reconcile`, or left unresolved by an operator |
+| `VERIFIED_DELIVERED` | **not reachable from this repository.** Gmail offers no delivery or open receipt, so no code path, route, or CLI flag will record it | - |
+
+A timeout is *uncertain*, not failed, and that distinction is stored durably before the provider is contacted:
+the executor marks the attempt `SENDING`, then writes the outcome. A process that dies between those two writes
+leaves an open attempt, which blocks further sends of that draft until a human reconciles it - the recovery is
+`email-send-status` (which lists unresolved attempts) and `email-reconcile` (which asks the account, never
+resends). Exactly-once sending is not claimed anywhere: Gmail has no idempotency key, so the guarantee this
+system offers is *one provider request per send call, and no second request for an unanswered one*.
+
+### Enabling it, in order
+
+```bash
+# 1. In Google Cloud: a SECOND OAuth client, its only scope gmail.send. Authorize it, then set:
+#    AI_WEBSITE_AGENT_GMAIL_SEND_CLIENT_ID / _CLIENT_SECRET / _REFRESH_TOKEN
+python3 -m orchestration.cli email-send-check          # expect "verified"; nothing is sent
+python3 -m orchestration.cli email-outbox              # what a human has approved and nobody has sent
+python3 -m orchestration.cli email-send --outreach-id outreach-0001 --dry-run
+# 3. Only after an operator has read the dry run: the two switches, explicitly.
+export AI_WEBSITE_AGENT_EMAIL_SEND_ENABLED=true
+python3 -m orchestration.cli email-send --outreach-id outreach-0001 --confirm SEND --allow-live
+python3 -m orchestration.cli email-send-status --outreach-id outreach-0001
+```
+
+Setting all four variables is **not** evidence the channel works, and `preflight` will keep saying so
+(`state: "configured"`, `live_sending_verified: false`) until step 1 has actually exchanged a token on that
+machine. Sending is also unreachable from n8n's exported graph unless an operator edits `07-approved-outbound-send.json`
+and sets the confirmation word in it, and even then the executor refuses without the live-effect flag.
+
+### The preview publish approval, which is a different approval
+
+`/demo <project_id>` in the Telegram bot records a `PREVIEW_DEPLOYMENT` decision through the store's own review
+mechanism - the same `record_review()` path the CLI uses - which materializes the build-local capability file the
+publish step verifies. It requires the operator's note about what they looked at and a confirmation code derived
+from the project's current build, validation, deployment, and stage, so a stale prompt approves nothing. A press
+from an account outside the allow-list authorizes nothing, and a supplied URL authorizes nothing: only the project
+id and the code address a decision. Two consequences are deliberate and stay in the record:
+
+- approving a demo does not approve or send outreach - those remain separate review decisions on separate
+  records (`/outbox` stays empty after a `/demo` approval);
+- the capability file carries `identity_verified: false`. Telegram's numeric user id plus the operator allow-list
+  identifies a person to this application, which is why the decision is attributable; it is not an identity
+  provider, and `VERIFIED_IDENTITY_SOURCES` remains empty. Anyone who needs more than that has to add an
+  authentication mechanism, not edit a flag.

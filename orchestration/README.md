@@ -293,6 +293,24 @@ report on work the application already knows how to do, and no business rule liv
   is counts, ids, dispositions, and codes - `excerpt` is stripped from each result, since a workflow's execution
   log is a poor place for correspondence. It answers `409 AUTOMATION_HELD` **before** contacting Google, and
   `503` when the store refuses to persist.
+- `POST /integrations/email/send` (Phase 49) — one approved draft, one attempt: the body accepts only
+  `outreach_id`, `dry_run`, `expected_fingerprint`, `confirmation`, `actor`, and `note`. There is deliberately no
+  `recipient`, `subject`, or message field, because a caller that could supply content could supply *different*
+  content than the draft a human approved; the message is composed by the application from the approved record and
+  hashed, and `expected_fingerprint` lets a careful caller refuse a draft that moved between being read and being
+  sent. Refusals keep their shape: `400` for an unknown id or a contract problem, `409` for a state that forbids
+  the send (`NOT_APPROVED`, `APPROVAL_STALE`, `CONTACT_BLOCKED`, `SEND_UNCERTAIN`, `AUTOMATION_HELD`,
+  `LIVE_EFFECTS_DISABLED`, …), `500 SEND_FAULT` for an internal fault. `attempt_may_have_landed: false` on a
+  refusal is the answer to "did anything reach Google?", and the recipient in the response is masked.
+- `POST /integrations/email/reconcile` — asks the read-only interface which of the unresolved attempts the account
+  can actually show, and records only what it finds. No id, no claim: `PROVIDER_ID_UNAVAILABLE` is the honest
+  answer after a connection reset, and this route never resends.
+- `POST /integrations/email/send-check` — exchanges the send-only refresh token and sends nothing. `verified` is
+  the strongest offline claim available about that credential, and it says nothing about any message.
+- `GET /integrations/outbox` — the approved-but-unsent list, each row annotated with whether the content still
+  matches the approval and whether the lead may still be contacted, with the recipient masked to
+  `recipient_masked`. A `GET` cannot send anything; there is no route that sends without `confirmation` and the
+  machine's live-effect flag.
 - `POST /integrations/telegram/notify` — pushes what `operator_attention()` already holds through
   `TelegramOperatorBot.notify_once()`, with the same small field allow-list (`chat_id`, `limit`). It answers
   `409` with the named configuration problem (`telegram_config()["code"]`) rather than half-running, and it never
@@ -308,11 +326,28 @@ release), `automation-status`, and `check-alerts --telegram [--notify]`, which a
 existing alert pipeline - it does not start a second alert system, and it persists which alerts it delivered so a
 one-shot cron run cannot re-page the operator about a fault already mentioned.
 
+Phase 49 added the five sending commands to the same parser: `email-send-check`, `email-outbox`
+(`--outbox-status`, `--limit`), `email-send --outreach-id <id>` (`--dry-run`, `--confirm SEND`, `--allow-live`,
+`--expected-fingerprint`, `--actor`, `--note`), `email-send-status`, and `email-reconcile`. Their exit codes are
+the operator's signal: `0` for a read, a dry run, a recorded send, or an unresolved-but-reported attempt; `1` for
+any refusal, printed as JSON on stdout so a script can read the code; `2` for a command that did not name a draft.
+No subcommand runs at import, at startup, or during test discovery - a real provider call needs the command, the
+id, the word `SEND`, and the flag, which is four separate acts and one of them is not this process's to make.
+
 `integrations/` holds the provider-facing code (`http.py`'s timeout-bounded stdlib transport and typed
-`ProviderError`, `telegram.py`, `gmail.py`), `orchestration/telegram_bot.py` and
-`orchestration/telegram_limits.py` hold the bot and its redaction boundary, and `orchestration/email_inbound.py`
-holds the cycle. Nothing in them sends a message to a lead, replies to a customer, or writes an approval without
-the existing review record.
+`ProviderError`, `telegram.py`, `gmail.py`, `gmail_transport.py`, `gmail_send.py`), `orchestration/telegram_bot.py`
+and `orchestration/telegram_limits.py` hold the bot and its redaction boundary,
+`orchestration/email_inbound.py` holds the inbound cycle, and `orchestration/outbound.py` holds the sending
+executor. The two Gmail interfaces are separate on purpose: `gmail.py` (read-only) can list, get, and read history
+and has no send method, while `gmail_send.py` has exactly one - `send()` - no read method, and its own three
+credential variables, so a token minted for one scope cannot be used as the other. `gmail_transport.py` is the
+shared plumbing they both used to duplicate: token exchange, the loopback-refusing request path, error codes, and
+call counters, with the scopes as constructor parameters rather than module constants.
+
+Within that split, nothing replies to a customer, and no surface writes an approval without the existing review
+record. The one thing a human can ask this build to do to a prospect is send an approved draft, and the path runs
+through `ApprovedOutboundSender.send()`: re-check approval binding and ledger eligibility, compose from the record,
+mark the attempt durably, one provider request, then record what the provider actually said.
 
 ### What "needs an operator" now includes
 

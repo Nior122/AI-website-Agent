@@ -62,6 +62,20 @@ a workflow cannot widen them.
   an operator (a refused hold, a mailbox error, a contract refusal), nothing new, and the operator being notified.
   A held automation answers `409` before Google is contacted, and the notify step is deduplicated app-side, so
   running this graph every five minutes cannot re-page anybody about an unchanged record.
+- `07-approved-outbound-send.json` — one operator-confirmed send, expressed as a request to the application:
+  `MANUAL TRIGGER -> send parameters (Set: outreach_id, dry_run=true, confirmation="") -> POST /integrations/email/send
+  -> IF refused -> outcome`, `-> IF provider answered -> outcome (accepted | reported-only)`,
+  `-> POST /integrations/telegram/notify -> IF nothing notified -> outcome`. There is no Gmail credential in this
+  file and no Gmail node in this graph: the send happens inside the application, against its own send-only
+  interface, and the workflow can only ask for the draft an operator already approved. The exported defaults are
+  the safe ones — `dry_run` on and the confirmation word empty — so a fresh import answers
+  `CONFIRMATION_REQUIRED` or `DRY_RUN` and records nothing. A run cannot grant itself approval: eligibility,
+  the opt-out list, the contact budget, the content digest, and the automation hold are all re-checked by the
+  application per request, and `attempt_may_have_landed: false` on every refusal tells a reader that nothing
+  reached a provider. An unanswered provider response arrives as `SEND_UNCERTAIN` with `retry_allowed: false`,
+  and the outcome node tells the operator to reconcile rather than resend — Gmail has no idempotency key, so a
+  retry could mail the same prospect twice.
+
 - `04-recover-and-retry-jobs.json` — recovers stale `RUNNING` jobs (`POST /jobs/recover-stale`), inspects a target job (`GET /jobs/:id`), and safely retries/runs eligible `FAILED`, `QUEUED`, or `NEEDS_REVIEW` jobs (`POST /jobs/:id/retry`).
 
 ### Activating `05` - what an operator actually has to do
@@ -124,6 +138,33 @@ python3 -m orchestration.cli telegram-command --command-text "/status" --user-id
    against a provider it was not given, and cannot approve anything - the approval buttons live in the bot's own
    callback path, where the allow-list is checked per update.
 
+### Activating `07` — a send that stays the operator's decision
+
+`07` is exported inactive, and unlike the others it should stay that way until the sending machine has said yes
+to it three separate times:
+
+```bash
+python3 -m orchestration.cli email-send-check    # configuration + one token exchange, nothing sent
+python3 -m orchestration.cli email-outbox        # what a human has approved and nobody has sent
+python3 -m orchestration.cli email-send --outreach-id <id> --dry-run
+```
+
+1. `email-send-check` is the only command here that touches Google, and it sends nothing: it exchanges the
+   refresh token minted for `gmail.send` and reports `verified`. Until that answer exists, sending state is
+   `configured` at best, and `configured` is a statement about files, not about a working channel.
+2. The workflow's `Set` node holds the only three parameters a send takes — which draft, whether to dry-run, and
+   the confirmation word. Put a real `outreach_id` in it and leave `dry_run` on until an operator has read the
+   preview that id points at. `tests/test_phase42_integration_setup_and_preflight.py` fails if the exported
+   defaults ever drift to `dry_run: false` or a pre-filled confirmation, because the file as exported must be
+   inert.
+3. A schedule on `07` is a *reminder* mechanism, not a sending policy: if it fires for a draft whose content,
+   preview, or opt-out state moved, the application refuses and the run ends at `Outcome - Nothing Sent`. That is
+   the expected behaviour of a correctly imported workflow, not a failure to fix in the graph.
+4. Activating it cannot make the system able to prove delivery. Gmail's send returns a message id and nothing
+   else, so the strongest recorded result is `ACCEPTED_BY_PROVIDER` (id read back from the account through the
+   read-only interface and matched to the approved draft). `VERIFIED_DELIVERED` stays unreachable from every
+   surface, including this one.
+
 ## Local Verification When n8n Binary Is Not Installed
 
 When a live self-hosted n8n runtime (`n8n` CLI or Docker container) is not running in the local environment, `orchestration/n8n_runner.py` (`N8nWorkflowRunner`) validates the exported n8n workflow JSON schema and executes the exact node graph against the live loopback `orchestration.api` HTTP server. Two rules govern that verifier:
@@ -134,7 +175,7 @@ When a live self-hosted n8n runtime (`n8n` CLI or Docker container) is not runni
 ### Checking the workflow configuration before importing
 
 ```bash
-python3 -m orchestration.cli check-n8n                      # all six exports
+python3 -m orchestration.cli check-n8n                      # all seven exports
 python3 -m orchestration.cli check-n8n --workflow path/to.json
 python3 -m orchestration.cli preflight                      # the same section, with more context
 ```

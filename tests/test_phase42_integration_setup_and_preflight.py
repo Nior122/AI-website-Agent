@@ -468,7 +468,9 @@ class IntegrationPreflightTests(unittest.TestCase):
     def test_missing_n8n_configuration_is_a_named_blocker_not_a_crash(self) -> None:
         report = payload_of(self.cli("preflight"))
         automation = report["sections"]["automation_n8n"]
-        self.assertEqual(automation["checked_count"], 6)
+        # One more exported workflow per phase that adds a scheduled surface; the count is the assertion, so a
+        # file that appears in n8n/workflows/ without being reviewed here is a failing test, not an oversight.
+        self.assertEqual(automation["checked_count"], 7)
         self.assertTrue(any("AI_WEBSITE_AGENT_API_URL" in item for item in report["blockers"]),
                         json.dumps(report["blockers"]))
         self.assertFalse(automation["requests_sent"])
@@ -486,25 +488,68 @@ class IntegrationPreflightTests(unittest.TestCase):
 # 4. n8n workflow configuration readiness
 # =============================================================================================
 class N8nWorkflowReadinessTests(unittest.TestCase):
-    def test_the_six_exported_workflows_are_importable_and_inactive(self) -> None:
+    def test_the_seven_exported_workflows_are_importable_and_inactive(self) -> None:
         from orchestration.n8n_runner import workflow_readiness
 
         paths = sorted((REPO_ROOT / "n8n" / "workflows").glob("*.json"))
-        # The count is the count: a sixth exported workflow must be listed here, which is the point - an
+        # The count is the count: an eighth exported workflow must be listed here, which is the point - an
         # export that silently joined the directory would otherwise be validated by nothing.
         self.assertEqual([path.name for path in paths], [
             "01-create-job.json", "02-inspect-job.json", "03-core-lead-to-review-package-pipeline.json",
             "04-recover-and-retry-jobs.json", "05-inbound-response-intake.json",
-            "06-email-cycle-and-operator-notification.json"])
+            "06-email-cycle-and-operator-notification.json", "07-approved-outbound-send.json"])
         report = workflow_readiness(paths, env={"AI_WEBSITE_AGENT_API_URL": "http://127.0.0.1:8787",
                                                 "AI_WEBSITE_AGENT_API_TOKEN": "t"})
-        self.assertEqual(report["importable_count"], 6)
+        self.assertEqual(report["importable_count"], 7)
         self.assertEqual(report["missing_environment"], [])
         self.assertIs(report["requests_sent"], False)
         for entry in report["workflows"]:
             self.assertIs(entry["active_in_export"], False,
                           "an exported workflow that arrives already activated would start running on import")
             self.assertGreater(entry["node_count"], 0)
+
+    def test_the_send_workflow_is_inert_as_exported(self) -> None:
+        """The one exported workflow that *could* contact a prospect must arrive unable to.
+
+        Three properties, each checked in the file itself rather than in a runner: it is inactive, its send node
+        carries no credential of its own, and its parameters make the first run a dry run with no confirmation - so
+        importing it cannot mail anybody, and a real send needs an operator to edit in both the draft id and the
+        word SEND.
+        """
+        import json
+
+        payload = json.loads((REPO_ROOT / "n8n" / "workflows" / "07-approved-outbound-send.json").read_text())
+        self.assertIs(payload["active"], False)
+        # Node types are the real capability surface: this workflow can call one HTTP endpoint of our own API and
+        # nothing else, so it holds no Gmail or Telegram credential and cannot message a business directly. Checking
+        # the types (and the environment names) is meaningful in a way that grepping prose is not.
+        self.assertEqual({node["type"] for node in payload["nodes"]},
+                         {"n8n-nodes-base.manualTrigger", "n8n-nodes-base.set", "n8n-nodes-base.httpRequest",
+                          "n8n-nodes-base.if"})
+        for node in payload["nodes"]:
+            if node["type"] == "n8n-nodes-base.httpRequest":
+                self.assertNotIn("credentials", node, "an exported workflow must not carry a credential reference")
+                self.assertTrue(str(node["parameters"]["url"]).startswith("={{ $env.AI_WEBSITE_AGENT_API_URL }}"),
+                                "every call goes to this application's own API, never to a provider directly")
+        text = json.dumps(payload)
+        self.assertNotIn("$env.AI_WEBSITE_AGENT_GMAIL", text)
+        self.assertNotIn("refresh_token", text)
+        self.assertNotIn("client_secret", text)
+        for forbidden_key in ("password", "api_key", "private_key", "token"):
+            self.assertNotIn(f'"{forbidden_key}"', text)
+        send_node = next(node for node in payload["nodes"] if node["name"] == "Send Approved Draft")
+        self.assertEqual(send_node["type"], "n8n-nodes-base.httpRequest")
+        self.assertIn("/integrations/email/send", send_node["parameters"]["url"])
+        # The exported body has no recipient, subject, or message: those come from the approved record.
+        body = send_node["parameters"]["jsonBody"]
+        for forbidden in ("recipient", "to", "subject", "draft_message", "body", "channel"):
+            self.assertNotIn(f'"{forbidden}":', body)
+        parameters = next(node for node in payload["nodes"] if node["name"] == "Send Parameters")
+        values = parameters["parameters"]["values"]
+        self.assertIs([item for item in values["boolean"] if item["name"] == "dry_run"][0]["value"], True,
+                      "an exported send workflow must default to a dry run")
+        self.assertEqual([item for item in values["string"] if item["name"] == "confirmation"][0]["value"], "",
+                         "an exported send workflow must not carry the confirmation word")
 
     def test_an_unset_environment_variable_is_reported_before_it_becomes_a_mystery_404(self) -> None:
         from orchestration.n8n_runner import workflow_readiness

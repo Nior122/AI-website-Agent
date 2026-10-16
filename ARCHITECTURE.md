@@ -198,15 +198,23 @@ button pressed on a stale prompt, on a draft whose content changed underneath it
 button is refused (`APPROVAL_STALE`, `APPROVAL_MISMATCH`, `APPROVAL_REPLAY`) rather than applied. A typed command
 must name the record and quote that fingerprint back (`CONFIRMATION_REQUIRED`), because a button is a
 confirmation and a typed word is not. Approving an outreach draft marks it `READY_TO_SEND`, which is *not* sent:
-sending remains absent from this build by design, and `outreach_eligibility()` re-checks everything at any future
-send path. **Project-demo approval deliberately stays outside the bot.** The review-package approval that gates a
-preview publish is written by `deployment.authorization.write_approval()` from a machine the reviewer controls, and
-this build exposes no reviewer-authenticated HTTP or CLI surface that could carry a Telegram user id into that
-record - the API's shared bearer token identifies a client, not a person. So the bot sends a read-only
-"demonstration ready for review" notification with the exact command to run and refuses to accept a decision in
-chat; that missing authenticated reviewer interface is recorded in `TASKS.md` as the prerequisite for demo
-approvals over any remote channel, and inventing a Telegram-side approval that writes no reviewable record was
-rejected as the worse failure.
+approval and sending are two acts, and `outreach_eligibility()` is the same guard on both paths, so a future
+sender can never be *less* strict than a hand-typed send report.
+
+**Project-demo approval is the one case where a chat decision is accepted, because it is recorded through the
+mechanism that already owns that decision.** Phase 48 refused it here on the grounds that this build exposed no
+reviewer-authenticated surface - the API's shared bearer token identifies a client, not a person - and Phase 49
+did not answer that by trusting a message. It used the identity Telegram itself supplies: the numeric `from.id`,
+checked against `AI_WEBSITE_AGENT_TELEGRAM_ALLOWED_USER_IDS` before any handler runs. `/demo <project_id>` reads
+the durable gate (`store.authorize_preview_deployment()`), shows the operator what the publish step will verify,
+requires a note about what was looked at plus a confirmation code derived from the project's current build,
+validation, deployment, and stage, and then calls `store.record_review(project_id, "APPROVED", ...,
+reviewer="telegram:<id>", identity_source="telegram_operator_allowlist")` with
+`action="PREVIEW_DEPLOYMENT"`. That is the identical call the CLI makes; the capability file the publish step reads
+is materialized by the store, not by the bot. Supplying a URL, a job, an n8n execution, or a workflow trigger
+authorizes nothing, and the file keeps `identity_verified: false` because an allow-listed Telegram account is not
+an identity provider - `VERIFIED_IDENTITY_SOURCES` is still empty, and that is stated in the record rather than
+papered over. A demo approval approves a *publish*, never an outreach draft, and it sends nothing.
 
 Automation holds are the one state change the bot is allowed to make on its own, and it makes it through
 `orchestration/controls.py`: `set_hold()` / `release_hold()` write one record in `automation_controls`, the job
@@ -248,6 +256,54 @@ the five provider names are the shape an adapter must produce, and selecting one
 provider's own API first. Phase 48 added that reading for one of them - `EMAIL_INBOUND` via Gmail's read-only API -
 so the contract now has an adapter written against it and a documented `messages.list`/`history` capability report;
 the other four names remain shapes with no adapter, and no provider account is authorized from this repository.
+
+## Approved outbound sending, and why there are two Gmail interfaces
+
+A read-only mailbox and a send-capable mailbox are different authorizations, and this repository keeps them in
+different files. `integrations/gmail_transport.py` holds what both need - the OAuth token exchange, the
+timeout-bounded request path that refuses a non-loopback proxy target, Gmail's error codes, and the call/error
+counters - with the scope, its environment variable names, and the "not configured" code as class attributes, so
+neither subclass owns an endpoint that only the other one should have. `integrations/gmail.py` (`GmailClient`)
+adds the four read verbs and has no `send`; `integrations/gmail_send.py` (`GmailSendAdapter`) adds exactly one
+method, `send()`, has no read verb, reads its own three credential variables, and refuses `Cc`/`Bcc`/caller-set
+headers, a second recipient, a fabricated `In-Reply-To`, and any message it did not compose. A token minted for
+`gmail.readonly` cannot be reused to send and the code never tries; a token minted for `gmail.send` cannot list
+somebody's inbox. The scopes are separate consent decisions in the operator's Google account, which is the only
+place that split can be created.
+
+`orchestration/outbound.py` (`ApprovedOutboundSender`) is the only sender in the system, and the whole point of it
+is that it is not a policy engine with its own rules - it is the place where the *existing* policies are read at
+send time:
+
+- **Approval binding.** `outreach.service.content_fingerprint()` digests the recipient, subject, body, preview
+  URL, channel, and personalization points; `review()` stores that digest beside the human's decision, and a send
+  that no longer matches is refused (`APPROVAL_STALE`, or `APPROVAL_UNBOUND` for a draft approved before digests
+  existed). An edit to a body after approval is therefore visible instead of silent, and a reviewer's approval
+  cannot be re-used against different text.
+- **One eligibility source.** `tracking.engagement.outreach_eligibility(..., for_action="SEND")` is consulted for
+  every send, so opt-outs, the per-channel contact budget, an unresolved attempt, and the project state behave
+  identically whether the send came from Telegram, HTTP, the CLI, or n8n. The suppression list the adapter checks
+  is *derived* from the ledger's `contact_blocks` rather than being a second list to forget to update.
+- **The hold.** `orchestration.controls.held()` is read before anything is composed, so one record brakes both
+  jobs and sending.
+- **Four acts, one request.** A real send needs the command, the draft id, the word `SEND` (or a button press
+  carrying that draft's current fingerprint), and `--allow-live` / `AI_WEBSITE_AGENT_ALLOW_LIVE_OUTREACH`. The
+  flag is read from this machine's environment, never from a request body, so no caller escalates itself into
+  being able to send. One call performs at most one provider request: the executor never retries, because Gmail
+  has no idempotency key and a retry of an unanswered request could mail the same prospect twice.
+- **Durable before the network.** The attempt marker (`send_state: SENDING`, actor, identity source, timestamp,
+  fingerprint) is written and flushed before `send()` is called, so a crash mid-send is recoverable evidence
+  rather than an unaccounted action.
+
+Afterwards the record says one of `REPORTED_SENT` (the provider took the request), `ACCEPTED_BY_PROVIDER` (the id
+was read back through the read-only client and matched on recipient and subject), `SEND_FAILED` (refused before
+acceptance - an attempt, not a contact), or `SEND_UNCERTAIN` (submitted, no definitive answer: reconciled, never
+resent). `mark_outreach_sent()` refuses `ACCEPTED_BY_PROVIDER` without a provider receipt and refuses
+`VERIFIED_DELIVERED` from every caller, because Gmail has no delivery or open receipt to read; `DELIVERED` and
+`READ` remain absent from `EVENT_KINDS`, and the ledger keeps `provider_verified` distinct from
+`delivery_status` so "we checked" is never confused with "it arrived". Exactly-once delivery is not claimed and
+cannot be: what this system can promise is one attempt per confirmed send, recorded durably, with the ambiguity of
+an unanswered response preserved rather than resolved by guessing.
 
 ## Website opportunity handoff
 
@@ -312,8 +368,9 @@ limitations this design accepts.
 | `validation/` | Static QA, severity findings, result contracts, and local validation CLI. |
 | `deployment/` | Preview-only Vercel adapter, deployment records, dry-run CLI, approval capability and publish ledger (`authorization.py`), and safety gates. |
 | `tracking/` | Single local JSON source of truth for lead, project, build, validation, deployment, and review history, the engagement/outcome ledger, the authorized inbound intake that feeds it, and the `authorize_preview_deployment` gate. |
-| `outreach/` | Draft-only, evidence-led outreach packages, revision history, and human draft review; no sender or transport. |
-| `orchestration/` | Application-owned job ledger, gating, retry/recovery, worker interface, and optional private API. |
+| `outreach/` | Draft-only, evidence-led outreach packages, revision history, human draft review, and the content fingerprint an approval is bound to; no sender or transport. |
+| `integrations/` | Provider-facing clients only: `gmail.py` (read-only) and `gmail_send.py` (one send verb) over shared `gmail_transport.py`, `telegram.py`, and the stdlib `http.py`. No eligibility rules, no approval logic, no ledger writes - and no credential values in records, logs, or exports. |
+| `orchestration/` | Application-owned job ledger, gating, retry/recovery, worker interface, optional private API, the operator bot and its hold, the inbound email cycle, and `outbound.py`, the only approved sender. |
 | `n8n/` | Inactive self-hosted n8n JSON examples and operating notes; no credentials. |
 | `tests/` | Fixture-only verification; fixtures are not real business data. |
 | `templates/` | Reserved for reusable, generic website templates only. |

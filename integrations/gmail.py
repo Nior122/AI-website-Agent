@@ -25,15 +25,14 @@ import base64
 import re
 import binascii
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any
 
 from orchestration.observability import redact
 
-from .http import DEFAULT_TIMEOUT_SECONDS, ProviderError, provider_request
+from .gmail_transport import GMAIL_API_ROOT, GmailError, GmailTransport
+
 
 GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
-OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
-GMAIL_API_ROOT = "https://gmail.googleapis.com/gmail/v1/users"
 #: Header names as Gmail spells them in ``payload.headers``.
 _ADDRESS_HEADERS = ("From", "Reply-To", "Sender")
 _THREAD_HEADERS = ("Thread-Topic",)
@@ -53,18 +52,6 @@ FETCH_FORMATS = {"minimal", "metadata", "full"}
 MAX_RESULTS_CEILING = 500
 #: Characters of message text the intake is asked to keep. The message stays in Gmail; `message_ref` points home.
 SNIPPET_LIMIT = 900
-#: A refresh token is bound for the life of the process unless Google says otherwise; re-minting per request is
-#: both slower and another chance to leak the secret through a log.
-TOKEN_SKEW_SECONDS = 60
-
-
-class GmailError(ProviderError):
-    """A Gmail fault with a code an operator can act on."""
-
-    def __init__(self, message: str, *, code: str, retryable: bool = False, status: int | None = None,
-                 next_action: str | None = None) -> None:
-        super().__init__(message, code=code, retryable=retryable, status=status)
-        self.next_action = next_action
 
 
 def gmail_config(env: dict[str, str] | None = None) -> dict[str, Any]:
@@ -106,146 +93,27 @@ def _bounded_int(value: Any, *, default: int) -> int:
     return max(1, min(parsed, MAX_RESULTS_CEILING))
 
 
-class GmailClient:
-    """Read-only Gmail access with an OAuth refresh-token exchange, plus one token cache.
+class GmailClient(GmailTransport):
+    """Read-only Gmail access: the verbs below, and nothing else.
 
-    ``transport`` may be injected for tests or an operator's proxy: it receives ``(method, url, params,
-    headers, body)`` and returns the same ``{"status", "json", "text"}`` shape as
+    The point of this class is what it does **not** expose - there is no ``send``, no ``delete``, no ``modify``,
+    no label or thread mutation, and no way to widen the OAuth scope from here. The scope named in
+    :func:`gmail_config` is ``gmail.readonly``, and :meth:`status` states that plus what is deliberately absent,
+    so an operator can check the claim instead of trusting it. Phase 49's send path lives in
+    :mod:`integrations.gmail_send`, with its own credentials, precisely so this file stays a list of reads.
+
+    ``transport`` may be injected for tests or an operator's proxy: it receives ``(method, url, params, headers,
+    body)`` and returns the same ``{"status", "json", "text"}`` shape as
     :func:`integrations.http.provider_request`. With none, calls go to Google over HTTPS.
     """
 
-    def __init__(self, *, refresh_token: str, client_id: str, client_secret: str, account: str = "me",
-                 api_root: str = GMAIL_API_ROOT, token_url: str = OAUTH_TOKEN_URL,
-                 timeout: float = DEFAULT_TIMEOUT_SECONDS, transport: Callable[..., dict[str, Any]] | None = None,
-                 request_opener: Callable[..., dict[str, Any]] | None = None) -> None:
-        self.refresh_token = str(refresh_token or "").strip()
-        self.client_id = str(client_id or "").strip()
-        self.client_secret = str(client_secret or "").strip()
-        self.account = str(account or "me").strip() or "me"
-        self.api_root = str(api_root or GMAIL_API_ROOT).rstrip("/")
-        self.token_url = str(token_url or OAUTH_TOKEN_URL)
-        self.timeout = float(timeout)
-        self._transport = transport
-        self._request = request_opener or provider_request
-        self._access_token: str | None = None
-        self._token_expires_at: float = 0.0
-        self.calls = 0
-        self.errors = 0
-        #: Timestamp of the last token mint, for the config report. The token itself is never recorded.
-        self.token_minted_at: str | None = None
-
-    @classmethod
-    def from_environment(cls, env: dict[str, str] | None = None, **overrides: Any) -> "GmailClient":
-        import os
-
-        source = os.environ if env is None else env
-        config = gmail_config(source)
-        if not config["configured"]:
-            raise GmailError(f"Gmail is not configured on this machine: missing {', '.join(config['missing'])}.",
-                             code="GMAIL_NOT_CONFIGURED", next_action=config["next_action"])
-        arguments = {
-            "refresh_token": source.get(GMAIL_REFRESH_TOKEN_ENV, ""),
-            "client_id": source.get(GMAIL_CLIENT_ID_ENV, ""),
-            "client_secret": source.get(GMAIL_CLIENT_SECRET_ENV, ""),
-            "account": config["account"],
-        }
-        arguments.update(overrides)
-        return cls(**arguments)
-
-    # ------------------------------------------------------------------ transport
-
-    def _request_json(self, path: str, *, params: dict[str, Any] | None = None, method: str = "GET") -> Any:
-        url = f"{self.api_root}/{self.account}{path}"
-        query = {key: value for key, value in (params or {}).items() if value not in (None, "")}
-        if query:
-            from urllib.parse import urlencode
-
-            url = f"{url}?{urlencode(query)}"
-        headers = {"Authorization": f"Bearer {self.access_token()}"}
-        self.calls += 1
-        try:
-            if self._transport is not None:
-                response = self._transport(method, url, query, headers, None)
-            else:
-                response = self._request(url, method=method, headers=headers, timeout=self.timeout)
-        except ProviderError as error:
-            self.errors += 1
-            # The status is trusted alongside the code: a transport that reports 403 without naming the reason
-            # still has to come back as "re-authorize", because that is the only action the operator can take.
-            code = ("GMAIL_RATE_LIMITED" if error.code == "PROVIDER_RATE_LIMITED" or error.status == 429 else
-                    "GMAIL_AUTHORIZATION_REFUSED" if error.code == "PROVIDER_AUTHORIZATION_REFUSED"
-                    or error.status in (401, 403) else
-                    "GMAIL_UNRESPONSIVE" if error.code in {"PROVIDER_UNRESPONSIVE", "PROVIDER_CALL_FAILED"} else
-                    error.code)
-            raise GmailError(str(error), code=code, retryable=error.retryable, status=error.status,
-                             next_action=("Back off and retry: Gmail rate limits recover on their own." if code ==
-                                          "GMAIL_RATE_LIMITED" else
-                                          "Re-authorize this machine with the read-only scope; a refusal is not a "
-                                          "problem the mailbox can fix." if code == "GMAIL_AUTHORIZATION_REFUSED"
-                                          else None)) from None
-        except Exception as error:  # noqa: BLE001 - always typed, never raw.
-            self.errors += 1
-            raise GmailError(f"Gmail call failed: {redact(str(error))[:200]}", code="GMAIL_CALL_FAILED",
-                             retryable=True) from None
-        body = response.get("json") if isinstance(response, dict) else None
-        status = int((response or {}).get("status") or 0) if isinstance(response, dict) else 0
-        if status and status >= 400:
-            self.errors += 1
-            raise GmailError(f"Gmail refused the request ({status}).", code="GMAIL_REQUEST_REFUSED", status=status,
-                             retryable=status >= 500)
-        if not isinstance(body, dict):
-            self.errors += 1
-            raise GmailError("Gmail answered with something that is not a JSON object.",
-                             code="GMAIL_RESPONSE_MALFORMED")
-        return body
-
-    def access_token(self) -> str:
-        """A live bearer token, exchanged from the refresh token at most once per expiry window."""
-        import time
-
-        if self._access_token and time.time() < self._token_expires_at - TOKEN_SKEW_SECONDS:
-            return self._access_token
-        return self._mint_token()
-
-    def _mint_token(self) -> str:
-        import time
-
-        if not (self.refresh_token and self.client_id and self.client_secret):
-            raise GmailError("The OAuth credentials are incomplete.", code="GMAIL_NOT_CONFIGURED")
-        form = {"client_id": self.client_id, "client_secret": self.client_secret,
-                "refresh_token": self.refresh_token, "grant_type": "refresh_token"}
-        try:
-            response = (self._transport("POST", self.token_url, None, None, form) if self._transport is not None
-                        else self._request(self.token_url, method="POST", form_body=form, timeout=self.timeout))
-        except ProviderError as error:
-            self.errors += 1
-            raise GmailError(f"The token exchange failed: {redact(str(error))[:200]}",
-                             code="GMAIL_AUTH_FAILED", retryable=bool(error.retryable),
-                             status=error.status,
-                             next_action="The refresh token, client id, or client secret is wrong or revoked; "
-                                         "re-authorize with the read-only scope.") from None
-        except Exception as error:  # noqa: BLE001
-            self.errors += 1
-            raise GmailError(f"The token exchange failed: {redact(str(error))[:200]}", code="GMAIL_AUTH_FAILED",
-                             retryable=True) from None
-        body = response.get("json") if isinstance(response, dict) else None
-        if not isinstance(body, dict) or not body.get("access_token"):
-            self.errors += 1
-            raise GmailError("The token exchange returned no access token.", code="GMAIL_AUTH_FAILED",
-                             next_action="Check that the OAuth client still exists and the refresh token was "
-                                        "issued for the read-only scope.")
-        self._access_token = str(body["access_token"])
-        try:
-            expires_in = int(body.get("expires_in") or 3600)
-        except (TypeError, ValueError):
-            expires_in = 3600
-        self._token_expires_at = time.time() + max(60.0, float(expires_in))
-        self.token_minted_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-        return self._access_token
-
-    def forget_token(self) -> None:
-        """Drop the cached bearer token. Used when a call suggests it went stale."""
-        self._access_token, self._token_expires_at = None, 0.0
+    SCOPE = GMAIL_SCOPE
+    SCOPE_LABEL = "read-only"
+    API_ROOT = GMAIL_API_ROOT
+    REFRESH_TOKEN_ENV = GMAIL_REFRESH_TOKEN_ENV
+    CLIENT_ID_ENV = GMAIL_CLIENT_ID_ENV
+    CLIENT_SECRET_ENV = GMAIL_CLIENT_SECRET_ENV
+    ACCOUNT_ENV = GMAIL_ACCOUNT_ENV
 
     # ------------------------------------------------------------------ the read-only surface, and nothing else
 
@@ -286,8 +154,12 @@ class GmailClient:
                                                                                 "history.list", "profile.get"],
                 "explicitly_absent": ["messages.send", "messages.delete", "messages.modify", "messages.trash",
                                       "labels", "threads.manage"],
+                "credential_environment": [self.REFRESH_TOKEN_ENV, self.CLIENT_ID_ENV, self.CLIENT_SECRET_ENV],
                 "token_present": bool(self._access_token), "token_minted_at": self.token_minted_at,
-                "calls": self.calls, "errors": self.errors}
+                "calls": self.calls, "errors": self.errors,
+                "send_capable": False,
+                "sending_is_a_different_interface": ("sending has its own client and its own credentials in "
+                                                      "integrations/gmail_send.py, which cannot read mail")}
 
 
 # ---------------------------------------------------------------------------------------------------------

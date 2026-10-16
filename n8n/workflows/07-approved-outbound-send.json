@@ -1,0 +1,497 @@
+{
+  "name": "07 approved outbound send",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        160,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "outreach_id",
+              "value": "outreach-0001"
+            },
+            {
+              "name": "confirmation",
+              "value": ""
+            },
+            {
+              "name": "expected_fingerprint",
+              "value": ""
+            }
+          ],
+          "boolean": [
+            {
+              "name": "dry_run",
+              "value": true
+            }
+          ]
+        }
+      },
+      "id": "send-parameters",
+      "name": "Send Parameters",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        400,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL }}/integrations/email/send",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AI_WEBSITE_AGENT_API_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={\"outreach_id\": \"{{ $json.outreach_id }}\", \"dry_run\": {{ $json.dry_run }}, \"confirmation\": \"{{ $json.confirmation }}\", \"expected_fingerprint\": \"{{ $json.expected_fingerprint }}\", \"actor\": \"n8n-workflow\"}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "send-approved-draft",
+      "name": "Send Approved Draft",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        640,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.error_code }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        },
+        "combineOperation": "all"
+      },
+      "id": "if-refused-or-uncertain",
+      "name": "IF Anything Refused",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        880,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "outcome",
+              "value": "nothing was sent by this run"
+            },
+            {
+              "name": "code",
+              "value": "={{ $json.error_code }}"
+            },
+            {
+              "name": "retry_allowed",
+              "value": "={{ $json.retry_allowed }}"
+            },
+            {
+              "name": "attempt_may_have_landed",
+              "value": "={{ $json.attempt_may_have_landed }}"
+            },
+            {
+              "name": "operator_next_action",
+              "value": "Read the code. An approval, opt-out, budget, or staleness refusal is a decision to leave the draft unsent, not a transient fault. If attempt_may_have_landed is true, run email-reconcile instead of ever retrying this send: Gmail has no idempotency key, so a retry could mail the same prospect twice."
+            },
+            {
+              "name": "next_action",
+              "value": "={{ $json.next_action }}",
+              "description": "The application's own next step for this refusal, carried through so the execution log says what to do rather than only what happened."
+            }
+          ],
+          "boolean": [
+            {
+              "name": "sent",
+              "value": false
+            }
+          ]
+        }
+      },
+      "id": "outcome-refused",
+      "name": "Outcome - Nothing Sent",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.result }}",
+              "operation": "equal",
+              "value2": "ACCEPTED_BY_PROVIDER"
+            }
+          ]
+        },
+        "combineOperation": "all"
+      },
+      "id": "if-provider-answered",
+      "name": "IF Provider Answered",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1120,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "outcome",
+              "value": "the provider accepted the message for sending"
+            },
+            {
+              "name": "provider_message_id",
+              "value": "={{ $json.provider_message_id }}"
+            },
+            {
+              "name": "engagement_id",
+              "value": "={{ $json.engagement_id }}"
+            },
+            {
+              "name": "verified",
+              "value": "={{ $json.provider_verified }}"
+            },
+            {
+              "name": "operator_next_action",
+              "value": "Nothing further is owed by this run. The id was read back from the account and matched to the approved draft, which is as strong a claim as Gmail allows: it is not a delivery receipt, not a read receipt, and not a reply. VERIFIED_DELIVERED stays unreachable."
+            }
+          ]
+        }
+      },
+      "id": "outcome-accepted",
+      "name": "Outcome - Accepted By Provider",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "outcome",
+              "value": "the send was handed to the provider and recorded as reported"
+            },
+            {
+              "name": "provider_message_id",
+              "value": "={{ $json.provider_message_id }}"
+            },
+            {
+              "name": "verify_detail",
+              "value": "={{ $json.verify_detail }}"
+            },
+            {
+              "name": "operator_next_action",
+              "value": "The message was submitted; its id could not be read back from the account by this process, so the record says reported, not verified. Check the Sent folder if that matters, and record what you saw. Do not resend it."
+            }
+          ]
+        }
+      },
+      "id": "outcome-reported",
+      "name": "Outcome - Reported Only",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL }}/integrations/telegram/notify",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AI_WEBSITE_AGENT_API_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={\"limit\": \"4\"}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "notify-operator",
+      "name": "Notify Operator Channel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1600,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.code }}",
+              "operation": "equal",
+              "value2": "NOTHING_NEW"
+            }
+          ]
+        },
+        "combineOperation": "all"
+      },
+      "id": "if-nothing-notified",
+      "name": "IF Nothing Notified",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1840,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "outcome",
+              "value": "the operator had already been told about this condition"
+            },
+            {
+              "name": "operator_next_action",
+              "value": "Nothing to do. The dedupe is durable in the application (provider_sync), not in this workflow, so a re-run does not page anybody twice."
+            }
+          ]
+        }
+      },
+      "id": "outcome-already-reported",
+      "name": "Outcome - Already Reported",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        2080,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "outcome",
+              "value": "the operator's attention list was pushed to their channel"
+            },
+            {
+              "name": "notified",
+              "value": "={{ $json.notified }}"
+            },
+            {
+              "name": "operator_next_action",
+              "value": "The notice is informational. This workflow never reads a reply, never releases an opt-out, and never sends a second message; the outcome above is the last word this run has."
+            }
+          ]
+        }
+      },
+      "id": "outcome-notified",
+      "name": "Outcome - Operator Notified",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        2080,
+        540
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Send Parameters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Parameters": {
+      "main": [
+        [
+          {
+            "node": "Send Approved Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Approved Draft": {
+      "main": [
+        [
+          {
+            "node": "IF Anything Refused",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Anything Refused": {
+      "main": [
+        [
+          {
+            "node": "Outcome - Nothing Sent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF Provider Answered",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Provider Answered": {
+      "main": [
+        [
+          {
+            "node": "Outcome - Accepted By Provider",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Outcome - Reported Only",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Outcome - Accepted By Provider": {
+      "main": [
+        [
+          {
+            "node": "Notify Operator Channel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Outcome - Reported Only": {
+      "main": [
+        [
+          {
+            "node": "Notify Operator Channel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Outcome - Nothing Sent": {
+      "main": [
+        [
+          {
+            "node": "Notify Operator Channel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Operator Channel": {
+      "main": [
+        [
+          {
+            "node": "IF Nothing Notified",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Nothing Notified": {
+      "main": [
+        [
+          {
+            "node": "Outcome - Already Reported",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Outcome - Operator Notified",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "phase49-v2",
+  "meta": {
+    "notes": "Deliberately dry_run=true and confirmation=\"\" in the Set node: a fresh import of this workflow sends nothing and answers with CONFIRMATION_REQUIRED, which is the safe default for a flow that could put a message in a stranger's inbox. Nothing here decides eligibility, holds an approval, or retries an unanswered send: the application does (see n8n/README.md). There is no Gmail or Telegram credential in this file, and no node can reply to a business."
+  }
+}

@@ -7,6 +7,7 @@ required, ``2`` usage or configuration error.
 from __future__ import annotations
 import argparse
 import json
+import os
 from pathlib import Path
 
 from .alerts import LogAlertSink, check_alerts
@@ -56,6 +57,10 @@ def main(argv: list[str] | None = None) -> int:
             "hold-automation", "release-automation", "automation-status",
             "telegram-check", "telegram-command", "telegram-serve", "telegram-notify",
             "email-check", "email-poll",
+            # Approved outbound email: the outbox, a preview, one confirmed send, and the reconciliation of an
+            # attempt the provider left unanswered. Kept separate from `email-poll` because reading a mailbox and
+            # writing to one are different permissions, different credentials, and different risks.
+            "email-send-check", "email-outbox", "email-send", "email-send-status", "email-reconcile",
         ],
         help="serve runs the API; health/attention/inspect-job/deployment-status/check-alerts/preflight "
              "report operational state without changing it; recover-stale/recover-workspace restore "
@@ -102,6 +107,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-messages", type=int, default=None, help="email-poll: how many messages one cycle may read (bounded by the adapter's own ceiling).")
     parser.add_argument("--retry-pending", action="store_true", help="email-poll: re-submit the intake's unmatched and failed events instead of fetching new mail.")
     parser.add_argument("--probe", action="store_true", help="telegram-check/email-check: actually ask the provider (getMe / one messages.list). Off by default so a check never sends or reads anything unexpectedly.")
+    parser.add_argument("--outreach-id", default=None, help="email-send/email-send-status/email-reconcile: the approved draft to act on. Nothing else identifies it: a send never takes a recipient, subject, or body from the command line.")
+    parser.add_argument("--confirm", default=None, help="email-send: the literal word SEND, which is what turns an armed preview into one provider request.")
+    parser.add_argument("--allow-live", action="store_true", help="email-send: permit the provider call for this one invocation. Without it (or AI_WEBSITE_AGENT_ALLOW_LIVE_OUTREACH=1) a real send is refused and a dry run still works.")
+    parser.add_argument("--outbox-status", default=None, help="email-outbox: which outreach status to list "
+                        "(READY_TO_SEND by default; AWAITING_REVIEW, SEND_FAILED, SENT_REPORTED also available). "
+                        "Distinct from --status, which filters the job queue.")
+    parser.add_argument("--expected-fingerprint", default=None, help="email-send: the content fingerprint the operator read. A mismatch means the draft moved since it was approved, and nothing is sent.")
+    # NOTE: `--actor` (documented for hold-automation) is reused by email-send as the attribution of the person
+    # who asked for the send: who asked is recorded on the attempt, and it authorizes nothing by itself.
     args = parser.parse_args(argv)
     if args.command == "serve":
         serve(
@@ -353,6 +367,9 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(outcome, indent=2, default=str))
         return 0
 
+    if args.command in {"email-send-check", "email-outbox", "email-send", "email-send-status", "email-reconcile"}:
+        return _run_outbound_command(args)
+
     if args.command in {"email-check", "email-poll"}:
         from integrations.gmail import (GmailClient, GmailError, describe_error, gmail_config)
 
@@ -463,6 +480,88 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps({"count": len(jobs), "jobs": jobs}, indent=2, default=str) if (args.status or args.attention_only or args.brief)
           else json.dumps(jobs, indent=2, default=str))
     return 1 if (args.attention_only and jobs) else 0
+
+
+def _run_outbound_command(args) -> int:
+    """The approved-send surface. Every branch prints what the records say and changes only what it names.
+
+    No subcommand here runs at startup, on import, or from a test-discovery sweep: a real provider call needs the
+    command ``email-send``, a named approved draft, the word ``SEND``, and the live-effect flag - four separate
+    acts, one of which is not even in this process's control.
+    """
+    from tracking.store import TrackingStore
+
+    from .outbound import ApprovedOutboundSender, OutboundRefusal
+
+    store = TrackingStore(args.state_path, database_url=args.database_url)
+    allow_live = bool(args.allow_live) or (os.environ.get("AI_WEBSITE_AGENT_ALLOW_LIVE_OUTREACH") or "").strip() \
+        .lower() in {"1", "true", "yes", "on"}
+    sender = ApprovedOutboundSender(store, allow_live=allow_live)
+
+    def emit(payload: dict, *, code: str | None = None) -> int:
+        print(json.dumps(payload, indent=2, default=str))
+        return 0
+
+    try:
+        if args.command == "email-send-check":
+            return emit({"command": args.command, "sent": False, **sender.verify(),
+                         "configuration": sender.configuration(),
+                         "capability_note": ("a token exchange only: it proves this machine's send credential is "
+                                             "accepted, not that a message was delivered, read, or wanted")})
+        if args.command == "email-outbox":
+            report = sender.outbox(status=args.outbox_status or "READY_TO_SEND", limit=args.limit or 10)
+            # Addresses are masked for the terminal: the operator has the record, and a pasted screenshot of a
+            # list should not carry a prospect's mailbox.
+            report["outbox"] = [{**row, "recipient": _mask(row.get("recipient"))} for row in report["outbox"]]
+            return emit({"command": args.command, **report})
+        if args.command == "email-send-status":
+            return emit({"command": args.command, **sender.status(args.outreach_id, limit=args.limit or 25)})
+        if args.command == "email-reconcile":
+            # No id is the useful case: reconcile every attempt the records say is unresolved.
+            return emit({"command": args.command, **sender.reconcile(args.outreach_id, limit=args.limit or 25)})
+        if not args.outreach_id:
+            print(json.dumps({"error": f"{args.command} requires --outreach-id.",
+                              "error_code": "OUTREACH_ID_REQUIRED",
+                              "next_action": "email-outbox lists the drafts this process knows about"}, indent=2))
+            return 2
+        try:
+            answer = sender.send(args.outreach_id, actor_id=args.actor or f"cli:{os.environ.get('USER', 'operator')}",
+                                identity_source="operator_cli", dry_run=bool(args.dry_run),
+                                expected_fingerprint=args.expected_fingerprint, confirmation=args.confirm,
+                                note=args.note)
+        except OutboundRefusal as error:
+            print(json.dumps({"error": str(error), "error_code": error.code, "sent": False,
+                              "retry_allowed": False,
+                              "attempt_may_have_landed": error.code == "SEND_UNCERTAIN",
+                              **({"next_action": error.next_action} if error.next_action else {})}, indent=2))
+            return 1
+        answer["recipient"] = _mask(answer.get("would_contact") or answer.get("recipient"))
+        answer.pop("would_contact", None)
+        print(json.dumps({"command": args.command, **answer}, indent=2, default=str))
+        return 0 if answer.get("send_state") in {"SENT", "DRY_RUN", "UNCERTAIN"} else 1
+    except (OutboundRefusal, ValueError, KeyError) as error:
+        code = str(getattr(error, "code", "") or "OUTBOUND_REQUEST_REFUSED")
+        print(json.dumps({"error": str(error), "error_code": code, "sent": False,
+                          **({"next_action": error.next_action} if getattr(error, "next_action", None) else {})},
+                         indent=2))
+        return 1
+    except Exception as error:  # noqa: BLE001 - a fault is typed; it never becomes a stack trace at the operator
+        from .observability import log_event, sanitize_diagnostic
+
+        log_event(severity="ERROR", operation="cli.outbound", code="OUTBOUND_FAULT",
+                  message=f"{args.command} faulted", detail=sanitize_diagnostic(error))
+        print(json.dumps({"error": "The command faulted before it could answer.", "error_code": "OUTBOUND_FAULT",
+                          "sent": None,
+                          "next_action": "run email-send-status before retrying anything; an attempt may already "
+                                          "have been submitted"}, indent=2))
+        return 1
+
+
+def _mask(address) -> str:
+    """One address, first letter plus domain. The record keeps the real value; a terminal listing does not need it."""
+    from .telegram_limits import mask_address
+
+    return mask_address(str(address)) if address else "[no address]"
 
 
 if __name__ == "__main__":
