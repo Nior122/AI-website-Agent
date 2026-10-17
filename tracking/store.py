@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import copy
 from datetime import datetime, timezone
+from html import escape
 import hashlib
 import json
 from pathlib import Path, PureWindowsPath
@@ -1371,10 +1372,31 @@ class TrackingStore:
                 })
 
         b_name = lead.get("business_name") or "Business"
-        disclosure = (
-            f"Uncommissioned preview draft prepared for internal evaluation · "
-            f"Not an authorized or official website of {b_name}."
+        data_classification = (
+            lead.get("data_classification")
+            or p.get("data_classification")
         )
+        is_fixture = (
+            data_classification == "TEST_FIXTURE"
+            or bool(lead.get("demo"))
+            or bool(p.get("demo"))
+            or "FICTIONAL" in str(b_name).upper()
+        )
+        if is_fixture:
+            disclosure = (
+                "Fictional demonstration website · "
+                "Created for AI Website Agent testing."
+            )
+            disclosure_html = disclosure
+        else:
+            disclosure = (
+                "Uncommissioned preview draft prepared for internal evaluation · "
+                f"Not an authorized or official website of {b_name}."
+            )
+            disclosure_html = (
+                "Uncommissioned preview draft prepared for internal evaluation · "
+                f"Not an authorized or official website of {escape(b_name)}."
+            )
         omitted_disputed_fields = [item["field"] for item in unresolved_or_conflicting if item["status"] == "CONFLICTING_WITHHELD"]
         claims_lacking_primary_observation = [
             {
@@ -1401,7 +1423,7 @@ class TrackingStore:
             "project_id": project_id,
             "lead_id": lead["lead_id"],
             "business_name": b_name,
-            "data_classification": lead.get("data_classification") or p.get("data_classification"),
+            "data_classification": data_classification,
             "current_stage": p.get("current_stage"),
             "review_status": p.get("review_status"),
             "build_id": build["build_id"],
@@ -1411,7 +1433,7 @@ class TrackingStore:
             "artifact_bytes": len(html_bytes),
             "artifact_sha256": sha256_hex,
             "uncommissioned_disclosure": disclosure,
-            "disclosure_present_in_html": disclosure in html_text,
+            "disclosure_present_in_html": disclosure_html in html_text,
             "omitted_disputed_fields": omitted_disputed_fields,
             "supported_facts": supported_facts,
             "claims_lacking_primary_observation": claims_lacking_primary_observation,

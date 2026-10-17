@@ -1,0 +1,38 @@
+[1mdiff --git a/orchestration/api.py b/orchestration/api.py[m
+[1mindex d343cf4..d0adcb1 100644[m
+[1m--- a/orchestration/api.py[m
+[1m+++ b/orchestration/api.py[m
+[36m@@ -139,11 +139,23 @@[m [mdef make_handler([m
+                 try:[m
+                     if getattr(service.store, "db_backend", None) is not None and hasattr(service.store, "refresh"):[m
+                         service.store.refresh()[m
+[32m+[m[32m                    registered_workers = list([m
+[32m+[m[32m                        (service.store.state.get("workers") or {}).values()[m
+[32m+[m[32m                    )[m
+[32m+[m[32m                    available_registered_workers = [[m
+[32m+[m[32m                        w for w in registered_workers[m
+[32m+[m[32m                        if w.get("enabled")[m
+[32m+[m[32m                        and w.get("status") == "IDLE"[m
+[32m+[m[32m                        and w.get("health_status") == "AVAILABLE"[m
+[32m+[m[32m                    ][m
+                     if path == ["health"]:[m
+                         return self._json(200, {[m
+                             "api_status": "OK",[m
+                             "worker_registered": active_worker is not None,[m
+                             "worker_name": getattr(active_worker, "name", None),[m
+[32m+[m[32m                            "api_execution_worker_configured": active_worker is not None,[m
+[32m+[m[32m                            "registered_worker_count": len(registered_workers),[m
+[32m+[m[32m                            "available_registered_worker_count": len(available_registered_workers),[m
+                             "health": system_health(service.store),[m
+                         })[m
+                     if path == ["readiness"]:[m
+[36m@@ -154,6 +166,9 @@[m [mdef make_handler([m
+                             "production_mode": is_production_mode(),[m
+                             "worker_registered": active_worker is not None,[m
+                             "worker_name": getattr(active_worker, "name", None),[m
+[32m+[m[32m                            "api_execution_worker_configured": active_worker is not None,[m
+[32m+[m[32m                            "registered_worker_count": len(registered_workers),[m
+[32m+[m[32m                            "available_registered_worker_count": len(available_registered_workers),[m
+                         })[m
+                     if len(path) == 3 and path[0] == "jobs" and path[2] == "readiness":[m
+                         return self._json(200, readiness_for(service.store, service, path[1]))[m
