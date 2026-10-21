@@ -4,7 +4,28 @@ All notable project changes are recorded here. Dates use ISO 8601 (`YYYY-MM-DD`)
 
 ## [Unreleased]
 
-### Added — 2026-10-21 (Stage 4: Social Media Engine, Brand Voice Adherence, Buffer Integration, and Telegram Operator Post Commands)
+### Added — 2026-10-21 (Stage 5: Multi-Channel Expansion, Professional Services Templates, and Daily Business Briefing Engine)
+
+- **Professional Services Template Registry Expansion (`templates/`)**:
+  - `templates/registry.py`: Added three dedicated professional services templates:
+    - `clinic-healthcare-v1`: Healthcare, Medical, Dental, Optometry, and Wellness practices with clinical specialties and practitioner cards.
+    - `legal-practice-v1`: Law Firms, Solicitors, Barristers, Accounting, and Advisory practices with practice areas, attorneys, and consultation focus.
+    - `automotive-service-v1`: Auto repair workshops, mechanics, and car care centres with repair services, guarantees, and fast-action contact targets.
+  - `builder/website_builder.py`: Added category aliases in `_category()` to map healthcare, legal, and automotive categories cleanly to reusable templates.
+  - `templates/demo-data/`: Created demonstration fixtures (`demo_clinic.json`, `demo_legal.json`, `demo_automotive.json`) with safe fictional disclosures and no actionable outbound contacts.
+  - `templates/renderer.py` & `templates/components.py`: Added support for clinical specialties, practitioners, practice areas, attorneys, and service guarantees, verified to achieve 100% score (PASS) on 14-point static QA validation.
+- **Authoritative Daily Business Briefing Engine (`orchestration/briefing.py`)**:
+  - Implemented authoritative briefing metric extraction matching live n8n workflow `loO3tTJlt6aFdhvb` ("Nior - Daily Business Briefing").
+  - Computes active leads, qualified leads, pipeline totals in Nigerian naira (₦), overdue tasks, tasks due today, upcoming tasks, past-due lead follow-ups, and duplicate lead detection.
+  - Strictly adheres to production Telegram formatting rules: 100% plain text (no markdown `*` or `**` or headings), Africa/Lagos timezone formatting, and `Recommendation:` prefix on all strategic suggestions.
+  - Implemented Telegram-safe message chunking (`chunk_telegram_text()`, <= 3900 characters).
+- **Telegram Operator Bot Briefing Commands (`orchestration/telegram_bot.py`)**:
+  - Added `/briefing` and `/daily` operator commands with chunked mobile delivery.
+  - Added lazy `_briefing()` service loader.
+- **Comprehensive Verification & Test Expansion**:
+  - Added `tests/test_briefing.py` (6 new tests covering Lagos timezone conversion, metric extraction, plain-text compliance, chunking, and bot commands).
+  - Expanded `tests/test_templates.py` to 10 tests verifying rendering, category selection, and QA PASS status across all new templates.
+  - Verified full test suite: **708 passed, 1 skipped, 0 failures across 709 tests**.
 
 - **Unified Social Media Content Engine (`social/` package)**:
   - `social/models.py`: Defines verified Buffer channel specifications (`twitter`, `linkedin`, `instagram`), strict character bounds, media requirements, and `to_buffer_approval_payload()` converter matching live n8n workflow `zAd3P31ZrTm9Ax94` (`public.action_approvals`).

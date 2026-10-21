@@ -18,6 +18,50 @@ class TemplateTests(unittest.TestCase):
     def test_category_selects_expected_template(self):
         self.assertEqual(select_template("beauty salon").template_id, "salon-service-v1")
         self.assertEqual(select_template("restaurant").template_id, "restaurant-menu-v1")
+        self.assertEqual(select_template("clinic").template_id, "clinic-healthcare-v1")
+        self.assertEqual(select_template("healthcare").template_id, "clinic-healthcare-v1")
+        self.assertEqual(select_template("dental clinic").template_id, "clinic-healthcare-v1")
+        self.assertEqual(select_template("legal").template_id, "legal-practice-v1")
+        self.assertEqual(select_template("law firm").template_id, "legal-practice-v1")
+        self.assertEqual(select_template("solicitor").template_id, "legal-practice-v1")
+        self.assertEqual(select_template("automotive").template_id, "automotive-service-v1")
+        self.assertEqual(select_template("auto repair").template_id, "automotive-service-v1")
+        self.assertEqual(select_template("mechanic").template_id, "automotive-service-v1")
+
+    def test_clinic_renders_with_semantic_sections_and_safe_fictional_actions(self):
+        from validation.quality_validator import validate_rendered_html
+        data = load_demo("demo_clinic.json")
+        html = render_site(data)
+        self.assertIn('<main>', html)
+        self.assertIn('Clinical Specialties &amp; Care', html)
+        self.assertIn('Specialist Practitioners', html)
+        self.assertIn('href="#services"', html)
+        self.assertNotIn('tel:+234 800 000 0003', html)
+        result = validate_rendered_html(html, data["business_name"], real_build=False, synthetic_contact=True)
+        self.assertEqual(result.status, "PASS")
+
+    def test_legal_renders_with_semantic_sections_and_safe_fictional_actions(self):
+        from validation.quality_validator import validate_rendered_html
+        data = load_demo("demo_legal.json")
+        html = render_site(data)
+        self.assertIn('<main>', html)
+        self.assertIn('Practice Areas', html)
+        self.assertIn('Legal Practitioners', html)
+        self.assertIn('Corporate &amp; Commercial Law', html)
+        self.assertIn('href="#practice_areas"', html)
+        result = validate_rendered_html(html, data["business_name"], real_build=False, synthetic_contact=True)
+        self.assertEqual(result.status, "PASS")
+
+    def test_automotive_renders_with_semantic_sections_and_safe_fictional_actions(self):
+        from validation.quality_validator import validate_rendered_html
+        data = load_demo("demo_automotive.json")
+        html = render_site(data)
+        self.assertIn('<main>', html)
+        self.assertIn('Workshop &amp; Repair Services', html)
+        self.assertIn('Service Guarantee', html)
+        self.assertIn('href="#services"', html)
+        result = validate_rendered_html(html, data["business_name"], real_build=False, synthetic_contact=True)
+        self.assertEqual(result.status, "PASS")
 
     def test_salon_renders_with_semantic_sections_and_safe_fictional_actions(self):
         html = render_site(load_demo("demo_salon.json"))

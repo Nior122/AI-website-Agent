@@ -116,6 +116,8 @@ COMMANDS: dict[str, tuple[str, str, bool]] = {
     "hold": ("Is the system held, and by whom", "", False),
     "social": ("Social channels, verified Buffer targets, and queue status", "", False),
     "post": ("Social media draft operations: list, new, view, approve, reject", "[list | new <channel> <topic> | view <id> | approve <id> | reject <id>]", True),
+    "briefing": ("Daily business briefing: pipeline, opportunities, overdue tasks, and recommendations", "[--trigger | --status]", False),
+    "daily": ("Alias for /briefing", "[--trigger | --status]", False),
 }
 
 
@@ -147,6 +149,7 @@ class TelegramOperatorBot:
         self.readback_client = readback_client
         self._outbound_service = None
         self._social_service = None
+        self._briefing_service = None
         self.row_limit = max(1, min(int(row_limit or DEFAULT_ROWS), MAX_ROWS))
         #: In-process only, by design: the durable record of a condition is the job/project/inbound row itself,
         #: and a second store of "things we already told you" would be a second source of truth.
@@ -160,6 +163,12 @@ class TelegramOperatorBot:
             from social.service import SocialDraftService
             self._social_service = SocialDraftService()
         return self._social_service
+
+    def _briefing(self):
+        if self._briefing_service is None:
+            from orchestration.briefing import DailyBriefingService
+            self._briefing_service = DailyBriefingService(store=self.store, ledger=self.ledger, jobs=self.jobs)
+        return self._briefing_service
 
     # -- lazily built, because a bot that only answers /status must not need the engagement surface -----
     @property
@@ -1537,6 +1546,34 @@ class TelegramOperatorBot:
             return {"text": f"Draft {draft.id} marked REJECTED. Reason: {reason}", "code": "POST_REJECTED", "draft_id": draft.id}
 
         return {"text": f"Unknown subcommand '{subcmd}'. Usage: /post [list | new <channel> <topic> | view <id> | approve <id> | reject <id>]", "code": "POST_UNKNOWN_SUBCOMMAND"}
+
+    def _command_daily(self, argument: str, **kwargs: Any) -> dict[str, Any]:
+        """/daily: alias for /briefing."""
+        return self._command_briefing(argument, **kwargs)
+
+    def _command_briefing(self, argument: str, *, chat_id: int, **_: Any) -> dict[str, Any]:
+        """/briefing: generate and deliver authoritative daily business briefing."""
+        service = self._briefing()
+        result = service.generate_briefing()
+        chunks = result["chunks"]
+        data = result["data"]
+
+        # If connected to a real live Telegram API and chat_id is present, send intermediate chunks
+        if self.api is not None and chat_id and len(chunks) > 1:
+            for chunk in chunks[:-1]:
+                try:
+                    self.api.send_message(chat_id, chunk)
+                except Exception:
+                    pass
+
+        return {
+            "text": chunks[-1] if (len(chunks) > 1 and self.api is not None and chat_id) else result["text"],
+            "code": "DAILY_BRIEFING",
+            "chunks": chunks,
+            "active_leads": data.get("active_lead_count", 0),
+            "pipeline_value": data.get("pipeline_value", 0.0),
+            "overdue_tasks": len(data.get("overdue_tasks", [])),
+        }
 
     def _action_callback(self, action: str, identifier: str, fingerprint: str, *, user_id: int | None,
                          chat_id: int | None, message_id: int | None, callback_query_id: str,

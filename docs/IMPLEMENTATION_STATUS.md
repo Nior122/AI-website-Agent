@@ -17,12 +17,13 @@ This document provides a truthful, evidence-backed inventory of implemented capa
 | **Human Review Gate** | **Production Ready** | Full audit trail in `TrackingStore` & Telegram `/demo` | Identity tracked; required notes; no automated bypass |
 | **Tracking State Store** | **Production Ready** | SQLite & Supabase PostgreSQL backend with DDL migration | ACID transactions; append-only attempt logs |
 | **Orchestration & Jobs** | **Production Ready** | JobService state machine, worker leases, stale recovery | Heartbeat tracking; deduplicated idempotent execution |
-| **Telegram Operator Console** | **Production Ready** | 24 commands implemented in `orchestration/telegram_bot.py` | Allow-list gated; redaction boundary; phone-side review |
+| **Telegram Operator Console** | **Production Ready** | 28 commands implemented in `orchestration/telegram_bot.py` | Allow-list gated; redaction boundary; phone-side review |
 | **Inbound Email Polling** | **Production Ready** | `integrations/gmail.py` using `gmail.readonly` scope | Strict read-only client; thread matching |
 | **Approved Outbound Email** | **Production Ready** | `integrations/gmail_send.py` using `gmail.send` scope | Fingerprint-bound; confirmation token required; 1 send/call |
 | **n8n Automation Engine** | **Operational** | 34 live workflows audited; 7 Git-exported reference workflows | Shipped in inert/dry-run states; credential-free exports |
-| **Social Media Scheduling** | **In Progress (Stage 4)**| Buffer Draft Executor active in n8n; content engine starting | Multi-channel posting via Buffer free tier |
-| **Customer Chat Intake** | **In Progress (Stage 4)**| Botcake Ingestion & Reply Executor active in n8n | Webhook routing to PostgreSQL with Telegram alerts |
+| **Social Media Scheduling** | **Production Ready** | `social/` package matching n8n Buffer Draft Executor | Multi-channel posting, brand voice validator, Telegram `/post` |
+| **Daily Business Briefing** | **Production Ready** | `orchestration/briefing.py` matching n8n `loO3tTJlt6aFdhvb` | Lagos timezone, Naira pipeline, overdue tasks, Telegram `/briefing` |
+| **Customer Chat Intake** | **Operational** | Botcake Ingestion & Reply Executor active in n8n | Webhook routing to PostgreSQL with Telegram alerts |
 
 ---
 
@@ -41,6 +42,9 @@ This document provides a truthful, evidence-backed inventory of implemented capa
 - **Templates**:
   - `restaurant-menu-v1`: Complete restaurant landing page with hero, menu sections, location, hours, and demo disclosure.
   - `salon-service-v1`: Salon and spa service showcase.
+  - `clinic-healthcare-v1`: Clinic, healthcare, and wellness centre layout with clinical specialties and specialist practitioners.
+  - `legal-practice-v1`: Law firm and advisory practice layout with practice areas and attorney profiles.
+  - `automotive-service-v1`: Auto repair workshop and garage layout with service catalogue and guarantees.
 - **Builder**: Produces clean, zero-dependency, semantic HTML artifacts with strict disclosure banners.
 
 ### 3. QA & Release Gate (`validation/`)
@@ -57,7 +61,7 @@ This document provides a truthful, evidence-backed inventory of implemented capa
 
 ### 5. Telegram Operator Console (`orchestration/telegram_bot.py`)
 - **Status**: Implemented & Tested.
-- **Commands**: 26 interactive commands including:
+- **Commands**: 28 interactive commands including:
   - Queue control: `/jobs`, `/pending`, `/run`, `/recover`, `/cancel`, `/retry`
   - Lead management: `/leads`, `/find`, `/qualify`, `/prospect`
   - Review & Demo: `/review`, `/approve`, `/changes`, `/demo`

@@ -35,6 +35,33 @@ TEMPLATES = (
         "Single-column content with responsive menu cards and touch-friendly primary actions.",
         ("semantic landmarks", "visible focus", "sufficient contrast", "meaningful image alt text"),
     ),
+    TemplateDefinition(
+        "clinic-healthcare-v1", "Clinic & Healthcare", ("clinic", "healthcare", "medical_practice", "dental_clinic", "optometry", "wellness_center", "pharmacy"),
+        "Consultation and care-focused layout for clinics, healthcare practices, and wellness centres.",
+        ("business_name", "category", "city"),
+        ("services", "description", "opening_hours", "phone", "whatsapp", "address", "practitioners", "images"),
+        ("navigation", "hero", "about", "services", "practitioners", "hours", "location", "contact", "footer"),
+        "Single-column content with accessible service cards, clear consultation booking touch targets, and responsive layout.",
+        ("semantic landmarks", "visible focus", "sufficient contrast", "meaningful image alt text"),
+    ),
+    TemplateDefinition(
+        "legal-practice-v1", "Legal & Advisory Practice", ("legal", "law_firm", "solicitor", "barrister", "advocate", "accounting", "tax_advisory", "consulting_firm"),
+        "Authority and trust-led layout for law firms, legal practitioners, and corporate advisory services.",
+        ("business_name", "category", "city"),
+        ("services", "practice_areas", "description", "opening_hours", "phone", "email", "address", "attorneys", "images"),
+        ("navigation", "hero", "about", "practice_areas", "attorneys", "hours", "location", "contact", "footer"),
+        "Single-column content with structured practice area cards, clear consultation booking touch targets, and accessible layout.",
+        ("semantic landmarks", "visible focus", "sufficient contrast", "meaningful image alt text"),
+    ),
+    TemplateDefinition(
+        "automotive-service-v1", "Automotive & Mobility Service", ("automotive", "auto_repair", "mechanic", "car_care", "tire_service", "auto_body", "vehicle_service"),
+        "Fast-action and reliability-focused layout for auto repair workshops, mechanic garages, and vehicle care centers.",
+        ("business_name", "category", "city"),
+        ("services", "description", "opening_hours", "phone", "whatsapp", "address", "emergency_assistance", "images"),
+        ("navigation", "hero", "about", "services", "guarantee", "hours", "location", "contact", "footer"),
+        "Single-column content with touch-accessible breakdown call action, service cards, and workshop location guidance.",
+        ("semantic landmarks", "visible focus", "sufficient contrast", "meaningful image alt text"),
+    ),
 )
 
 

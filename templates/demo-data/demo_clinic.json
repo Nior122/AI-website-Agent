@@ -1,0 +1,21 @@
+{
+  "demo": true,
+  "business_name": "Demo Apex Health Clinic",
+  "category": "clinic",
+  "city": "Lagos",
+  "address": "Fictional clinic avenue, Victoria Island, Lagos",
+  "description": "A fictional healthcare clinic used only to demonstrate the reusable clinic template system.",
+  "phone": "+234 800 000 0003",
+  "whatsapp": "+234 800 000 0003",
+  "opening_hours": "Mon–Fri, 08:00–18:00; Sat, 09:00–14:00",
+  "services": [
+    { "name": "General Consultation", "description": "Fictional clinical consultation and wellness checks." },
+    { "name": "Preventative Health", "description": "Fictional screening and diagnostic assessment." }
+  ],
+  "practitioners": [
+    { "name": "Dr. Fictional Consultant", "description": "General practice specialist." }
+  ],
+  "images": [],
+  "brand": { "primary_color": "#0d47a1", "secondary_color": "#f0f4f8", "accent_color": "#00acc1", "border_radius": "0.75rem" },
+  "content": { "hero_title": "Comprehensive Healthcare in Lagos", "hero_subtitle": "Fictional clinic demo content; replace only with approved healthcare facts." }
+}

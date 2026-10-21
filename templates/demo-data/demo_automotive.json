@@ -1,0 +1,21 @@
+{
+  "demo": true,
+  "business_name": "Demo Apex Motor Garage",
+  "category": "automotive",
+  "city": "Lagos",
+  "address": "Fictional workshop lane, Ikeja, Lagos",
+  "description": "A fictional automotive service workshop used only to demonstrate the reusable automotive template system.",
+  "phone": "+234 800 000 0005",
+  "whatsapp": "+234 800 000 0005",
+  "opening_hours": "Mon–Sat, 08:00–18:00",
+  "services": [
+    { "name": "Computer Diagnostic Inspection", "description": "Fictional engine and electrical diagnostics." },
+    { "name": "Brake & Suspension Overhaul", "description": "Fictional mechanical inspection and maintenance." }
+  ],
+  "guarantee": [
+    { "name": "90-Day Workmanship Warranty", "description": "Fictional guarantee policy on completed workshop repairs." }
+  ],
+  "images": [],
+  "brand": { "primary_color": "#b71c1c", "secondary_color": "#fbfbfb", "accent_color": "#ff6f00", "border_radius": "0.75rem" },
+  "content": { "hero_title": "Precision Auto Maintenance in Ikeja", "hero_subtitle": "Fictional auto repair workshop demo content; replace only with approved automotive facts." }
+}

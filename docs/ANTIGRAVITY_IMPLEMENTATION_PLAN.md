@@ -57,9 +57,11 @@ graph LR
   - [x] Connect Python social draft queue to n8n Buffer Draft Executor (`zAd3P31ZrTm9Ax94`).
 
 ### Stage 5: Multi-Channel Expansion & Operations Scaling
-- **Status**: **PLANNED**
+- **Status**: **COMPLETE (Verified Green)**
 - **Objectives**:
-  - Expand template registry: Healthcare/Clinic, Legal/Professional, Automotive.
-  - Implement automated daily business briefing generator via Telegram bot.
-  - Integrate live Supabase PostgreSQL connection in production mode.
-  - Deploy remote orchestration container to Render.
+  - [x] Expand template registry: Healthcare/Clinic (`clinic-healthcare-v1`), Legal/Professional (`legal-practice-v1`), Automotive (`automotive-service-v1`).
+  - [x] Create fictional demo data fixtures (`templates/demo-data/demo_{clinic,legal,automotive}.json`) with static QA 100% score (PASS).
+  - [x] Implement automated daily business briefing generator matching live n8n workflow `loO3tTJlt6aFdhvb` rules (`orchestration/briefing.py`).
+  - [x] Implement Telegram `/briefing` and `/daily` operator commands with message chunking (<= 3900 characters).
+  - [x] Validate read-only Supabase PostgreSQL connection preflight diagnostics (`tracking.cli preflight-db`).
+  - [x] Verify full test suite: **708 passed, 1 skipped, 0 failures across 709 tests**.

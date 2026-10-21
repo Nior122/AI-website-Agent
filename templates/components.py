@@ -34,11 +34,33 @@ def safe_url(value: object) -> str | None:
 
 def action_links(data: dict) -> str:
     if is_fictional(data):
-        primary_target = "#menu" if data.get("category") in {"restaurant", "food_business"} else "#services"
-        primary_label = "Explore the menu" if primary_target == "#menu" else "Explore services"
+        cat = data.get("category")
+        if cat in {"restaurant", "food_business"} and (data.get("menu_items") or not data.get("services")):
+            primary_target = "#menu"
+            primary_label = "Explore the menu"
+        elif data.get("practice_areas") and not data.get("services"):
+            primary_target = "#practice_areas"
+            primary_label = "Practice areas"
+        elif data.get("services"):
+            primary_target = "#services"
+            primary_label = "Explore services"
+        elif data.get("description") or data.get("content", {}).get("about_text"):
+            primary_target = "#about"
+            primary_label = "About us"
+        else:
+            primary_target = "#contact"
+            primary_label = "Contact us"
+
         has_about = bool(data.get("description") or data.get("content", {}).get("about_text"))
-        secondary_target = "#location" if data.get("address") else "#about" if has_about else "#contact"
-        secondary_label = "Visit the test location" if secondary_target == "#location" else "Read the test story" if secondary_target == "#about" else "View test notice"
+        if data.get("address"):
+            secondary_target = "#location"
+            secondary_label = "Visit the test location"
+        elif has_about and primary_target != "#about":
+            secondary_target = "#about"
+            secondary_label = "Read the test story"
+        else:
+            secondary_target = "#contact"
+            secondary_label = "View test notice"
         return f'<a class="button button-primary" href="{primary_target}">{primary_label}</a><a class="button button-secondary" href="{secondary_target}">{secondary_label}</a>'
     links = []
     labels = data.get("content", {}).get("cta", {})
