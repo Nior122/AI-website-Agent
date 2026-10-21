@@ -4,6 +4,21 @@ All notable project changes are recorded here. Dates use ISO 8601 (`YYYY-MM-DD`)
 
 ## [Unreleased]
 
+### Added — 2026-10-21 (Stage 4: Social Media Engine, Brand Voice Adherence, Buffer Integration, and Telegram Operator Post Commands)
+
+- **Unified Social Media Content Engine (`social/` package)**:
+  - `social/models.py`: Defines verified Buffer channel specifications (`twitter`, `linkedin`, `instagram`), strict character bounds, media requirements, and `to_buffer_approval_payload()` converter matching live n8n workflow `zAd3P31ZrTm9Ax94` (`public.action_approvals`).
+  - `social/brand.py`: Enforces Nior brand voice parameters with proactive validation against banned buzzwords, excessive exclamation points, uppercase yelling, and channel length bounds; computes brand voice alignment scores (0.0 to 1.0).
+  - `social/generator.py`: Generates grounded, value-first drafts across 4 archetypes (`tech_insight`, `case_study`, `operator_dispatch`, `local_growth`) with tailored formatting for Twitter/X, LinkedIn, and Instagram.
+  - `social/service.py`: Implements lifecycle management (`DRAFT` -> `PROPOSED` -> `APPROVED` / `REJECTED`) with local persistence in `data/social/` and fail-closed validation gates.
+  - `social/cli.py`: Complete CLI interface providing `generate`, `list`, `show`, `approve`, `reject`, and `export` commands.
+- **Telegram Operator Controls Expansion (`orchestration/telegram_bot.py`)**:
+  - Added `/social` command displaying verified Buffer channels, character/media limits, and current draft queue breakdown.
+  - Added `/post` command with subcommands: `list` (view drafts), `new <channel> <topic>` (generate draft), `view <id>` (inspect draft copy/metrics), `approve <id>` (approve for Buffer scheduling), and `reject <id>` (reject draft).
+- **Test Suite Expansion (`tests/test_social_engine.py`)**:
+  - Added 21 comprehensive tests covering models, brand voice validation, deterministic generation, service lifecycle, CLI commands, and Telegram operator interactions.
+  - Test suite total increased to **700 tests (699 passed, 1 skipped, 0 failures)**.
+
 ### Added — 2026-10-21 (Phase 50: operational baseline restoration, 100% green test suite, live n8n audit, and complete engineering documentation)
 
 - **Test suite restored to 100% Green (678 passed, 1 skipped, 0 failures).** Resolved all test failures and cross-test race conditions:

@@ -114,6 +114,8 @@ COMMANDS: dict[str, tuple[str, str, bool]] = {
     "pause": ("Hold automated dispatch", "[reason]", True),
     "resume": ("Release the hold", "", True),
     "hold": ("Is the system held, and by whom", "", False),
+    "social": ("Social channels, verified Buffer targets, and queue status", "", False),
+    "post": ("Social media draft operations: list, new, view, approve, reject", "[list | new <channel> <topic> | view <id> | approve <id> | reject <id>]", True),
 }
 
 
@@ -144,6 +146,7 @@ class TelegramOperatorBot:
         self.outbound_client = outbound_client
         self.readback_client = readback_client
         self._outbound_service = None
+        self._social_service = None
         self.row_limit = max(1, min(int(row_limit or DEFAULT_ROWS), MAX_ROWS))
         #: In-process only, by design: the durable record of a condition is the job/project/inbound row itself,
         #: and a second store of "things we already told you" would be a second source of truth.
@@ -151,6 +154,12 @@ class TelegramOperatorBot:
         self._recent_commands: dict[int, list[float]] = {}
         self.last_poll_offset: int | None = None
         self._seen_loaded = False
+
+    def _social(self):
+        if self._social_service is None:
+            from social.service import SocialDraftService
+            self._social_service = SocialDraftService()
+        return self._social_service
 
     # -- lazily built, because a bot that only answers /status must not need the engagement surface -----
     @property
@@ -1419,6 +1428,115 @@ class TelegramOperatorBot:
                          "that lead and channel are blocked from now on; the block is the ledger's, not the bot's, "
                          "so every path honours it. Lifting it takes a named reason in the CLI."),
                 "code": "OPT_OUT_RECORDED", "lead_id": lead_id, "block_id": block.get("block_id")}
+
+    def _command_social(self, argument: str, **_: Any) -> dict[str, Any]:
+        """/social: list verified channels and buffer draft queue metrics."""
+        from social.models import VERIFIED_CHANNELS
+        service = self._social()
+        drafts = service.list_drafts(limit=100)
+        by_status: dict[str, int] = {}
+        for d in drafts:
+            by_status[d.status] = by_status.get(d.status, 0) + 1
+
+        lines = [
+            f"Social Media Engine: {len(drafts)} draft(s) recorded.",
+            "Queue status: " + (", ".join(f"{k}={v}" for k, v in sorted(by_status.items())) if by_status else "empty"),
+            "\nVerified Buffer Channels (n8n zAd3P31ZrTm9Ax94):",
+        ]
+        for name, spec in VERIFIED_CHANNELS.items():
+            if name == "x":
+                continue
+            media_note = " (media required)" if spec.requires_media else ""
+            lines.append(f"• {name.upper()}: {spec.name} (id {spec.channel_id[:8]}..., max {spec.max_length} chars{media_note})")
+        lines.append("\nUse /post new <channel> <topic> to generate a draft or /post list to review.")
+        return {"text": "\n".join(lines), "code": "SOCIAL_STATUS", "count": len(drafts), "by_status": by_status}
+
+    def _command_post(self, argument: str, *, user_id: int | None, chat_id: int, **_: Any) -> dict[str, Any]:
+        """/post [list | new <channel> <topic> | view <id> | approve <id> | reject <id>]"""
+        tokens = argument.strip().split()
+        subcmd = tokens[0].lower() if tokens else "list"
+        service = self._social()
+
+        if subcmd == "list":
+            channel = tokens[1].lower() if len(tokens) > 1 and tokens[1].lower() in {"twitter", "x", "linkedin", "instagram"} else None
+            drafts = service.list_drafts(channel=channel, limit=self.row_limit)
+            if not drafts:
+                return {"text": "No social media drafts recorded. Generate one with /post new <channel> <topic>.", "code": "POSTS_EMPTY"}
+            lines = [f"{len(drafts)} draft(s) listed:"]
+            for d in drafts:
+                lines.append(f"• {d.id} | {d.channel.upper()} | {d.status} | score: {d.brand_voice_score:.2f} | {d.topic[:30]}")
+            lines.append("Use /post view <id> to inspect or /post approve <id> to schedule.")
+            return {"text": "\n".join(lines), "code": "POSTS_LIST", "count": len(drafts)}
+
+        elif subcmd == "new":
+            if len(tokens) < 3:
+                return {"text": "Usage: /post new <twitter|linkedin|instagram> <topic>", "code": "POST_ARGUMENTS_REQUIRED"}
+            channel = tokens[1].lower()
+            topic = " ".join(tokens[2:]).strip()
+            try:
+                draft = service.create_draft(topic=topic, channel=channel)
+            except ValueError as error:
+                return {"text": f"Refused: {safe_outbound_text(str(error))}", "code": "POST_GENERATION_FAILED"}
+            lines = [
+                f"Generated draft {draft.id} for {draft.channel.upper()} (score: {draft.brand_voice_score:.2f}):",
+                f"\n\"{draft.caption}\"\n",
+                f"Length: {len(draft.caption)} chars | Status: {draft.status}",
+                f"Review with /post view {draft.id} or approve with /post approve {draft.id}",
+            ]
+            return {"text": "\n".join(lines), "code": "POST_GENERATED", "draft_id": draft.id}
+
+        elif subcmd == "view":
+            if len(tokens) < 2:
+                return {"text": "Usage: /post view <draft_id>", "code": "DRAFT_ID_REQUIRED"}
+            draft_id = tokens[1]
+            draft = service.get_draft(draft_id)
+            if not draft:
+                return {"text": f"Draft '{draft_id}' not found.", "code": "DRAFT_NOT_FOUND"}
+            lines = [
+                f"Draft {draft.id} [{draft.channel.upper()}] - {draft.status}",
+                f"Topic: {draft.topic} | Archetype: {draft.archetype}",
+                f"Brand Voice Score: {draft.brand_voice_score:.2f} | Chars: {len(draft.caption)}",
+            ]
+            if draft.media_url:
+                lines.append(f"Media URL: {draft.media_url}")
+            elif draft.media_prompt:
+                lines.append(f"Media Prompt: {draft.media_prompt}")
+            lines.append(f"\n--- Caption ---\n{draft.caption}")
+            if draft.operator_note:
+                lines.append(f"\nNote: {draft.operator_note}")
+            return {"text": "\n".join(lines), "code": "POST_VIEW", "draft_id": draft.id}
+
+        elif subcmd == "approve":
+            if len(tokens) < 2:
+                return {"text": "Usage: /post approve <draft_id> [--note \"...\"]", "code": "DRAFT_ID_REQUIRED"}
+            draft_id = tokens[1]
+            note = " ".join(tokens[2:]).strip() if len(tokens) > 2 else f"Approved from Telegram by user {user_id}"
+            try:
+                draft = service.approve_draft(draft_id, operator_note=note)
+            except Exception as error:
+                code = getattr(error, "code", "APPROVE_REFUSED")
+                return {"text": f"Approval refused ({code}): {safe_outbound_text(str(error))}", "code": code}
+            lines = [
+                f"Draft {draft.id} APPROVED for Buffer scheduling.",
+                f"Channel: {draft.channel.upper()} | Target: {draft.channel}",
+                f"Note: {draft.operator_note}",
+                "Status in action_approvals: ready for execution by n8n Buffer Draft Executor (zAd3P31ZrTm9Ax94).",
+            ]
+            return {"text": "\n".join(lines), "code": "POST_APPROVED", "draft_id": draft.id}
+
+        elif subcmd == "reject":
+            if len(tokens) < 2:
+                return {"text": "Usage: /post reject <draft_id> [reason]", "code": "DRAFT_ID_REQUIRED"}
+            draft_id = tokens[1]
+            reason = " ".join(tokens[2:]).strip() if len(tokens) > 2 else f"Rejected from Telegram by user {user_id}"
+            try:
+                draft = service.reject_draft(draft_id, reason=reason)
+            except Exception as error:
+                code = getattr(error, "code", "REJECT_REFUSED")
+                return {"text": f"Rejection refused ({code}): {safe_outbound_text(str(error))}", "code": code}
+            return {"text": f"Draft {draft.id} marked REJECTED. Reason: {reason}", "code": "POST_REJECTED", "draft_id": draft.id}
+
+        return {"text": f"Unknown subcommand '{subcmd}'. Usage: /post [list | new <channel> <topic> | view <id> | approve <id> | reject <id>]", "code": "POST_UNKNOWN_SUBCOMMAND"}
 
     def _action_callback(self, action: str, identifier: str, fingerprint: str, *, user_id: int | None,
                          chat_id: int | None, message_id: int | None, callback_query_id: str,
