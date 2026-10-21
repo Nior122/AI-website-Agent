@@ -4,17 +4,30 @@ from __future__ import annotations
 import base64
 import copy
 from datetime import datetime, timezone
-from html import escape
 import hashlib
 import json
 from pathlib import Path, PureWindowsPath
+import os
 import re
+import sys
 from urllib.parse import urlparse
 
+from deployment.authorization import (
+    DEPLOYMENT_ACTION as PREVIEW_DEPLOYMENT_ACTION,
+    approval_path,
+    artifact_sha256,
+    read_approval,
+    latest_publish_attempt,
+    read_attempts,
+    revoke_approval,
+    verify_approval,
+    write_approval,
+)
 from tracking.database import (
     DatabasePersistenceError,
     RelationalStateBackend,
     TRACKED_COLLECTIONS,
+    VOLATILE_RECORD_FIELDS,
     configured_database_url,
     extract_research_evidence_entries,
     is_production_mode,
@@ -54,6 +67,105 @@ DATA_CLASSIFICATIONS = {"TEST_FIXTURE", "REAL_PUBLIC_DATA"}
 REVIEW_DECISIONS = {"PENDING", "APPROVED_FOR_PREVIEW", "APPROVED", "REJECTED", "CHANGES_REQUESTED"}
 PERMITTED_REVIEW_ACTIONS = {"HOLD", "REBUILD", "DISCARD", "PREVIEW_DEPLOYMENT", "OUTREACH_PREPARATION"}
 SHARED_FICTIONAL_PREVIEW_PROJECT = "ai-website-agent-preview"
+
+#: Identity mechanisms that can actually prove *who* a reviewer was. This repository has none: there
+#: is no SSO, no signed assertion, and no multi-factor channel. A review therefore always records
+#: ``identity_verified: false`` no matter what a caller claims - a reviewer string is evidence of what
+#: was submitted, never of who submitted it. Adding a name here requires an authentication mechanism
+#: that verifies a human, not a new field in a payload.
+VERIFIED_IDENTITY_SOURCES: frozenset[str] = frozenset()
+
+#: Accepted shape of any caller-supplied record identifier. Identifiers are dictionary keys in the
+#: state document and bound parameters in SQL - never path components - but one bounded, traversal-
+#: free pattern keeps both of those properties easy to reason about at every entry point.
+RECORD_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$")
+
+#: Free-text bounds for review fields, so a request cannot bloat the durable audit record.
+MAX_REVIEW_NOTES_CHARS = 4000
+MAX_REVIEWER_CHARS = 120
+MAX_EXPORT_PATH_CHARS = 240
+
+
+def validate_record_id(value: object, *, kind: str = "record") -> str:
+    """Return a safe identifier or raise an actionable error (no traversal, no control characters)."""
+    text = str(value if value is not None else "").strip()
+    if not text:
+        raise ValueError(f"A {kind} is required.")
+    if RECORD_ID_PATTERN.fullmatch(text) is None:
+        raise ValueError(
+            f"Invalid {kind} '{text[:60]}': use 1-120 characters of letters, digits, dot, colon, "
+            "underscore or hyphen, starting with a letter or digit."
+        )
+    return text
+
+
+def validate_bounded_text(value: object, *, field: str, limit: int) -> str:
+    """Require non-empty single-purpose text within a length bound, without control characters."""
+    text = "" if value is None else str(value)
+    cleaned = text.strip()
+    if not cleaned:
+        raise ValueError(f"'{field}' is required and must not be empty.")
+    if any(ord(char) < 32 and char not in "\n\t" for char in cleaned):
+        raise ValueError(f"'{field}' must not contain control characters.")
+    if len(cleaned) > limit:
+        raise ValueError(f"'{field}' is too long ({len(cleaned)} characters; the limit is {limit}).")
+    return cleaned
+
+
+def validate_export_directory(candidate: object, *, base_root: Path | str, allowed_roots: list[Path | str]) -> Path:
+    """Resolve a caller-supplied export directory and require it to stay inside an approved root.
+
+    A review-package export writes files, so a path a remote caller controls may only land inside a
+    root the operator configured (``preview-export`` by default). Absolute paths, ``..`` segments and
+    symlinks are all resolved first, so the containment test is on the real destination rather than on
+    the spelling of the request. Relative paths are interpreted against ``base_root``.
+    """
+    text = str(candidate if candidate is not None else "").strip()
+    if not text or len(text) > MAX_EXPORT_PATH_CHARS:
+        raise ValueError(f"Export directory must be a non-empty path of at most {MAX_EXPORT_PATH_CHARS} characters.")
+    if "\x00" in text or any(char in text for char in ("\n", "\r")):
+        raise ValueError("Export directory must not contain newline or NUL characters.")
+    if ".." in Path(text).parts or ".." in PureWindowsPath(text).parts:
+        raise ValueError("Export directory must not contain '..' segments; choose a directory inside the export root.")
+    base = Path(base_root).resolve()
+    candidate_path = Path(text)
+    resolved = (candidate_path if candidate_path.is_absolute() else base / candidate_path).resolve()
+    roots = [Path(root).resolve() for root in allowed_roots]
+    containing = None
+    for root in roots:
+        try:
+            relative = resolved.relative_to(root)
+        except ValueError:
+            continue
+        containing = root
+        if any(part.startswith(".") for part in relative.parts):
+            raise ValueError("Export directory must not point into a hidden directory inside the export root.")
+        break
+    if containing is None:
+        raise ValueError(
+            f"Refusing export directory outside the approved export root(s) {', '.join(str(root) for root in roots)}."
+        )
+    return resolved
+def clamp_reviewer_identity_claim(reviewer: object, identity_source: object) -> object:
+    """Force ``identity_verified`` off unless a verifying mechanism recorded the decision.
+
+    A caller-provided reviewer name (or a self-declared flag in a request body) is not evidence that a
+    human was authenticated. Since deployment authorization is bound to that flag, only a source listed
+    in :data:`VERIFIED_IDENTITY_SOURCES` may carry it; any other claim is refused and annotated so the
+    audit trail explains why the decision is stored as unverified.
+    """
+    if not isinstance(reviewer, dict) or not reviewer.get("identity_verified"):
+        return reviewer
+    source = str(identity_source or "unspecified")
+    clamped = dict(reviewer)
+    clamped["identity_verified"] = False
+    clamped["identity_claim_refused"] = (
+        "The caller requested identity_verified, but no verified-identity mechanism recorded this "
+        f"decision (identity_source: {source}), so it is stored as unverified."
+    )
+    return clamped
+
+
 DEFAULT_STATE_PATH = Path("data/tracking/state.json")
 
 
@@ -86,6 +198,61 @@ def project_workflow_state(p: dict) -> str:
 
 def now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _write_state_atomically(path: Path, state: dict) -> None:
+    """Write the tracking state through a temporary file and an atomic rename.
+
+    A direct `write_text()` truncates the existing file first, so a crash or an out-of-disk
+    error mid-write leaves a partially written state file behind for every later reader.
+    """
+    payload = json.dumps(state, indent=2) + "\n"
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def records_conflict(existing: dict, incoming: dict) -> bool:
+    """True when two records claiming the same ID disagree on a shared non-volatile field.
+
+    Only fields present in both records are compared, because the stored record legitimately gains
+    derived fields (project/lead linkage, artifact digests, capture warnings) after being recorded.
+    """
+    if not isinstance(existing, dict) or not isinstance(incoming, dict):
+        return existing != incoming
+    for key, value in incoming.items():
+        if key in VOLATILE_RECORD_FIELDS or key not in existing:
+            continue
+        if existing[key] != value:
+            return True
+    return False
+
+
+def next_numeric_id(collection: dict, prefix: str) -> str:
+    """Return the next non-colliding ``prefix-NNNN`` id for *collection*.
+
+    Uses the maximum existing numeric suffix instead of ``len(collection) + 1`` so
+    that deletions, retries, or concurrent inserts cannot reuse an id that is
+    still referenced by historical records.
+    """
+    max_n = 0
+    for key in (collection or {}).keys():
+        if not isinstance(key, str) or not key.startswith(prefix + "-"):
+            continue
+        suffix = key[len(prefix) + 1:]
+        if suffix.isdigit():
+            max_n = max(max_n, int(suffix))
+    return f"{prefix}-{max_n + 1:04d}"
 
 
 def norm(v) -> str | None:
@@ -207,6 +374,17 @@ def _empty_state() -> dict:
         "qualifications": {},
         "reviews": {},
         "build_artifacts": {},
+        # Engagement ledger (tracking/engagement.py). Declared here so a fresh workspace has the collections
+        # and an absent key never means "no engagement history was ever recorded" versus "state is corrupt".
+        "engagements": {},
+        "proposals": {},
+        "follow_ups": {},
+        "outcomes": {},
+        "contact_blocks": {},
+        "relationships": {},
+        "inbound_events": {},
+        "automation_controls": {},
+        "provider_sync": {},
     }
 
 
@@ -313,9 +491,22 @@ class TrackingStore:
         if self.path.exists():
             try:
                 disk_raw = json.loads(self.path.read_text(encoding="utf-8"))
-                if isinstance(disk_raw, dict):
-                    disk_state = _empty_state()
-                    disk_state.update(disk_raw)
+            except (json.JSONDecodeError, UnicodeDecodeError, OSError) as error:
+                # A truncated or unreadable state file cannot be merged. Replacing it with the
+                # validated in-memory state is preferable to refusing every later write, but the
+                # reason is surfaced so a corrupted file is never mistaken for an empty workspace.
+                sys.stderr.write(
+                    f"WARNING: existing tracking state file {self.path} could not be read ({error}); "
+                    "writing the current in-memory state without a disk merge.\n"
+                )
+                disk_raw = None
+            if isinstance(disk_raw, dict):
+                disk_state = _empty_state()
+                disk_state.update(disk_raw)
+                # Compute every merged collection before touching `self.state` so an unexpected
+                # error can never leave a partially merged (silently lossy) state on disk.
+                merged_columns: dict[str, dict] = {}
+                try:
                     for col in (*TRACKED_COLLECTIONS, "executions", "workers", "project_locks"):
                         if not isinstance(self.state.get(col), dict) and not isinstance(disk_state.get(col), dict):
                             continue
@@ -336,19 +527,24 @@ class TrackingStore:
                                     merged_col[rec_id] = m_rec
                                 else:
                                     merged_col[rec_id] = copy.deepcopy(rec_val)
-                        target_col = self.state.setdefault(col, {})
-                        for dead_id in list(target_col.keys()):
-                            if dead_id not in merged_col:
-                                target_col.pop(dead_id, None)
-                        for rec_id, m_val in merged_col.items():
-                            if rec_id in target_col and isinstance(target_col[rec_id], dict) and isinstance(m_val, dict):
-                                target_col[rec_id].clear()
-                                target_col[rec_id].update(m_val)
-                            else:
-                                target_col[rec_id] = m_val
-            except Exception:
-                pass
-        self.path.write_text(json.dumps(self.state, indent=2) + "\n", encoding="utf-8")
+                        merged_columns[col] = merged_col
+                except Exception as error:
+                    raise ValueError(
+                        f"Refusing to overwrite tracking state {self.path}: concurrent changes could not be merged safely ({error}). "
+                        "Reload the state (TrackingStore.refresh()) and retry."
+                    ) from error
+                for col, merged_col in merged_columns.items():
+                    target_col = self.state.setdefault(col, {})
+                    for dead_id in list(target_col.keys()):
+                        if dead_id not in merged_col:
+                            target_col.pop(dead_id, None)
+                    for rec_id, m_val in merged_col.items():
+                        if rec_id in target_col and isinstance(target_col[rec_id], dict) and isinstance(m_val, dict):
+                            target_col[rec_id].clear()
+                            target_col[rec_id].update(m_val)
+                        else:
+                            target_col[rec_id] = m_val
+        _write_state_atomically(self.path, self.state)
         self._loaded_snapshot = copy.deepcopy(self.state)
 
     def find_duplicate(self, lead: dict) -> dict:
@@ -371,13 +567,17 @@ class TrackingStore:
         return {"match": "NO_MATCH", "lead_id": None}
 
     def create_lead(self, lead: dict) -> dict:
+        if self.db_backend is not None:
+            # Read the newest committed rows first so duplicate detection and the numeric ID
+            # allocation below cannot race with a concurrent insert.
+            self.refresh()
         dup = self.find_duplicate(lead)
         if dup["match"] == "EXACT_MATCH":
             raise ValueError(f"Duplicate lead: {dup['lead_id']}")
         classification = lead.get("data_classification") or "TEST_FIXTURE"
         if classification not in DATA_CLASSIFICATIONS:
             raise ValueError(f"Invalid data_classification: {classification}")
-        ident = f"lead-{len(self.state['leads']) + 1:04d}"
+        ident = next_numeric_id(self.state.get("leads") or {}, "lead")
         record = {
             **lead,
             "data_classification": classification,
@@ -391,6 +591,9 @@ class TrackingStore:
         return record
 
     def create_project(self, lead_id: str) -> dict:
+        if self.db_backend is not None:
+            # See `create_lead`: a fresh read keeps active-project reuse and ID allocation accurate.
+            self.refresh()
         lead = self.state["leads"].get(lead_id)
         if not lead or lead.get("qualification_status") != "QUALIFIED":
             raise ValueError("Only QUALIFIED leads can have projects.")
@@ -400,7 +603,7 @@ class TrackingStore:
         )
         if existing:
             return existing
-        ident = f"project-{len(self.state['projects']) + 1:04d}"
+        ident = next_numeric_id(self.state.get("projects") or {}, "project")
         p = {
             "project_id": ident,
             "lead_id": lead_id,
@@ -545,6 +748,9 @@ class TrackingStore:
             existing["research_record"] = copy.deepcopy(record)
             existing["research_record"]["lead_id"] = existing["lead_id"]
             existing["updated_at"] = now()
+            # Commit the refreshed lead before appending qualification history so a later
+            # failure cannot discard the research update.
+            self._save()
             lead = existing
         else:
             lead = self.create_lead(lead_payload)
@@ -581,9 +787,16 @@ class TrackingStore:
         lead = self.state["leads"].get(qualification.get("lead_id"))
         if not lead:
             raise ValueError("Qualification requires an existing lead.")
-        ident = qualification.get("qualification_id") or f"qualification-{len(self.state['qualifications']) + 1:04d}"
-        if ident in self.state["qualifications"]:
-            return self.state["qualifications"][ident]
+        explicit_id = qualification.get("qualification_id")
+        ident = explicit_id or None
+        if ident is None:
+            ident = next_numeric_id(self.state["qualifications"], "qualification")
+        existing_qual = self.state["qualifications"].get(ident)
+        if existing_qual:
+            # An ID reused for a different lead is a data-integrity conflict, never an idempotent replay.
+            if existing_qual.get("lead_id") != qualification.get("lead_id"):
+                raise ValueError("Qualification ID is already assigned to another lead.")
+            return existing_qual
         qualification["qualification_id"] = ident
         record = {**qualification, "qualification_id": ident, "created_at": qualification.get("created_at") or now()}
         self.state["qualifications"][ident] = record
@@ -599,19 +812,45 @@ class TrackingStore:
         self._save()
         return record
 
-    def transition(self, project_id: str, to: str) -> dict:
+    def _set_stage(self, project_id: str, to: str) -> dict:
+        """Validate and apply a stage change in memory only, without persisting.
+
+        Multi-record operations (build, validation, deployment, review) move through several
+        stages at once. Those intermediate stages are not meaningful committed states, and
+        persisting each one separately means a later failure can leave the durable state in the
+        middle of the sequence. Every such operation applies its transitions here and performs a
+        single `_save()` once all of its records are in place, so the write is all-or-nothing.
+        """
         p = self.state["projects"].get(project_id)
-        if not p or to not in TRANSITIONS.get(p["current_stage"], set()):
-            raise ValueError("Illegal project state transition.")
+        if not p:
+            raise ValueError(f"Unknown project: {project_id}. Cannot transition to {to}.")
+        current = p.get("current_stage")
+        if to not in TRANSITIONS.get(current, set()):
+            allowed = ", ".join(sorted(TRANSITIONS.get(current, set()))) or "none"
+            raise ValueError(
+                f"Illegal project state transition for {project_id}: {current} -> {to}. "
+                f"Permitted next stages from {current}: {allowed}."
+            )
         p["current_stage"] = to
         p["updated_at"] = now()
+        return p
+
+    def transition(self, project_id: str, to: str) -> dict:
+        p = self._set_stage(project_id, to)
         self._save()
         return p
+        current = p.get("current_stage")
+        if to not in TRANSITIONS.get(current, set()):
+            allowed = ", ".join(sorted(TRANSITIONS.get(current, set()))) or "none"
+            raise ValueError(
+                f"Illegal project state transition for {project_id}: {current} -> {to}. "
+                f"Permitted next stages from {current}: {allowed}."
+            )
 
     def record_build(self, project_id: str, build: dict) -> dict:
         p = self.state["projects"].get(project_id)
         if not p:
-            raise ValueError("Project is not ready for a build.")
+            raise ValueError(f"Unknown project: {project_id}. Cannot record a build.")
         if build.get("lead_id") != p["lead_id"]:
             raise ValueError("Build lead does not match project lead.")
         build_id = build.get("build_id")
@@ -622,6 +861,11 @@ class TrackingStore:
             raise ValueError("Build ID is already assigned to another project.")
         if existing and existing.get("status") == "FAILED" and build.get("status") != "FAILED":
             raise ValueError("Failed build cannot become a successful build.")
+        if existing and records_conflict(existing, build):
+            raise ValueError(
+                f"Build ID {build_id} is already recorded with different content. "
+                "A corrected or regenerated build must use a new build_id so the prior result stays auditable."
+            )
         if (
             existing
             and existing.get("project_id") == project_id
@@ -630,8 +874,12 @@ class TrackingStore:
         ):
             return existing
         if p["current_stage"] not in {"QUALIFIED", "BUILDING", "FAILED", "READY_FOR_REVIEW", "VALIDATING"}:
-            raise ValueError("Project is not ready for a build.")
+            raise ValueError(
+                f"Project {project_id} is in stage {p['current_stage']} and cannot accept a new build. "
+                "Builds are recorded from QUALIFIED, BUILDING, VALIDATING, READY_FOR_REVIEW, or FAILED."
+            )
         lead = self.state["leads"].get(p["lead_id"]) or {}
+        assigned_build = p.get("assigned_build_id")
         lead_class = lead.get("data_classification") or p.get("data_classification") or "TEST_FIXTURE"
         build_class = build.get("data_classification") or (build.get("metadata") or {}).get("data_classification")
         if lead_class == "REAL_PUBLIC_DATA" and (
@@ -643,12 +891,13 @@ class TrackingStore:
         if lead_class == "TEST_FIXTURE" and build_class == "REAL_PUBLIC_DATA":
             raise ValueError("Cannot attach real-business build to a fictional test project.")
         if p["current_stage"] in {"QUALIFIED", "FAILED", "READY_FOR_REVIEW", "VALIDATING"}:
-            self.transition(project_id, "BUILDING")
+            self._set_stage(project_id, "BUILDING")
         stored_build = {
             **build,
             "project_id": project_id,
             "data_classification": build_class or lead_class,
         }
+        artifact_capture_error: str | None = None
         if stored_build.get("status") != "FAILED":
             html_content = stored_build.pop("html_content", None)
             explicit_assets = stored_build.pop("local_assets", None)
@@ -664,8 +913,14 @@ class TrackingStore:
                     if manifest_file.is_file():
                         manifest_data = json.loads(manifest_file.read_text(encoding="utf-8"))
                     scanned_assets = _collect_safe_local_assets(out_path_obj.parent)
-                except Exception:
-                    pass
+                except Exception as capture_exc:
+                    # Recorded on the build instead of being swallowed: a missing durable artifact must
+                    # not look like a healthy build, and review packaging fails with this reason.
+                    artifact_capture_error = f"{type(capture_exc).__name__}: {capture_exc}"
+            elif not isinstance(html_content, str) or not html_content:
+                artifact_capture_error = (
+                    f"No build artifact content available (output_location={out_loc!r} is not a readable file)."
+                )
             local_assets = copy.deepcopy(explicit_assets) if isinstance(explicit_assets, dict) else scanned_assets
             if isinstance(html_content, str) and html_content:
                 html_bytes = len(html_content.encode("utf-8"))
@@ -689,6 +944,19 @@ class TrackingStore:
                     "created_at": stored_build.get("created_at") or now(),
                     "updated_at": now(),
                 }
+        if artifact_capture_error:
+            stored_build["artifact_capture_error"] = artifact_capture_error
+        else:
+            stored_build.pop("artifact_capture_error", None)
+        if assigned_build and assigned_build != build_id:
+            superseded = self.state["builds"].get(assigned_build) or {}
+            superseded_dir = self._build_directory(superseded, self.state.get("build_artifacts"))
+            if superseded_dir is not None:
+                revoke_approval(
+                    superseded_dir,
+                    reason=f"build {assigned_build} was superseded by {build_id} on project {project_id}",
+                    revoked_by="tracking.store",
+                )
         self.state["builds"][build_id] = stored_build
         p["assigned_build_id"] = build_id
         p["latest_validation_id"] = None
@@ -700,9 +968,10 @@ class TrackingStore:
         p["approved_action"] = None
         p["pre_deployment_review_status"] = None
         if build.get("status") == "FAILED":
-            self.transition(project_id, "FAILED")
+            self._set_stage(project_id, "FAILED")
         else:
-            self.transition(project_id, "VALIDATING")
+            self._set_stage(project_id, "VALIDATING")
+        self._save()
         return self.state["builds"][build_id]
 
     def record_build_artifact(
@@ -904,6 +1173,11 @@ class TrackingStore:
         existing_val = self.state["validations"].get(val_id)
         if existing_val and (existing_val.get("project_id") != project_id or existing_val.get("build_id") != build["build_id"]):
             raise ValueError("Validation ID is already assigned to another build or project.")
+        if existing_val and records_conflict(existing_val, validation):
+            raise ValueError(
+                f"Validation ID {val_id} is already recorded with different content. "
+                "A re-run must use a new validation_id so the prior result stays auditable."
+            )
         if (
             existing_val
             and existing_val.get("project_id") == project_id
@@ -928,11 +1202,12 @@ class TrackingStore:
         self.state["validations"][val_id] = stored_val
         p["latest_validation_id"] = val_id
         if p["current_stage"] in {"FAILED", "READY_FOR_REVIEW"}:
-            self.transition(project_id, "BUILDING")
-            self.transition(project_id, "VALIDATING")
+            self._set_stage(project_id, "BUILDING")
+            self._set_stage(project_id, "VALIDATING")
         elif p["current_stage"] == "BUILDING":
-            self.transition(project_id, "VALIDATING")
-        self.transition(project_id, "READY_FOR_REVIEW" if validation.get("status") == "PASS" else "FAILED")
+            self._set_stage(project_id, "VALIDATING")
+        self._set_stage(project_id, "READY_FOR_REVIEW" if validation.get("status") == "PASS" else "FAILED")
+        self._save()
         return stored_val
 
     def record_deployment(self, project_id: str, deployment: dict) -> dict:
@@ -962,6 +1237,11 @@ class TrackingStore:
         existing_dep = self.state["deployments"].get(dep_id)
         if existing_dep and existing_dep.get("project_id") != project_id:
             raise ValueError("Deployment ID is already assigned to another project.")
+        if existing_dep and records_conflict(existing_dep, deployment):
+            raise ValueError(
+                f"Deployment ID {dep_id} is already recorded with different content. "
+                "A new deployment requires a new build and deployment_id so the prior deployment stays auditable."
+            )
         if (
             existing_dep
             and existing_dep.get("project_id") == project_id
@@ -1005,13 +1285,357 @@ class TrackingStore:
             )
         stored_dep = {**deployment, "project_id": project_id, "lead_id": p["lead_id"]}
         self.state["deployments"][dep_id] = stored_dep
+        # One approval authorizes one publish: the build-local capability is consumed when the
+        # deployment is recorded, so the same build cannot be published again without a new decision.
+        consumed_dir = self._build_directory(build, self.state.get("build_artifacts"))
+        if consumed_dir is not None:
+            revoke_approval(
+                consumed_dir,
+                reason=f"approval consumed by recorded deployment {dep_id}",
+                revoked_by="tracking.store",
+            )
         p["latest_deployment_id"] = dep_id
         if p.get("review_status") == "APPROVED_FOR_PREVIEW":
             p["pre_deployment_review_status"] = "APPROVED_FOR_PREVIEW"
             p["review_status"] = "PENDING"
             p["approved_action"] = None
-        self.transition(project_id, "PREVIEW_DEPLOYED")
+        self._set_stage(project_id, "PREVIEW_DEPLOYED")
+        self._save()
         return stored_dep
+
+    @staticmethod
+    def _build_directory(build: dict | None, artifacts: dict | None = None) -> Path | None:
+        """Return the on-disk build directory recorded for *build*, if any."""
+        if not isinstance(build, dict):
+            return None
+        build_id = build.get("build_id")
+        for candidate in (
+            build.get("output_location"),
+            (artifacts or {}).get(build_id or "", {}).get("artifact_path") if build_id else None,
+        ):
+            if not candidate:
+                continue
+            path = Path(str(candidate))
+            directory = path.parent if path.suffix else path
+            if directory.is_dir():
+                return directory
+        return None
+
+    def _authorization_result(
+        self,
+        authorized: bool,
+        code: str,
+        reason: str,
+        *,
+        project_id: str | None = None,
+        lead_id: str | None = None,
+        build_id: str | None = None,
+        validation_id: str | None = None,
+        review_id: str | None = None,
+        data_classification: str | None = None,
+        skip_publish: bool = False,
+        **extra,
+    ) -> dict:
+        result = {
+            "authorized": bool(authorized),
+            "code": code,
+            "reason": reason,
+            "project_id": project_id,
+            "lead_id": lead_id,
+            "build_id": build_id,
+            "validation_id": validation_id,
+            "review_id": review_id,
+            "action": PREVIEW_DEPLOYMENT_ACTION,
+            "data_classification": data_classification,
+            "skip_publish": bool(skip_publish),
+        }
+        result.update(extra)
+        return result
+
+    def authorize_preview_deployment(self, project_id: str, *, build_id: str | None = None, action: str = PREVIEW_DEPLOYMENT_ACTION,
+                                     resolve_uncertain_publish: bool = False) -> dict:
+        """Answer 'may this exact build be published right now?' for every server-side entry point.
+
+        This is the durable audit-side half of the deployment gate: it reads project ownership,
+        the assigned build, the recorded PASS validation, the project stage, and the explicit
+        human approval (and its build-local capability). It never publishes anything and never
+        mutates state, so the CLI, the worker, and the n8n-triggered API path can all consult it.
+        The publish operation itself re-verifies the capability in
+        :meth:`deployment.deployer.VercelDeploymentProvider.deploy`.
+        """
+        action = str(action or PREVIEW_DEPLOYMENT_ACTION).strip().upper()
+        p = self.state["projects"].get(project_id)
+        if not p:
+            return self._authorization_result(
+                False, "UNKNOWN_PROJECT",
+                f"Unknown project: {project_id}. Only a tracked project can be deployed; create the project "
+                "(or pass the project_id returned by the pipeline) before deploying.",
+                project_id=project_id, build_id=build_id,
+            )
+        lead = self.state["leads"].get(p.get("lead_id") or "") or {}
+        data_class = lead.get("data_classification") or p.get("data_classification") or "TEST_FIXTURE"
+        common = {"project_id": project_id, "lead_id": p.get("lead_id"), "data_classification": data_class}
+        assigned = p.get("assigned_build_id")
+        if not assigned:
+            return self._authorization_result(
+                False, "BUILD_NOT_ASSIGNED",
+                f"Project {project_id} has no assigned build, so nothing is approved for deployment. Build and "
+                "validate a website first; a deployment is only ever authorized for one completed build.",
+                **common,
+            )
+        if build_id is not None and build_id != assigned:
+            return self._authorization_result(
+                False, "BUILD_MISMATCH",
+                f"Requested build '{build_id}' is not the build currently assigned to project {project_id} "
+                f"('{assigned}'). Deploy the assigned build or record a review decision for the intended one.",
+                build_id=build_id, **common,
+            )
+        build = self.state["builds"].get(assigned) or {}
+        if not build:
+            return self._authorization_result(
+                False, "BUILD_NOT_FOUND",
+                f"Project {project_id} references build '{assigned}' but no such build record exists.",
+                build_id=assigned, **common,
+            )
+        if build.get("lead_id") and build.get("lead_id") != p.get("lead_id"):
+            return self._authorization_result(
+                False, "LEAD_MISMATCH",
+                f"Build {assigned} belongs to lead {build.get('lead_id')} but project {project_id} belongs to "
+                f"{p.get('lead_id')}; cross-project deployment is refused.",
+                build_id=assigned, **common,
+            )
+        if build.get("status") == "FAILED":
+            return self._authorization_result(
+                False, "BUILD_FAILED",
+                f"Build {assigned} recorded a FAILED status; only a successfully completed build can be deployed.",
+                build_id=assigned, **common,
+            )
+        if build.get("status") not in (None, "", "COMPLETED", "SUCCESS", "BUILT"):
+            return self._authorization_result(
+                False, "BUILD_NOT_COMPLETED",
+                f"Build {assigned} is in status {build.get('status')!r}; deployment requires a completed build.",
+                build_id=assigned, **common,
+            )
+        validation_id = p.get("latest_validation_id")
+        latest_val = self.state["validations"].get(validation_id or "")
+        if not latest_val:
+            return self._authorization_result(
+                False, "VALIDATION_MISSING",
+                f"Project {project_id} has no recorded validation result. A build or a passing pipeline step "
+                "never implies deployability: run the validator and record a PASS validation first.",
+                build_id=assigned, **common,
+            )
+        if latest_val.get("build_id") != assigned:
+            return self._authorization_result(
+                False, "VALIDATION_STALE",
+                f"The latest validation {validation_id} was recorded for build {latest_val.get('build_id')!r}, "
+                f"not the assigned build {assigned}; re-validate the current build.",
+                build_id=assigned, validation_id=validation_id, **common,
+            )
+        if latest_val.get("status") != "PASS":
+            return self._authorization_result(
+                False, "VALIDATION_NOT_PASSED",
+                f"Validation {validation_id} status is {latest_val.get('status')!r}, not PASS.",
+                build_id=assigned, validation_id=validation_id, **common,
+            )
+        stage = p.get("current_stage")
+        if p.get("review_status") == "REJECTED":
+            return self._authorization_result(
+                False, "REVIEW_REJECTED",
+                f"Project {project_id} was explicitly rejected (a new build and a new approval are required).",
+                build_id=assigned, validation_id=validation_id, **common,
+            )
+        if p.get("review_status") == "CHANGES_REQUESTED":
+            return self._authorization_result(
+                False, "REVIEW_CHANGES_REQUESTED",
+                f"Project {project_id} has changes requested; rebuild, re-validate, and obtain a new approval.",
+                build_id=assigned, validation_id=validation_id, **common,
+            )
+        if stage not in {"READY_FOR_REVIEW", "PREVIEW_DEPLOYED"}:
+            return self._authorization_result(
+                False, "STAGE_NOT_REVIEWABLE",
+                f"Project {project_id} is in stage {stage!r}; preview deployment is only authorized from "
+                "READY_FOR_REVIEW (or PREVIEW_DEPLOYED for a repeat request).",
+                build_id=assigned, validation_id=validation_id, **common,
+            )
+        prior_dep = self.state["deployments"].get(p.get("latest_deployment_id") or "")
+        already_deployed = bool(
+            prior_dep
+            and prior_dep.get("build_id") == assigned
+            and prior_dep.get("deployment_status") == "DEPLOYED"
+            and prior_dep.get("validation_id") == validation_id
+        )
+        if already_deployed and p.get("review_status") != "APPROVED_FOR_PREVIEW":
+            return self._authorization_result(
+                True, "ALREADY_DEPLOYED",
+                f"Build {assigned} was already published as {prior_dep.get('deployment_id')}"
+                + (f" ({prior_dep.get('deployment_url')})" if prior_dep.get("deployment_url") else "")
+                + ". Repeating the job must not publish it a second time.",
+                build_id=assigned, validation_id=validation_id, skip_publish=True,
+                deployment_id=prior_dep.get("deployment_id"), deployment_url=prior_dep.get("deployment_url"),
+                **common,
+            )
+        review_id, notes = None, None
+        for entry in reversed(list(p.get("review_history") or [])):
+            if entry.get("build_id") == assigned and entry.get("decision") == "APPROVED_FOR_PREVIEW":
+                review_id, notes = entry.get("review_id"), entry.get("notes")
+                break
+        if p.get("review_status") != "APPROVED_FOR_PREVIEW" or p.get("approved_build_id") != assigned or p.get("approved_action") != action:
+            detail = (
+                f"project review_status is {p.get('review_status')!r}"
+                if p.get("review_status") != "APPROVED_FOR_PREVIEW"
+                else "the approval is bound to build "
+                     f"{p.get('approved_build_id')!r}/action {p.get('approved_action')!r}, not {assigned!r}/{action}"
+                     if p.get("approved_build_id") != assigned or p.get("approved_action") != action
+                else ""
+            )
+            return self._authorization_result(
+                False, "APPROVAL_SUPERSEDED" if review_id else "APPROVAL_MISSING",
+                "Explicit human approval is required before any publish"
+                + (f": {detail}." if detail else ".")
+                + (f" Re-record the decision with: python3 -m tracking.cli review {project_id} "
+                   f"--decision APPROVED_FOR_PREVIEW --action {action} --notes \"...\" "
+                   f"--confirm {project_id}:{assigned}:APPROVED_FOR_PREVIEW"
+                   if not review_id else
+                   f" The approval recorded for build {assigned} (review {review_id}) was superseded by a newer "
+                   "build or decision and cannot be reused."),
+                build_id=assigned, validation_id=validation_id, review_id=review_id, **common,
+            )
+        if data_class == "REAL_PUBLIC_DATA":
+            effective_target = str(p.get("isolated_preview_project") or "").strip()
+            if not effective_target or effective_target == SHARED_FICTIONAL_PREVIEW_PROJECT:
+                return self._authorization_result(
+                    False, "REAL_ISOLATED_TARGET_REQUIRED",
+                    f"Real-business project {project_id} must configure an isolated preview project "
+                    f"(never the shared fictional '{SHARED_FICTIONAL_PREVIEW_PROJECT}') before it can be deployed.",
+                    build_id=assigned, validation_id=validation_id, review_id=review_id, **common,
+                )
+        build_dir = self._build_directory(build, self.state.get("build_artifacts"))
+        if build_dir is None:
+            return self._authorization_result(
+                False, "ARTIFACT_NOT_RECORDED",
+                f"Build {assigned} has no readable artifact directory on disk, so there is nothing to verify "
+                "against the approval and nothing to publish.",
+                build_id=assigned, validation_id=validation_id, review_id=review_id, **common,
+            )
+        authorized, code, reason, capability = verify_approval(build_dir, manifest={
+            "build_id": assigned,
+            "lead_id": p.get("lead_id"),
+            "validation": {"validation_id": validation_id, "status": "PASS"},
+        })
+        attempts = read_attempts(build_dir)
+        # The gate reads the last entry that reports what the provider was told. An operator resolution is
+        # an annotation on that history, never proof that the publish finished, so it must not be able to
+        # flip this check from refusal to permission by being the most recent line in the ledger.
+        latest_attempt = latest_publish_attempt(build_dir)
+        extra = {
+            "build_id": assigned,
+            "validation_id": validation_id,
+            "review_id": (capability or {}).get("review_id") or review_id,
+            "approval": capability,
+            "approval_path": str(approval_path(build_dir)),
+            "build_dir": str(build_dir),
+            "publish_attempts": attempts[-3:],
+            "latest_attempt": latest_attempt,
+            "artifact_sha256": (capability or {}).get("artifact_sha256"),
+            "prior_attempts": len(attempts),
+            "latest_attempt_status": (latest_attempt or {}).get("deployment_status"),
+            "notes": notes,
+            **common,
+        }
+        if not authorized:
+            return self._authorization_result(False, code, reason, **extra)
+        publish_state_uncertain = str((latest_attempt or {}).get("deployment_status") or "") in {
+            "PREPARING", "DEPLOYING", "PUBLISH_UNCERTAIN"}
+        if publish_state_uncertain and not resolve_uncertain_publish:
+            return self._authorization_result(
+                False, "PUBLISH_STATE_UNCERTAIN",
+                f"The previous publish attempt ended in state '{latest_attempt.get('deployment_status')}' without a "
+                "recorded result; the provider may already have accepted it. Inspect the preview project with the "
+                "provider, then re-run the deployment with --resolve-uncertain-publish --resolve-note '<what you "
+                "checked>'. A resolution recorded earlier is not standing permission: the flag is required for each "
+                "attempt precisely so an uncertain publish is never retried by assumption.",
+                **extra,
+            )
+        resolution_caveat = ""
+        if publish_state_uncertain:
+            # Reached only from an explicit operator decision (`--resolve-uncertain-publish`, or the same
+            # flag in a DEPLOY job's input). This gate does not publish and does not record anything: the
+            # publish step re-verifies the approval, writes the resolution into the attempt ledger, and
+            # refuses on its own if that record cannot be written. Without this branch the flag would be
+            # unreachable from the CLI and the worker, and the documented recovery path would dead-end.
+            resolution_caveat = (" Re-running deliberately: the publish step records your resolution in "
+                                 "deployment-attempts.json before contacting the provider.")
+        if already_deployed:
+            return self._authorization_result(
+                True, "ALREADY_DEPLOYED",
+                f"Build {assigned} is already published as {prior_dep.get('deployment_id')}; the approval was not "
+                "consumed by a newer request, so the publish step is skipped rather than repeated.",
+                skip_publish=True, deployment_id=prior_dep.get("deployment_id"),
+                deployment_url=prior_dep.get("deployment_url"), **extra,
+            )
+        return self._authorization_result(
+            True, "APPROVED_FOR_DEPLOYMENT",
+            f"Build {assigned} is explicitly approved for {action} and may be published to preview."
+            + ((" Reviewer notes: " + notes) if notes else "") + resolution_caveat,
+            publish_state_uncertain=publish_state_uncertain,
+            **extra,
+        )
+
+    def _sync_approval_capability(self, project_id: str, entry: dict, *, replay: bool = False) -> None:
+        """Materialize an APPROVED_FOR_PREVIEW decision as the capability the publish step verifies.
+
+        The durable record stays in ``state["reviews"]`` / ``project["review_history"]``; this file
+        only carries that decision to the deployment boundary. Any other decision revokes it, so a
+        rejection, a change request, or an explicit hold immediately makes a publish impossible.
+        """
+        build = self.state["builds"].get(entry.get("build_id") or "") or {}
+        build_dir = self._build_directory(build, self.state.get("build_artifacts"))
+        if build_dir is None:
+            return
+        decision = entry.get("decision")
+        if decision != "APPROVED_FOR_PREVIEW":
+            revoke_approval(
+                build_dir,
+                reason=f"review decision '{decision}' recorded for project {project_id}",
+                revoked_by=str(entry.get("reviewer") or "operator")[:120],
+            )
+            return
+        existing = read_approval(build_dir) or {}
+        current_sha = artifact_sha256(build_dir)
+        if replay and existing.get("status") == "ACTIVE" and existing.get("artifact_sha256") and current_sha and existing["artifact_sha256"] != current_sha:
+            # An identical replayed decision must never re-bind an approval onto a changed artifact.
+            return
+        reviewer = entry.get("reviewer")
+        reviewer_identity = dict(reviewer) if isinstance(reviewer, dict) else {"reviewer_id": str(reviewer or "operator")}
+        reviewer_identity.setdefault("reviewer_id", str(reviewer or "operator"))
+        # Assurance comes from the mechanism that recorded the decision, never from the payload: a
+        # caller cannot mark its own decision "verified" inside the approval evidence that the publish
+        # gate and later audits read. `VERIFIED_IDENTITY_SOURCES` is empty, so this is always False.
+        # Reviews are clamped on the way in (record_review); this re-checks the durable entry itself so
+        # a record written by any other path cannot smuggle a claim into the capability.
+        reviewer_identity = clamp_reviewer_identity_claim(
+            reviewer_identity, entry.get("identity_source")
+        )
+        reviewer_identity.setdefault("identity_verified", False)
+        validation = self.state["validations"].get(entry.get("validation_id") or "") or {}
+        write_approval(build_dir, {
+            "project_id": project_id,
+            "lead_id": entry.get("lead_id"),
+            "build_id": entry.get("build_id"),
+            "validation_id": entry.get("validation_id"),
+            "validation_status": validation.get("status", "PASS"),
+            "review_id": entry.get("review_id"),
+            "decision": decision,
+            "action": entry.get("intended_action") or PREVIEW_DEPLOYMENT_ACTION,
+            "artifact_sha256": existing.get("artifact_sha256") if replay and current_sha is None else current_sha,
+            "reviewer": reviewer_identity,
+            "reviewer_identity_source": entry.get("identity_source") or "unspecified",
+            "identity_verified": bool(reviewer_identity.get("identity_verified")),
+            "notes": entry.get("notes"),
+            "decided_at": entry.get("timestamp"),
+            "data_classification": entry.get("data_classification") or validation.get("data_classification"),
+        })
 
     def record_review(
         self,
@@ -1023,6 +1647,7 @@ class TrackingStore:
         require_notes: bool = False,
         build_id: str | None = None,
         action: str | None = None,
+        identity_source: str | None = None,
     ) -> dict:
         normalized_status = str(status or "").strip().upper()
         normalized_action = str(action).strip().upper() if action is not None else None
@@ -1035,6 +1660,15 @@ class TrackingStore:
         p = self.state["projects"].get(project_id)
         if not p:
             raise ValueError(f"Unknown project: {project_id}")
+        if self.db_backend is not None:
+            # A review authorizes real work, so decide against the newest committed build,
+            # validation, and deployment state rather than a possibly stale local snapshot.
+            self.refresh()
+            p = self.state["projects"].get(project_id)
+            if not p:
+                raise ValueError(
+                    f"Unknown project: {project_id} (it was not present in the newest committed state)."
+                )
         if require_notes and (not isinstance(notes, str) or len(notes.strip()) < 3):
             raise ValueError("Review decision requires meaningful review notes (at least 3 characters).")
         assigned_build_id = p.get("assigned_build_id")
@@ -1120,6 +1754,27 @@ class TrackingStore:
         else:
             intended_action = intended_action or "HOLD"
 
+        # Persisted review evidence carries only the identity assurance this process can vouch for,
+        # so a self-declared flag cannot be stored (and later read back) as a verified human decision.
+        reviewer = clamp_reviewer_identity_claim(reviewer, identity_source)
+
+        # An exactly repeated review decision for the same build is an idempotent replay (for
+        # example a retried CLI call or an n8n re-delivery), not a second audit entry.
+        prior_entries = list(p.get("review_history") or [])
+        last_entry = prior_entries[-1] if prior_entries else None
+        if (
+            isinstance(last_entry, dict)
+            and last_entry.get("build_id") == assigned_build_id
+            and last_entry.get("decision") == normalized_status
+            and last_entry.get("intended_action") == intended_action
+            and last_entry.get("notes") == notes
+            and last_entry.get("reviewer") == reviewer
+        ):
+            # Idempotent replay: the decision is not duplicated, but a re-recorded approval re-materializes
+            # its capability (unless the artifact changed under it - see _sync_approval_capability).
+            self._sync_approval_capability(project_id, last_entry, replay=True)
+            return p
+
         stamp = now()
         stage_before = p["current_stage"]
         p.update({
@@ -1131,14 +1786,14 @@ class TrackingStore:
             "approved_action": intended_action if normalized_status in {"APPROVED_FOR_PREVIEW", "APPROVED"} else None,
         })
         if normalized_status in {"CHANGES_REQUESTED", "REJECTED"}:
-            self.transition(project_id, "BUILDING")
+            self._set_stage(project_id, "BUILDING")
         elif normalized_status == "APPROVED":
             if p["current_stage"] == "PREVIEW_DEPLOYED":
-                self.transition(project_id, "HUMAN_REVIEW")
-            self.transition(project_id, "READY_FOR_OUTREACH")
+                self._set_stage(project_id, "HUMAN_REVIEW")
+            self._set_stage(project_id, "READY_FOR_OUTREACH")
         wf_after = project_workflow_state(p)
         reviews = self.state.setdefault("reviews", {})
-        review_id = f"review-{len(reviews) + 1:04d}"
+        review_id = next_numeric_id(reviews, "review")
         entry = {
             "review_id": review_id,
             "project_id": project_id,
@@ -1159,8 +1814,12 @@ class TrackingStore:
             "timestamp": stamp,
             "reviewed_at": stamp,
         }
+        if identity_source:
+            entry["identity_source"] = str(identity_source)[:120]
+        entry["data_classification"] = (self.state["leads"].get(p.get("lead_id") or "") or {}).get("data_classification") or p.get("data_classification") or "TEST_FIXTURE"
         reviews[review_id] = entry
         p.setdefault("review_history", []).append(entry)
+        self._sync_approval_capability(project_id, entry)
         self._save()
         return p
 
@@ -1201,6 +1860,8 @@ class TrackingStore:
                 "workflow_state_after": item.get("workflow_state_after"),
                 "timestamp": timestamp,
                 "reviewed_at": timestamp,
+                "identity_source": item.get("identity_source"),
+                "data_classification": item.get("data_classification"),
             })
         normalized.sort(key=lambda entry: (entry.get("timestamp") or "", entry["index"]))
         for entry in normalized:
@@ -1372,31 +2033,17 @@ class TrackingStore:
                 })
 
         b_name = lead.get("business_name") or "Business"
-        data_classification = (
-            lead.get("data_classification")
-            or p.get("data_classification")
+        draft_disclosure = (
+            f"Uncommissioned preview draft prepared for internal evaluation · "
+            f"Not an authorized or official website of {b_name}."
         )
-        is_fixture = (
-            data_classification == "TEST_FIXTURE"
-            or bool(lead.get("demo"))
-            or bool(p.get("demo"))
-            or "FICTIONAL" in str(b_name).upper()
-        )
-        if is_fixture:
-            disclosure = (
-                "Fictional demonstration website · "
-                "Created for AI Website Agent testing."
-            )
-            disclosure_html = disclosure
-        else:
-            disclosure = (
-                "Uncommissioned preview draft prepared for internal evaluation · "
-                f"Not an authorized or official website of {b_name}."
-            )
-            disclosure_html = (
-                "Uncommissioned preview draft prepared for internal evaluation · "
-                f"Not an authorized or official website of {escape(b_name)}."
-            )
+        # The page carries one of two disclosures, chosen by the same rule that renders it: a fictional
+        # fixture is labelled as a demonstration, while real business data is labelled as an unauthorised
+        # draft. Checking for only the draft sentence made every fictional build look like it was missing
+        # its disclosure, so a reviewer following this package would chase a defect that is not there.
+        from templates.components import FICTIONAL_DISCLOSURE, is_fictional  # single source of the rule
+        fictional = bool(is_fictional(lead))
+        disclosure = FICTIONAL_DISCLOSURE if fictional else draft_disclosure
         omitted_disputed_fields = [item["field"] for item in unresolved_or_conflicting if item["status"] == "CONFLICTING_WITHHELD"]
         claims_lacking_primary_observation = [
             {
@@ -1423,7 +2070,7 @@ class TrackingStore:
             "project_id": project_id,
             "lead_id": lead["lead_id"],
             "business_name": b_name,
-            "data_classification": data_classification,
+            "data_classification": lead.get("data_classification") or p.get("data_classification"),
             "current_stage": p.get("current_stage"),
             "review_status": p.get("review_status"),
             "build_id": build["build_id"],
@@ -1432,8 +2079,10 @@ class TrackingStore:
             "artifact_exists": True,
             "artifact_bytes": len(html_bytes),
             "artifact_sha256": sha256_hex,
-            "uncommissioned_disclosure": disclosure,
-            "disclosure_present_in_html": disclosure_html in html_text,
+            "uncommissioned_disclosure": draft_disclosure,
+            "expected_disclosure": disclosure,
+            "disclosure_variant": "FICTIONAL_DEMO" if fictional else "UNCOMMISSIONED_DRAFT",
+            "disclosure_present_in_html": disclosure in html_text,
             "omitted_disputed_fields": omitted_disputed_fields,
             "supported_facts": supported_facts,
             "claims_lacking_primary_observation": claims_lacking_primary_observation,

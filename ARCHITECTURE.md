@@ -42,8 +42,8 @@ n8n may schedule, queue, retry, and route application-owned jobs. It must not di
 - `templates/` contains a registry, shared semantic components, static CSS, a local renderer, and fictional demo data. It is provider-independent: business data, content, branding, and template structure remain separate.
 - `builder/` maps qualified research records to template data, generates grounded structured content through a provider-neutral interface, validates output, and writes local build artifacts. Its default generator uses no AI provider.
 - `validation/` is the independent local QA gate. It returns PASS, FAIL, or NEEDS_REVIEW with severity-tagged findings, but never changes an artifact or deploys it.
-- `deployment/` consumes a validated artifact and creates an artifact-local preview deployment record. Its Vercel adapter accepts `ai-website-agent-preview` only for `TEST_FIXTURE` builds, requires an explicit `--approve-real-preview` flag plus a dedicated non-shared `*preview*` Vercel project for `REAL_PUBLIC_DATA` builds, stages an allowlisted public payload (`index.html` plus safely resolved referenced local assets), never uses `--prod`, defaults to dry run, and normalizes CLI output before returning it. Build/deployment manifests, hidden files, credentials, unrelated artifacts, unsafe links, and unresolved local assets fail closed and are never staged.
-- `tracking/` is the source of truth for leads, projects, historical domain records, and the local `jobs` ledger.
+- `deployment/` consumes a validated artifact and creates an artifact-local preview deployment record. Executing a publish (not a dry run) additionally requires the build-local approval capability that `TrackingStore` materializes from an explicit `APPROVED_FOR_PREVIEW` decision for action `PREVIEW_DEPLOYMENT`, bound to that build, its validation, and the artifact's SHA-256. Its Vercel adapter accepts `ai-website-agent-preview` only for `TEST_FIXTURE` builds, requires an explicit `--approve-real-preview` flag plus a dedicated non-shared `*preview*` Vercel project for `REAL_PUBLIC_DATA` builds, stages an allowlisted public payload (`index.html` plus safely resolved referenced local assets), never uses `--prod`, defaults to dry run, and normalizes CLI output before returning it. Build/deployment manifests, hidden files, credentials, unrelated artifacts, unsafe links, and unresolved local assets fail closed and are never staged.
+- `tracking/` is the source of truth for leads, projects, historical domain records, and the local `jobs` ledger. `TrackingStore` writes either the single local JSON state file (atomic temp-file + rename) or the normalized relational backend in `tracking/database.py` (SQLite compatibility mode for tests, PostgreSQL/Supabase in production), and never silently falls back from one to the other.
 - `orchestration/` defines the job lifecycle, idempotency, retry/recovery, prerequisite gates, and provider-neutral `JobWorker` contract. It contains an optional fail-closed localhost HTTP adapter; no HTTP server starts automatically.
 - `n8n/` contains inactive, credential-free self-hosted workflow examples. n8n calls the application job API only after the operator deliberately enables the API and configures a private network/secret store.
 - `TASKS.md` is the Phase 1 handoff ledger. Future job records should be machine-readable and tied to the same job status vocabulary.
@@ -63,7 +63,7 @@ Failures must be explicit (`failed`) with an error and retry context; they must 
 
 Jobs are `PENDING`, `QUEUED`, `RUNNING`, `COMPLETED`, `FAILED`, `CANCELLED`, `NEEDS_REVIEW`, or `BLOCKED`. The service checks prerequisites before running: BUILD requires a qualified lead; VALIDATE requires a project-associated build; DEPLOY requires PASS validation; PREPARE_OUTREACH requires a deployed, human-approved ready project. Missing requirements result in an explicit `BLOCKED` job—not an attempted external action.
 
-Workers receive `{job, context}` and return `{status, output, artifacts, error, retryable}`. They are responsible for calling existing application services and updating domain state; `JobService` only records orchestration state. A retryable failure is re-queued until the configured maximum (default 3); permanent errors fail. `heartbeat()` and `recover_stale()` make interrupted RUNNING work visible and move stale work to `NEEDS_REVIEW`, never silently repeating it. Default concurrency is one; scheduling belongs to n8n, not another internal cron system.
+Workers receive `{job, context}` and return `{status, output, artifacts, error, retryable}`. They are responsible for calling existing application services and updating domain state; `JobService` only records orchestration state. A retryable failure is re-queued until the configured maximum (default 3); permanent errors fail. `heartbeat()` and `recover_stale()` make interrupted RUNNING work visible and move stale work to `NEEDS_REVIEW`, never silently repeating it. Recovery ages a claim from the newest timestamp the ledger actually holds (`heartbeat_at`, else `started_at`, else `updated_at`) so a worker that died before its first heartbeat is recoverable too, coded `HEARTBEAT_UNDATED`; a `RUNNING` job with no timestamp at all is left alone and reported as un-ageable rather than guessed at, because `operator_attention()` uses the same basis and the two surfaces must not disagree about who owns the fix. Default concurrency is one; scheduling belongs to n8n, not another internal cron system.
 
 Successful jobs expose a suggested next type, but successors are explicitly created. This avoids n8n blindly advancing through subjective gates. The intended path is SCOUT → RESEARCH → QUALIFY → BUILD → VALIDATE → DEPLOY → human review → PREPARE_OUTREACH. There is intentionally no SEND job.
 
@@ -79,9 +79,23 @@ BUILD, DEPLOY, and PREPARE_OUTREACH take a project-level mutating lock. Validati
 
 The current JSON state store supports this only in the configured single-process local mode (default concurrency: one). It is deliberately not represented as a distributed lock service. Before multiple hosts/processes claim jobs, select and approve a persistent store with atomic compare-and-set/lease operations; until then, run only one worker process.
 
+## Observability, operator controls, and alerting
+
+Four surfaces answer operational questions, and they deliberately do not overlap: **liveness** is a process answering (`GET /healthz`, which proves nothing else); **readiness** requires an actively verified source of truth (`GET /readiness` via `verify_storage()`, `python3 -m orchestration.cli health`); **operational state** is what the records say (`GET /health`, `GET /attention`, `python3 -m orchestration.cli attention`, `inspect-job`, `list-jobs --attention-only --brief`); and **deployment outcome** is what publish evidence supports (`GET /deployment-status`, `python3 -m orchestration.cli deployment-status`, `deployment/authorization.py:publish_outcome()`), which classifies each project as `VERIFIED_RECORDED`, `UNCERTAIN`, `FAILED`, `RECORDED_UNCONFIRMED`, `SUPERSEDED`, or `NOT_ATTEMPTED` and never claims a live URL was checked.
+
+`operator_attention()` is the single source for 'a human must act', derived from job codes (`error_code`, `next_action`, `requires_operator_action`), project stage/review/validation records, stale-running heartbeats, and the per-build publish ledger. A retryable `FAILED` job stays the system's business; an exhausted, blocked, or review-pending one surfaces as attention. Deployment reporting lists every execution that recorded an uncertain publish (not merely the first), names the ledger file an operator must read, and keeps an operator's resolution alongside the uncertainty instead of in place of it. Readiness separates `blocking` (storage or persistence - `NOT_READY`) from `degradations` (no capable worker, missing local artifacts, an operator backlog - still serving).
+
+Each execution attempt is written to the pre-existing `executions` ledger, including on the service/CLI/API paths: attempt number, worker, start and completion, recorded duration, outcome, sanitized error type and message, stable error code, and a `trace` of the lead, project, build, validation, and deployment identifiers. Attempt history is therefore never reconstructed from wall-clock guesses, and a blocked job records no attempt at all.
+
+`orchestration/observability.py` provides `redact()` / `sanitize_diagnostic()` used before any error is persisted on a job, execution, or worker record, or returned by an endpoint: bearer values, authorization headers, named secret assignments, `sk-` keys, JWTs, and complete connection-string userinfo are removed. `log_event()` emits one JSON object per line to stderr (filtered by `AI_WEBSITE_AGENT_LOG_LEVEL`, also appended to `AI_WEBSITE_AGENT_LOG_DIR/operations.jsonl` when configured) carrying timestamp, severity, operation, stable code, identifiers, and sanitized detail; nothing in this repository writes secrets to logs, and no logs are produced unless a severity threshold or log directory is configured.
+
+`orchestration/alerts.py` derives critical alerts from the same attention data (uncertain publish, expired or stale leases, exhausted retries, unauthorized stores) and hands each to a pluggable sink: `LogAlertSink` by default, and `WebhookAlertSink`, which performs no network call of its own and delivers only through a caller-injected `transport` (documented limitation: no external messaging service is wired or configured here). Duplicate suppression is in-process. No alert or monitoring surface may grant an approval or bypass the Phase 38 publish gate; they read state only.
+
 ## Health, readiness, and integration evidence
 
-`orchestration.health.system_health()` reports the application, source-of-truth, job, worker, n8n, deployment, and configuration conditions without reaching external services. `readiness_for()` is job-specific: it checks prerequisites and an available capable worker, so a healthy local application is not incorrectly presented as ready for unavailable deployment work.
+`orchestration.health.system_health()` reports the application, source-of-truth (including the configured storage backend), job, worker, n8n, deployment, and configuration conditions without reaching external services. `storage_report()` is side-effect-free, while `verify_storage()` is the explicit connectivity check used by the API's `GET /readiness`, which answers `503 NOT_READY` when a required database cannot be reached or verified instead of reporting readiness from local memory alone. `readiness_for()` is job-specific: it checks prerequisites and an available capable worker, so a healthy local application is not incorrectly presented as ready for unavailable deployment work.
+
+Setup is a separate question from readiness, and it is answered separately. `orchestration.health.integration_preflight()` composes one document about what an operator still has to do - bind and token strength for `serve`, storage as actually probed or only configured, the recorded workflow backlog, the n8n exports' importability and the variables they read, the deployment provider's local configuration, and, given a project, the durable gate's own verdict quoted verbatim - under explicit `assurance` levels (`code_readiness`, `configuration_readiness`, `connectivity`, `preview_deployment`) so a configured-but-unreached service is never described as working. `tracking.database.RelationalStateBackend.preflight()` is the storage half: identity (host, port, database, Supabase project reference), reachability, server version, owned-table presence, recorded checksum versus this checkout, and row counts, from read-only probes that report an unreadable fact as unknown rather than absent. `supabase_project_ref()` names the project only when the hostname carries it, so a pooler host produces "this URL cannot identify the project for you" instead of a false match. Applying DDL to a database that is not on this machine requires `--confirm-database <name>` read back from the URL, because `CREATE TABLE IF NOT EXISTS` is silent about landing in someone else's project.
 
 `tests/test_full_system.py` is the complete local integration proof. It uses only the clearly marked fictional `Lagos Fresh Kitchen (TEST / FICTIONAL)` record, creates a local website artifact, passes it through validation/tracking, records a fictional preview URL, requires human review, and stops at `READY_TO_SEND`. It makes no Vercel request and has no sender. Live n8n, Vercel, and worker-host verification remain outside the test because they require separately approved configuration.
 
@@ -89,15 +103,255 @@ The current JSON state store supports this only in the configured single-process
 
 `scout.OverpassRestaurantSource` is a single, source-isolated public-data adapter. Its approved scope is Lagos, Nigeria restaurants only; it rejects other targets, permits one request per instance, limits output to five named candidates, applies a timeout, and retains an OpenStreetMap element URL as provenance. It neither follows business links nor infers website quality. The missing OSM website tag is represented as `none_known`, never as a factual claim that the business has no website.
 
+The query is a union of three documented `key="value"` tag clauses inside the same bounding box, and the response window is deliberately wider than the run's limit because the adapter ranks candidates by the pilot's stated priority - publicly active on social media, no website in the record - and *then* truncates. Taking the first N elements as they arrived is what made every run report the same few businesses, and the API's order carries no priority; ranking locally is also what keeps the judgement honest, since "no website tag" is evidence about the record, not about the business.
+
+Reaching this source is an explicit decision at each level. `python -m scout.cli --source overpass` needs `--approve-live-lookups`, because a person typing that flag is present and consenting; a `SCOUT` job additionally needs `input.approve_live_lookups` *and* `AI_WEBSITE_AGENT_ALLOW_LIVE_DISCOVERY=1` on the executing machine, because a job can be created by n8n or the HTTP API with nobody watching, and "the queue asked" must not become the only approval on record. A refusal names its code (`LIVE_DISCOVERY_NOT_APPROVED`, `LIVE_DISCOVERY_NOT_ENABLED`, `SCOUT_SOURCE_UNKNOWN`, `SCOUT_INPUT_INVALID`) and happens before any request is constructed.
+
 Real candidates are marked `REAL_PUBLIC_DATA` and exported locally to ignored `data/leads/` review files. They do not automatically enter `TrackingStore`, create a project, trigger Research, create an outreach package, or contact a business. A human must review and explicitly authorize any next stage. Test fixtures remain separately marked `TEST_FIXTURE`.
+
+## Bounded live website research
+
+`research.live_source.PublicWebsiteResearchSource` is the live `ResearchSource` the Phase 3 design reserved. It reads only the URLs already recorded on the candidate - the business's own website, plus a social profile only if a host is explicitly allowlisted - so it cannot be turned into a crawler by a job input, and it fetches at most `maxPagesPerCandidate` pages within a per-run request budget. `robots.txt` is consulted before the page, redirects and retries are capped, the response is byte-capped and only HTML is interpreted, no credential is sent, and a login wall or block ends the attempt without being reinterpreted as a fact about the business.
+
+Consent is deliberately split from the request: live research runs only when `AI_WEBSITE_AGENT_ALLOW_LIVE_RESEARCH=1` *and* `research.allowLiveResearch: true` in the deployment's local settings file, and a caller must still ask for it (`--source live`, or `input.live_research` on a `RESEARCH` job). The n8n pipeline deliberately does not pass that field, because a workflow that requests its own permission would reproduce exactly the failure mode the deployment gate exists to prevent.
+
+Observations are the existing `website_observation` vocabulary, so `_evaluate_website` remains the single place where evidence becomes a website classification: a page that could not be read yields `UNKNOWN` with the retrieval status and reason recorded as our limitation, never `NO_WEBSITE`. The source makes no decision and imports no builder, reviewer, deployer, or sender; `QUALIFY` and everything after it remain separate jobs.
+
+## Engagement and outcome tracking
+
+`tracking/engagement.py` is the persistent record of the steps after discovery: what was sent, what came back,
+what is due, where a proposal stands, and how the opportunity ended. It writes into the same `TrackingStore`
+state as leads, builds, reviews, and deployments, uses the same guards (`validate_record_id`,
+`validate_bounded_text`, `next_numeric_id`), and adds six collections - `engagements`, `proposals`,
+`follow_ups`, `outcomes`, `contact_blocks`, and a one-row-per-lead `relationships` progress record.
+
+The module encodes the difference between adjacent facts rather than trusting the caller to remember it: an
+approved draft, a reported send, and a verified delivery are three different records, and only the first two
+exist here (`provider_verified: false` is always stored); a drafted proposal, a presented proposal, and an
+accepted proposal are three states with evidence required for the last two; `NO_RESPONSE` is the one outcome
+that needs no customer evidence and it is never produced by the passage of time; and `WON` requires a
+customer-side evidence kind plus a contract, invoice, or payment reference. Opt-outs are not just history -
+recording one cancels the follow-ups it covers and blocks new ones and further sends on that channel, and the
+per-lead, per-channel send count is capped so "one more nudge" cannot become an uncounted habit. A failure is
+recorded as a failure (`SEND_FAILED`, not a contact, not a rewritten history), and the two claims that would
+need a provider's own receipt - accepted, delivered - are unreachable from this code rather than approximated.
+
+`outreach_eligibility()` is the single guard: opt-out, contact budget, the outreach review decision, and project
+state, re-read at call time, consulted by the ledger's own writes and offered to any future scheduler over the
+CLI or a read-only endpoint. It answers, never authorizes. The relationship stage is a projection of the records
+below it - it can be advanced by hand only onto a step something already proves, an explicit human move is
+kept over later derivations, and disagreement is reported as `stage_is_current: false` instead of being
+silently overwritten.
+
+Free-text is redacted of email and phone shapes on write, records link to `lead_id`/`project_id`/`outreach_id`
+instead of copying contact details, and every operation is idempotent on a derived or supplied key so a retried
+command cannot double-count a reply, and each operation is one transaction - one durable save or none. The
+ledger imports no network, builder, deployer, or sender; over HTTP it exposes read-only queries plus the one
+inbound write described below, and a workflow still cannot mark its own outreach successful - that record comes
+from a human who saw it happen.
+
+## Authorized inbound communications
+
+A reply from a business is evidence, not a conclusion. `tracking/inbound.py` is the single place an external
+event becomes a record: `normalize_event()` enforces a payload contract (a stable provider event id wherever the
+provider has one, bounded and contact-redacted message text, the event's own time kept distinct from the time it
+was received, and an outright refusal of any field that would assert an approval, a delivery, an outcome, or a
+relationship state); `triage()` is a transparent phrase-rule baseline that reports which phrases matched, what
+contradicts what, and a four-value `certainty` - never an invented confidence number, and never an action beyond
+a suggestion written for a human; `InboundIntake` resolves linkage only through recorded references
+(`lead_id` → the draft's lead → the project's lead → the lead that already owns this conversation), parks
+anything else as `UNMATCHED` rather than attaching it to a guessed business, deduplicates durably on the
+provider's identity so a re-delivery cannot double-count, and writes the response, its own intake row, and any
+opt-out in one ledger transaction.
+
+The intake owns a seventh collection, `inbound_events`, which is accounting rather than history: it says how a
+message arrived, whether it was a duplicate, and why an event could not be routed, while the business record
+stays the ledger's `RESPONSE_RECEIVED` row. Opt-out semantics are Phase 46's, unchanged: an unambiguous written
+request to stop contact is applied through `EngagementLedger.record_opt_out()` (all channels, cancelling open
+follow-ups, enforced by the one `outreach_eligibility()` guard every send path consults); a provider-reported
+unsubscribe covers only that provider's channel; a hedged or contradicted phrase blocks nothing and becomes a
+review item. Nothing replies, so an inbound "unsubscribe" cannot be answered by an automated confirmation.
+
+## Operator channel: Telegram as the operator's console, and the first inbound email adapter
+
+Telegram drives *this operator's* attention and actions; it is not a customer channel, and a message from
+anywhere in it - including from the allow-listed account - is never an approval, a reply, or a send.
+`orchestration/telegram_bot.py` is the whole surface: one `COMMANDS` registry (`/start /help /find /status /leads
+/inbox /followups /proposals /pause /resume /attention /review /approve /reject /changes /package /project /hold`)
+drives dispatch, help text, and the bot's command menu from the same table, so a command cannot exist in one list
+and be missing from another. `integrations/telegram.py` speaks the official Bot API over the project's stdlib HTTP
+helpers, and `orchestration/telegram_limits.py` is the single redaction boundary for anything leaving through it.
+
+Authorization runs before any business operation: `TelegramOperatorBot._authorized()` checks the numeric user id
+first and the chat id second against `AI_WEBSITE_AGENT_TELEGRAM_ALLOWED_USER_IDS` / `_ALLOWED_CHAT_IDS`, an empty
+allow-list authorizes nobody rather than everybody, and an unauthorized update is refused without dispatching a
+handler - no read, no write, no job. Outbound text carries counts, ids, statuses, and bounded quotes: addresses are
+masked to their tail, phone numbers to their last four digits, credential-shaped lines are replaced with a marker
+saying so, and absolute paths are removed, because a chat log is the least trustworthy place in the system to end
+up with a copy of a lead list.
+
+Approval is connected only where an approval record already exists. The buttons on `/review <outreach_id>` and the
+typed `/approve` / `/reject` / `/changes` commands go through `outreach.service.review()` - the same mechanism the
+CLI uses - after re-reading the draft and checking that the exact item the operator was shown is still the current
+state: callback data carries a `draft_fingerprint()` of the recipient, channel, lead, project, and body, so a
+button pressed on a stale prompt, on a draft whose content changed underneath it, or a second press of the same
+button is refused (`APPROVAL_STALE`, `APPROVAL_MISMATCH`, `APPROVAL_REPLAY`) rather than applied. A typed command
+must name the record and quote that fingerprint back (`CONFIRMATION_REQUIRED`), because a button is a
+confirmation and a typed word is not. Approving an outreach draft marks it `READY_TO_SEND`, which is *not* sent:
+approval and sending are two acts, and `outreach_eligibility()` is the same guard on both paths, so a future
+sender can never be *less* strict than a hand-typed send report.
+
+**Project-demo approval is the one case where a chat decision is accepted, because it is recorded through the
+mechanism that already owns that decision.** Phase 48 refused it here on the grounds that this build exposed no
+reviewer-authenticated surface - the API's shared bearer token identifies a client, not a person - and Phase 49
+did not answer that by trusting a message. It used the identity Telegram itself supplies: the numeric `from.id`,
+checked against `AI_WEBSITE_AGENT_TELEGRAM_ALLOWED_USER_IDS` before any handler runs. `/demo <project_id>` reads
+the durable gate (`store.authorize_preview_deployment()`), shows the operator what the publish step will verify,
+requires a note about what was looked at plus a confirmation code derived from the project's current build,
+validation, deployment, and stage, and then calls `store.record_review(project_id, "APPROVED", ...,
+reviewer="telegram:<id>", identity_source="telegram_operator_allowlist")` with
+`action="PREVIEW_DEPLOYMENT"`. That is the identical call the CLI makes; the capability file the publish step reads
+is materialized by the store, not by the bot. Supplying a URL, a job, an n8n execution, or a workflow trigger
+authorizes nothing, and the file keeps `identity_verified: false` because an allow-listed Telegram account is not
+an identity provider - `VERIFIED_IDENTITY_SOURCES` is still empty, and that is stated in the record rather than
+papered over. A demo approval approves a *publish*, never an outreach draft, and it sends nothing.
+
+Automation holds are the one state change the bot is allowed to make on its own, and it makes it through
+`orchestration/controls.py`: `set_hold()` / `release_hold()` write one record in `automation_controls`, the job
+queue consults it as the first gate in `gate_failure()` (a held `run` returns `BLOCKED` with zero attempts),
+`POST /integrations/email/poll` refuses before contacting a provider, and releasing never resumes anything
+mid-flight - jobs are re-queued by the existing recovery paths. A hold suspends dispatch; it revokes no approval.
+
+`integrations/gmail.py` + `orchestration/email_inbound.py` are the first real inbound adapter: Gmail via OAuth with
+the `gmail.readonly` scope only, so the adapter has no `send`, `delete`, or `modify` method to misuse. One cycle
+lists the query's messages (or follows `historyId` from the stored cursor), normalizes each into the Phase 47
+payload contract (`message_to_inbound_event()`: Gmail's message id as `event_id`, `threadId` as
+`conversation_id`, the address alone as `sender`, the snippet or first paragraph as bounded body text, never a
+whole body), resolves the lead through **recorded references only** - the thread another intake row already
+belongs to, or a sender address recorded on exactly one lead - and refuses to pick one when two leads claim the
+thread or the address. Anything else goes to the intake's `UNMATCHED` queue; a business name in a subject line is
+never a reference. `In-Reply-To` is used only when it names a `Message-ID` this application actually recorded,
+because an RFC 822 id is not one of our record ids. Refusals, storage faults, and provider errors are recorded with
+codes and a `retryable` flag; the cursor advances only after a completed cycle, and a message whose write failed is
+parked on the sync record (`unwritten`) until `retry_pending()` lands it, so a database blip cannot quietly delete
+a customer's reply. A mailbox is **not connected in this environment**: no Google account was authorized here, so
+live Gmail connectivity is unverified and `email-check --probe` remains the operator's first step.
+
+`orchestration/health.channels_section()` reports what is configured (names and booleans, never values), what the
+last cycle recorded, and that no live account has been verified by this build; `integration_preflight` includes it
+as the `operator_channels` section. Notifications reuse `operator_attention()` and `orchestration/alerts.py`
+identity, and suppression is durable (`provider_sync.attention_seen` / `alert_seen`, a 24-hour window) because a
+cron run has no in-process memory - and a delivery Telegram refused is deliberately *not* marked seen, so the next
+cycle re-offers it instead of losing it.
+
+`POST /engagement/inbound` is the only engagement write exposed over HTTP, and it can record only what the
+business said: `GET` reads of the ledger stay read-only, and a workflow that could write `OUTREACH_SENT`,
+`PRESENTED`, or `WON` could declare its own success. The operator token authenticates the caller; an optional
+`X-Inbound-Signature` HMAC over the raw body additionally proves which bytes the provider sent, and is mandatory
+whenever `AI_WEBSITE_AGENT_INBOUND_SIGNING_SECRET` is set. `DELIVERY_RECEIPT_PROVIDERS` is empty by design: an
+inbound reply is not a delivery receipt, so `ACCEPTED_BY_PROVIDER` and `VERIFIED_DELIVERED` remain unreachable
+from every entry point in this repository. No mailbox account, social account, or webhook
+provider is authorized here -
+the five provider names are the shape an adapter must produce, and selecting one requires reading that
+provider's own API first. Phase 48 added that reading for one of them - `EMAIL_INBOUND` via Gmail's read-only API -
+so the contract now has an adapter written against it and a documented `messages.list`/`history` capability report;
+the other four names remain shapes with no adapter, and no provider account is authorized from this repository.
+
+## Approved outbound sending, and why there are two Gmail interfaces
+
+A read-only mailbox and a send-capable mailbox are different authorizations, and this repository keeps them in
+different files. `integrations/gmail_transport.py` holds what both need - the OAuth token exchange, the
+timeout-bounded request path that refuses a non-loopback proxy target, Gmail's error codes, and the call/error
+counters - with the scope, its environment variable names, and the "not configured" code as class attributes, so
+neither subclass owns an endpoint that only the other one should have. `integrations/gmail.py` (`GmailClient`)
+adds the four read verbs and has no `send`; `integrations/gmail_send.py` (`GmailSendAdapter`) adds exactly one
+method, `send()`, has no read verb, reads its own three credential variables, and refuses `Cc`/`Bcc`/caller-set
+headers, a second recipient, a fabricated `In-Reply-To`, and any message it did not compose. A token minted for
+`gmail.readonly` cannot be reused to send and the code never tries; a token minted for `gmail.send` cannot list
+somebody's inbox. The scopes are separate consent decisions in the operator's Google account, which is the only
+place that split can be created.
+
+`orchestration/outbound.py` (`ApprovedOutboundSender`) is the only sender in the system, and the whole point of it
+is that it is not a policy engine with its own rules - it is the place where the *existing* policies are read at
+send time:
+
+- **Approval binding.** `outreach.service.content_fingerprint()` digests the recipient, subject, body, preview
+  URL, channel, and personalization points; `review()` stores that digest beside the human's decision, and a send
+  that no longer matches is refused (`APPROVAL_STALE`, or `APPROVAL_UNBOUND` for a draft approved before digests
+  existed). An edit to a body after approval is therefore visible instead of silent, and a reviewer's approval
+  cannot be re-used against different text.
+- **One eligibility source.** `tracking.engagement.outreach_eligibility(..., for_action="SEND")` is consulted for
+  every send, so opt-outs, the per-channel contact budget, an unresolved attempt, and the project state behave
+  identically whether the send came from Telegram, HTTP, the CLI, or n8n. The suppression list the adapter checks
+  is *derived* from the ledger's `contact_blocks` rather than being a second list to forget to update.
+- **The hold.** `orchestration.controls.held()` is read before anything is composed, so one record brakes both
+  jobs and sending.
+- **Four acts, one request.** A real send needs the command, the draft id, the word `SEND` (or a button press
+  carrying that draft's current fingerprint), and `--allow-live` / `AI_WEBSITE_AGENT_ALLOW_LIVE_OUTREACH`. The
+  flag is read from this machine's environment, never from a request body, so no caller escalates itself into
+  being able to send. One call performs at most one provider request: the executor never retries, because Gmail
+  has no idempotency key and a retry of an unanswered request could mail the same prospect twice.
+- **Durable before the network.** The attempt marker (`send_state: SENDING`, actor, identity source, timestamp,
+  fingerprint) is written and flushed before `send()` is called, so a crash mid-send is recoverable evidence
+  rather than an unaccounted action.
+
+Afterwards the record says one of `REPORTED_SENT` (the provider took the request), `ACCEPTED_BY_PROVIDER` (the id
+was read back through the read-only client and matched on recipient and subject), `SEND_FAILED` (refused before
+acceptance - an attempt, not a contact), or `SEND_UNCERTAIN` (submitted, no definitive answer: reconciled, never
+resent). `mark_outreach_sent()` refuses `ACCEPTED_BY_PROVIDER` without a provider receipt and refuses
+`VERIFIED_DELIVERED` from every caller, because Gmail has no delivery or open receipt to read; `DELIVERED` and
+`READ` remain absent from `EVENT_KINDS`, and the ledger keeps `provider_verified` distinct from
+`delivery_status` so "we checked" is never confused with "it arrived". Exactly-once delivery is not claimed and
+cannot be: what this system can promise is one attempt per confirmed send, recorded durably, with the ambiguity of
+an unanswered response preserved rather than resolved by guessing.
 
 ## Website opportunity handoff
 
 `opportunities.assess_opportunity()` is the single Scout-to-builder qualification handoff. It produces a score, reasons, evidence, priority, normalized website status, and a content brief split into `verified`, `unknown`, and `suggested` information. Existing website evidence maps to `WEBSITE_POOR`, `WEBSITE_OUTDATED`, `WEBSITE_BASIC`, or `WEBSITE_MODERN`; missing website data from a listing maps only to `WEBSITE_UNKNOWN`.
 
-A project may be created only for a `QUALIFIED` tracked lead. The qualification policy requires score ≥60, sufficient independent evidence, and a source-backed website opportunity; uncertain identity/website ownership becomes `NEEDS_REVIEW`. `TrackingStore.record_qualification()` preserves decision history and `create_project()` returns the existing active project for the same lead, preventing duplicate projects. Restaurant briefs recommend the existing `restaurant-menu-v1` template, but suggestions never become verified business claims.
+A project may be created only for a `QUALIFIED` tracked lead. The qualification policy requires score ≥60, sufficient independent evidence, and a source-backed website opportunity; uncertain identity/website ownership becomes `NEEDS_REVIEW`. `TrackingStore.record_qualification()` preserves decision history and `create_project()` returns the existing active project for the same lead, preventing duplicate projects; the relational backend re-checks that rule inside its transaction so a concurrent connection cannot commit a second ACTIVE project for the same lead. Restaurant briefs recommend the existing `restaurant-menu-v1` template, but suggestions never become verified business claims.
 
 `MockWorker` is the deterministic test adapter. Real adapters must implement the existing worker contract, honor dry run, record normalized results and artifacts, never run arbitrary untrusted commands, and must be approved before registration. n8n observes/queues jobs only; it never chooses a provider, owns a lease, or bypasses the router.
+
+## Persistence and workflow reliability invariants
+
+`TrackingStore` (both backends) and `RelationalStateBackend.sync_state()` enforce the following invariants; they are covered by `tests/test_phase37_data_and_workflow_reliability.py`.
+
+- Identifiers are allocated from the maximum existing numeric suffix (`next_numeric_id`), never `len(collection) + 1`, so a removed or concurrently created record cannot cause an ID to be reused while history still references it.
+- Every multi-record operation (`record_build`, `record_validation`, `record_deployment`, `record_review`) validates its guarded stage transitions in memory (`_set_stage`) and performs one `_save()`, so a rejected transition or failed write cannot leave a half-applied project state.
+- Record reuse is content-aware: an exactly repeated build/validation/deployment/review is an idempotent replay that returns the stored record, while the same ID carrying materially different content (`records_conflict`, ignoring derived and timestamp-only fields) is refused so the earlier result stays auditable.
+- For the relational backend, an insert whose record ID was committed by another connection since the snapshot was loaded is either an idempotent replay or a `DatabasePersistenceError` naming the owning lead/project/build; a row is never silently overwritten. A live `project_locks` lease held by another worker is likewise refused, and only an expired lease may be taken over.
+- `create_lead`, `create_project`, and `JobService.create` refresh from the database first when a backend is configured, so duplicate detection and ID allocation see the newest committed rows. The local JSON backend merges the on-disk state with the in-memory diff before writing; if that merge faults, the write is refused rather than clobbering another writer's records.
+- `LocalPipelineWorker` (`DEPLOY`) never repeats an external publish: when the assigned build already has a recorded `DEPLOYED` result it returns `ALREADY_DEPLOYED_REPEAT_SKIPPED`, and dry runs are reported as `DRY_RUN_VERIFIED_NOT_DEPLOYED` so a verified plan cannot look like a completed deployment.
+
+The local JSON state file remains a single-process design (see the multi-worker note above); cross-process safety is provided by the relational backend, not by file locking. No schema migration was required for these invariants: existing primary keys, `UNIQUE (idempotency_key)` on jobs, foreign keys, and `projects.lock_version` remain the database-level protections.
+
+## Approval and deployment boundary
+
+Generated, validated, awaiting-review, approved-for-one-action, deployed, and rejected are six distinct facts. Only a human can create the fifth, and only a provider result can create the sixth. `tests/test_phase38_approval_and_deployment_controls.py` covers these rules.
+
+- `record_review` is the only way to reach `APPROVED_FOR_PREVIEW`. It requires a completed assigned build, a `PASS` validation for that build, and stage `READY_FOR_REVIEW`; it records project, lead, build, validation, decision, intended action, notes, reviewer, timestamp, and the identity source in an append-only history. An identical repeat is an idempotent replay; a materially different repeat becomes a new entry; `REJECTED`, `CHANGES_REQUESTED`, and an explicit hold revoke the deployment authorization instead of rewriting history.
+- Recording a decision never deploys. `record_deployment` still refuses any status other than `DEPLOYED`, so a dry run can never be stored as a deployment, and `deploy-check`/`GET /projects/:id/deployment-authorization` are read-only. The human-review package states which disclosure the page must carry for its classification (`disclosure_variant`, `expected_disclosure`) and checks the artifact against exactly that text, so a `TEST_FIXTURE` page is never reported as missing the label the renderer deliberately gives it.
+- The authorization an approval grants is narrow and single-use: it is materialized as `output/<lead>/<build>/deployment-approval.json` (decision, action, build/validation/project/lead IDs, artifact SHA-256, reviewer, self digest) and revoked by a superseding build, a negative decision, or the recording of the deployment it authorized.
+- The gate lives at the operation that initiates the publish — `VercelDeploymentProvider.deploy()` with `dry_run=False` — which every server-side path reaches: the operator CLI, `LocalPipelineWorker`, `JobService.prerequisite_failure()` (also covering `POST /jobs/:id/run` and `/retry`), and an n8n-triggered job. UI and n8n conditions are convenience layers, never the boundary. A refusal returns before the payload is staged, so an unauthorized attempt makes no external call.
+- `TrackingStore.authorize_preview_deployment(project_id)` answers the same question from the durable record — project existence, ownership, assigned build, `PASS` validation, stage, approval binding and supersession, artifact presence, prior attempts, and the real-business isolated-target requirement — so every entry point reports the same machine-readable code. It requires the approval for **all** data classes, not only `REAL_PUBLIC_DATA`.
+- Publishing is recorded, never assumed: `deployment-attempts.json` appends `DEPLOYING` before the provider is invoked and the terminal state after. A repeat of an already-published artifact is refused (`DEPLOYMENT_ALREADY_RECORDED`), a retried job whose deployment is recorded returns `ALREADY_DEPLOYED_REPEAT_SKIPPED`, and an interrupted or unverifiable publish ends as `PUBLISH_UNCERTAIN` — refused on the next attempt until an operator inspects the provider and deliberately re-runs with `--resolve-uncertain-publish --resolve-note ...`, which appends an attributed `UNCERTAIN_PUBLISH_RESOLVED` annotation to the same ledger *before* the provider is contacted. The annotation records a decision, never an outcome (`published: false`), so every read path still reports the publish as uncertain, the annotation cannot grant standing permission, and the refusal entries a gate writes (`denial_code`) are classified as bookkeeping so a refusal can never be mistaken for the end of an in-flight publish. A ledger that exists but does not parse is `PUBLISH_LEDGER_UNREADABLE`: appending refuses rather than overwriting history. Refusals that are about the *checkout* rather than the decision are a separate family (`PREVIEW_PROJECT_NOT_LINKED`, `PREVIEW_PROJECT_LINK_INVALID`, `PROVIDER_CLI_MISSING`): they end as `FAILED` with the code in the manifest, job row, and log so an operator is sent to `vercel link` or the CLI install rather than to a human approval that could not help, and they write no ledger entry because nothing was attempted.
+
+## HTTP trust boundary
+
+The loopback API has one credential that authorizes a caller: the shared `AI_WEBSITE_AGENT_API_TOKEN`,
+compared in constant time, which grants access to workflow state and not to a human identity. One optional
+second secret exists for a single route - `AI_WEBSITE_AGENT_INBOUND_SIGNING_SECRET`, an HMAC key over the raw
+bytes of `POST /engagement/inbound` - and it authorizes nothing on its own: it proves which bytes a relay sent,
+and when it is configured an unsigned or mismatched delivery is refused. The boundary is therefore
+drawn where authority differs, not where convenience does: a request may name identifiers only in a
+validated form, may send a bounded body read only after the size check, may export a review package only
+inside the operator-configured export root, and may never assert that its reviewer was verified -
+`TrackingStore` clamps such a claim again at the point the approval capability is materialized, so a
+self-granted assurance cannot reach the publish gate. Refusals are machine-readable (`error_code`) and
+sanitized: internal filesystem paths, credentials, and stack traces stay out of responses and logs.
+Read `orchestration/README.md` (*HTTP trust boundary*) for the endpoint-level rules and for the
+limitations this design accepts.
 
 ## Directory responsibilities
 
@@ -112,10 +366,11 @@ A project may be created only for a `QUALIFIED` tracked lead. The qualification 
 | `templates/` | Static reusable templates, registry, shared components, brand variables, demo data, and renderer. |
 | `builder/` | Qualified-lead build jobs, content-generator interface, local artifact creation, and validation. |
 | `validation/` | Static QA, severity findings, result contracts, and local validation CLI. |
-| `deployment/` | Preview-only Vercel adapter, deployment records, dry-run CLI, and safety gates. |
-| `tracking/` | Single local JSON source of truth for lead, project, build, validation, deployment, and review history. |
-| `outreach/` | Draft-only, evidence-led outreach packages, revision history, and human draft review; no sender or transport. |
-| `orchestration/` | Application-owned job ledger, gating, retry/recovery, worker interface, and optional private API. |
+| `deployment/` | Preview-only Vercel adapter, deployment records, dry-run CLI, approval capability and publish ledger (`authorization.py`), and safety gates. |
+| `tracking/` | Single local JSON source of truth for lead, project, build, validation, deployment, and review history, the engagement/outcome ledger, the authorized inbound intake that feeds it, and the `authorize_preview_deployment` gate. |
+| `outreach/` | Draft-only, evidence-led outreach packages, revision history, human draft review, and the content fingerprint an approval is bound to; no sender or transport. |
+| `integrations/` | Provider-facing clients only: `gmail.py` (read-only) and `gmail_send.py` (one send verb) over shared `gmail_transport.py`, `telegram.py`, and the stdlib `http.py`. No eligibility rules, no approval logic, no ledger writes - and no credential values in records, logs, or exports. |
+| `orchestration/` | Application-owned job ledger, gating, retry/recovery, worker interface, optional private API, the operator bot and its hold, the inbound email cycle, and `outbound.py`, the only approved sender. |
 | `n8n/` | Inactive self-hosted n8n JSON examples and operating notes; no credentials. |
 | `tests/` | Fixture-only verification; fixtures are not real business data. |
 | `templates/` | Reserved for reusable, generic website templates only. |
@@ -190,3 +445,5 @@ Phase 29 completes cross-module integration and retry/recovery hardening across 
 - `WebsiteBuilder` supports plural/alias categories (`Restaurants`, `Salons`, `Cafes`, `Consulting`), builds directly from tracked lead payloads (`research_record`), and guarantees globally unique `build_id`s across leads and failed attempts in the same second.
 - `TrackingStore.record_build()`, `record_validation()`, and `record_deployment()` are idempotent on exact retry, allow new builds to supersede `READY_FOR_REVIEW` / `VALIDATING` builds cleanly, and block deployment of `REJECTED` or `CHANGES_REQUESTED` drafts in both `TrackingStore` and `JobService`.
 - `JobService.create_next()` and `WorkerRegistry.report()` propagate `lead_id`, `project_id`, `build_id`, and `next_job_types` across chained jobs.
+
+Phase 37 (program Phase 2 — Data and Workflow Reliability) tightened persistence and workflow consistency without adding tables, migrations, queues, or a second workflow engine: gap-free numeric ID allocation (`next_numeric_id`), content-aware record reuse that refuses conflicting `build_id`/`validation_id`/`deployment_id`/`qualification_id` reuse, one single-transaction `_save()` per multi-record operation (`_set_stage`), atomic local state-file replacement, explicit refusal to clobber a concurrent DB row or another worker's live project lock, enforcement of one ACTIVE project per lead inside the relational transaction, an idempotent repeated review decision, a retried `DEPLOY` job that never re-publishes an already deployed build, and storage-aware health/readiness plus a structured `500` for unexpected API faults.

@@ -28,8 +28,8 @@ class ScoutAgentTests(unittest.TestCase):
         by_name = {lead["businessName"]: lead for lead in self.result.leads}
         self.assertEqual(by_name["Fictional Glow Studio"]["qualificationStatus"], "qualified")
         self.assertEqual(by_name["Fictional Modern Salon"]["qualificationStatus"], "skipped")
-        self.assertEqual(by_name["Fictional Unverified Salon"]["qualificationStatus"], "skipped")
-        self.assertIn("Insufficient", by_name["Fictional Unverified Salon"]["qualificationReason"])
+        self.assertEqual(by_name["Fictional Unverified Salon"]["qualificationStatus"], "needs_review")
+        self.assertIn("no public social profile or contact channel was found", by_name["Fictional Unverified Salon"]["qualificationReason"])
 
     def test_result_is_json_serializable(self):
         json.dumps(self.result.to_dict())

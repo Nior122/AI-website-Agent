@@ -412,8 +412,37 @@ def _category(value: Any) -> str | None:
         "professional_services": "professional_services",
         "professional_service": "professional_service",
         "consulting": "professional_service",
+        "clinic": "clinic",
+        "clinics": "clinic",
+        "healthcare": "healthcare",
+        "medical_practice": "medical_practice",
+        "medical": "medical_practice",
+        "dental_clinic": "dental_clinic",
+        "dentist": "dental_clinic",
+        "dental": "dental_clinic",
+        "optometry": "optometry",
+        "wellness_center": "wellness_center",
+        "wellness": "wellness_center",
+        "pharmacy": "pharmacy",
+        "legal": "legal",
+        "law_firm": "law_firm",
+        "lawyer": "legal",
+        "law": "legal",
+        "solicitor": "solicitor",
+        "barrister": "barrister",
+        "advocate": "advocate",
+        "accounting": "accounting",
+        "tax_advisory": "tax_advisory",
+        "consulting_firm": "consulting_firm",
+        "automotive": "automotive",
+        "auto_repair": "auto_repair",
+        "mechanic": "mechanic",
+        "car_care": "car_care",
+        "tire_service": "tire_service",
+        "auto_body": "auto_body",
+        "vehicle_service": "vehicle_service",
     }
-    return aliases.get(normalized)
+    return aliases.get(normalized, normalized)
 
 
 def _safe_segment(value: str) -> str:

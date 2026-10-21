@@ -1,6 +1,6 @@
 # Research & Qualification Agent
 
-Phase 3 turns one Scout candidate into an evidence-led qualification record. It is fixture-only: `FixtureResearchSource` reads fictional local evidence and cannot browse, scrape, or contact anyone.
+Phase 3 turns one Scout candidate into an evidence-led qualification record. The default source, `FixtureResearchSource`, reads fictional local evidence and cannot browse, scrape, or contact anyone. A second, explicitly permitted source - `PublicWebsiteResearchSource` - reads the public web pages the candidate record *already names*, under the bounds below, and nothing else.
 
 ## Pipeline
 
@@ -47,9 +47,29 @@ These are evidence-based classifications, not design-fashion judgments. A later 
 
 No numeric score is used. `opportunityFactors` holds the transparent inputs: legitimacy, activity, information sufficiency, website status, social presence, and preview readiness.
 
-## Future integration
+## Bounded live website research
 
-Future live research sources must implement `ResearchSource.research(candidate)`, be explicitly approved, comply with terms/law, record source URLs, and return public evidence only. Do not add a browser, API, account, or provider integration without approval.
+```powershell
+python -m research.cli --dry-run --source live --candidate-file data/leads/candidate.json --output data/leads/research-live.json
+```
+
+Two keys must both be turned by the operator before any request leaves the machine: `AI_WEBSITE_AGENT_ALLOW_LIVE_RESEARCH=1` in the environment, and `research.allowLiveResearch: true` in `config/system.settings.local.json` (copied from `config/system.settings.example.json`). Missing either, the command refuses with exit code 2 and no request is constructed; a job input or workflow cannot substitute for either, which is why the n8n pipeline does not carry `live_research` at all.
+
+What the live source is allowed to do, and what the code refuses:
+
+| Rule | Enforcement |
+| --- | --- |
+| Only URLs already on the record | `targets_for()` reads `originalWebsite` (and social profiles only if allowlisted); no search, no crawl, no sub-page discovery |
+| Public pages only | `permitted_public_target()` refuses credentials, non-standard ports, non-http schemes, single-label names, `.local`/`.internal`/`.invalid`/`.test`, private/reserved IP literals, and names that resolve privately |
+| Source terms and access rules | `robots.txt` is fetched first (counting against the budget) and a disallowal stops the page request; `Disallow` is recorded as `ROBOTS_DISALLOWED`, never negotiated |
+| No login, CAPTCHA, or bypass | 401/403/`Retry-After`-limited 429 are recorded as `ACCESS_RESTRICTED`/`RATE_LIMITED`; a login page is `LOGIN_WALL`; platform hosts (Instagram, Facebook, X, LinkedIn, TikTok) are not fetched unless explicitly allowlisted *and* `fetchPlatformProfiles` is true |
+| Bounded traffic | `maxPagesPerCandidate` (1-3), `maxRequestsPerRun` (1-12), `maxResponseBytes`, `requestTimeoutSeconds`, `maxRedirects`, `maxRetries` (0-2), `minDelaySeconds`; every bound can be lowered by configuration, never removed |
+| Traceability | Each finding carries `source_url`, `observed_at`, a short `excerpt` of literal page properties, and a `retrieval` block (`status`, `http_status`, `attempts`, `requests_used`, `robots`, `bytes`, `content_type`, `uncertainty`) |
+| No invented findings | Flags are set only from countable page properties (viewport meta, nav/anchor counts, `tel:`/`mailto:` presence, a copyright year); `untrustworthy` and `broken_links` are never asserted from one page |
+| No false negatives | A page that could not be read produces no `website_observation`, so `_evaluate_website` answers `UNKNOWN`; `NO_WEBSITE` still requires the absence to be in the reviewed candidate evidence |
+| No action | Research imports nothing from the builder, reviewer, deployer, or outreach modules and writes no state; `QUALIFY`, `BUILD`, review, and deployment stay separate jobs with their own gates |
+
+If no permitted page could be read, the source raises rather than returning empty: the job records `LIVE_RESEARCH_SOURCE_UNAVAILABLE` (or `LIVE_RESEARCH_NOT_ENABLED` when the deployment has not permitted live research at all) with the per-attempt status retained, and `research/README.md`'s classifications stay untouched.
 
 ## Targeted real-data re-verification
 

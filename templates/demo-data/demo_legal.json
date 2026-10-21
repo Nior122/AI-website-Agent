@@ -1,0 +1,21 @@
+{
+  "demo": true,
+  "business_name": "Demo Vanguard Legal Chambers",
+  "category": "legal",
+  "city": "Abuja",
+  "address": "Fictional chambers close, Central Business District, Abuja",
+  "description": "A fictional law practice used only to demonstrate the reusable legal practice template system.",
+  "phone": "+234 800 000 0004",
+  "email": "chambers.demo@example.invalid",
+  "opening_hours": "Mon–Fri, 08:30–17:00",
+  "practice_areas": [
+    { "name": "Corporate & Commercial Law", "description": "Fictional advisory on corporate governance and contract review." },
+    { "name": "Dispute Resolution", "description": "Fictional litigation and commercial arbitration representation." }
+  ],
+  "attorneys": [
+    { "name": "Fictional Principal Partner", "description": "Barrister and Solicitor of the Supreme Court of Nigeria." }
+  ],
+  "images": [],
+  "brand": { "primary_color": "#1a237e", "secondary_color": "#fafafa", "accent_color": "#c5a059", "border_radius": "0.5rem" },
+  "content": { "hero_title": "Legal Counsel Grounded in Integrity", "hero_subtitle": "Fictional legal practice demo content; replace only with approved practice facts." }
+}

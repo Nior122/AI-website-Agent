@@ -25,7 +25,19 @@
     "approvedSources": [],
     "allowLiveResearch": false,
     "requiresSourceProvenance": true,
-    "requiresHumanReviewForSubjectiveWebsiteEvaluation": true
+    "requiresHumanReviewForSubjectiveWebsiteEvaluation": true,
+    "liveResearchRequiresEnvironmentVariable": "AI_WEBSITE_AGENT_ALLOW_LIVE_RESEARCH",
+    "maxPagesPerCandidate": 2,
+    "maxRequestsPerRun": 6,
+    "requestTimeoutSeconds": 12,
+    "maxResponseBytes": 400000,
+    "minDelaySeconds": 1.0,
+    "maxRedirects": 3,
+    "maxRetries": 1,
+    "respectRobotsTxt": true,
+    "fetchPlatformProfiles": false,
+    "allowHosts": [],
+    "_liveResearchNotes": "Bounds for research/live_source.py only. Only the pages already recorded on the candidate are read, robots.txt is honored, a login wall or block is recorded as our limitation and never as a finding about the business, and platform profiles stay unfetched unless a host is explicitly allowlisted here and fetchPlatformProfiles is true. allowLiveResearch true is necessary but not sufficient: the environment variable must also be set."
   },
   "templates": {
     "mode": "local_demo_only",

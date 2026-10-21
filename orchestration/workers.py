@@ -1,9 +1,11 @@
 """Provider-neutral worker registry, routing, leases, execution audit, and mock worker."""
 from __future__ import annotations
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
-from .jobs import JOB_TYPES, WorkerResult, _now
+from .jobs import JOB_TYPES, OPERATOR_ATTENTION_STATUSES, WorkerResult, _now, next_action_for
+from .observability import log_event, recorded_duration_seconds, sanitize_diagnostic
 
 WORKER_TYPES={"LOCAL_AGENT","REMOTE_AGENT","API_AGENT","HUMAN","OTHER"}
 WORKER_STATES={"OFFLINE","STARTING","IDLE","BUSY","DEGRADED","ERROR","DISABLED","UNKNOWN"}
@@ -73,7 +75,10 @@ class WorkerRegistry:
         job=self.store.state["jobs"].get(job_id); lease=(job or {}).get("lease",{})
         if lease.get("worker_id")!=worker_id or lease.get("lease_id")!=lease_id: raise ValueError("Stale or unauthorized result rejected.")
         worker=self._worker(worker_id); execution=self.store.state["executions"][job["execution_id"]]; status=result.status
-        normalized={**(result.output or {}),"status":status,"summary":result.summary,"artifacts":result.artifacts,"warnings":result.warnings,"errors":[result.error] if result.error else [],"metadata":result.metadata,"commit_sha":result.commit_sha}
+        detail=sanitize_diagnostic(result.error)
+        # `errors` is diagnostic text a worker may have copied from a provider response, so it is
+        # redacted before it is stored on the job and echoed by the API.
+        normalized={**(result.output or {}),"status":status,"summary":result.summary,"artifacts":result.artifacts,"warnings":[sanitize_diagnostic(item) for item in (result.warnings or [])],"errors":[detail] if result.error else [],"metadata":result.metadata,"commit_sha":result.commit_sha}
         final="COMPLETED" if status=="COMPLETED" else "NEEDS_REVIEW" if status in {"NEEDS_REVIEW","PARTIAL"} or result.error_type=="HUMAN_REVIEW" else "QUEUED" if result.retryable and job["attempts"]<job["max_attempts"] else "FAILED"
         next_types=[]
         if final=="COMPLETED":
@@ -81,9 +86,26 @@ class WorkerRegistry:
             nxt=NEXT_TYPES.get(job["job_type"])
             if nxt and not (job["job_type"]=="VALIDATE" and normalized.get("validation_status")!="PASS"):
                 next_types=[nxt]
-        job.update({"status":final,"output":normalized,"artifacts":result.artifacts,"error":result.error,"next_job_types":next_types,"updated_at":_now(),"completed_at":_now() if final!="QUEUED" else None,"lease":None})
-        execution.update({"status":final,"completed_at":_now(),"result":normalized,"error_type":result.error_type,"error_message":result.error,"artifacts":result.artifacts,"commit_sha":result.commit_sha})
-        worker.update({"status":"IDLE","current_job_id":None,"updated_at":_now(),"last_successful_job":job_id if final=="COMPLETED" else worker.get("last_successful_job"),"last_failed_job":job_id if final in {"FAILED","NEEDS_REVIEW"} else worker.get("last_failed_job"),"last_error":result.error})
+        # Same coded, sanitized failure vocabulary as the job service, so a worker-reported fault and a
+        # service-run fault are readable and searchable identically.
+        code=None if final=="COMPLETED" else (result.error_code or ("TRANSIENT_FAILURE" if final=="QUEUED" else "WORKER_FAILED"))
+        stamp=_now()
+        job.update({"status":final,"output":normalized,"artifacts":result.artifacts,"error":detail,"next_job_types":next_types,
+                    "error_code":code,"next_action":next_action_for(code,project_id=job.get("project_id"),build_id=job.get("build_id"),job_type=job.get("job_type")),
+                    "requires_operator_action":final in OPERATOR_ATTENTION_STATUSES or (final=="FAILED" and job["attempts"]>=job["max_attempts"]),
+                    "updated_at":stamp,"completed_at":stamp if final!="QUEUED" else None,"lease":None})
+        if final!="COMPLETED":
+            job["failure"]={"code":code,"message":detail,"stage":final,"attempt":int(job.get("attempts") or 0),"recorded_at":stamp}
+        else:
+            job["failure"]=None
+        execution.update({"status":final,"completed_at":stamp,"duration_seconds":recorded_duration_seconds(execution.get("started_at"),stamp),
+                          "result":normalized,"error_type":result.error_type,"error_code":code,"error_message":detail,
+                          "next_action":job.get("next_action"),"artifacts":result.artifacts,"commit_sha":result.commit_sha})
+        worker.update({"status":"IDLE","current_job_id":None,"updated_at":stamp,"last_successful_job":job_id if final=="COMPLETED" else worker.get("last_successful_job"),"last_failed_job":job_id if final in {"FAILED","NEEDS_REVIEW"} else worker.get("last_failed_job"),"last_error":detail})
+        if final!="COMPLETED":
+            log_event(severity="ERROR" if final=="FAILED" else "WARNING",operation=f"worker.{job.get('job_type','unknown').lower()}",code=code,
+                      message=detail,job_id=job_id,lead_id=job.get("lead_id"),project_id=job.get("project_id"),build_id=job.get("build_id"),
+                      execution_id=job.get("execution_id"),worker_id=worker_id,attempt=job.get("attempts"))
         self._unlock(job); self.store._save(); return job
     def recover_expired(self):
         self._refresh()
@@ -91,7 +113,18 @@ class WorkerRegistry:
         for job in list(self.store.state["jobs"].values()):
             lease=job.get("lease") or {}
             if job.get("status")=="RUNNING" and lease.get("expires_at") and _parse(lease["expires_at"])<now:
-                worker=self._worker(lease["worker_id"]); worker.update({"status":"DEGRADED","health_status":"UNAVAILABLE","current_job_id":None,"last_error":"Lease expired."}); job.update({"status":"QUEUED" if job["attempts"]<job["max_attempts"] else "NEEDS_REVIEW","error":"Worker lease expired.","lease":None,"updated_at":_now()}); self._unlock(job); recovered.append(job)
+                worker=self._worker(lease["worker_id"]); worker.update({"status":"DEGRADED","health_status":"UNAVAILABLE","current_job_id":None,"last_error":"Lease expired."})
+                code="LEASE_EXPIRED"; detail="Worker lease expired before the result was reported."
+                job.update({"status":"QUEUED" if job["attempts"]<job["max_attempts"] else "NEEDS_REVIEW","error":detail,"error_code":code,
+                            "next_action":next_action_for(code,project_id=job.get("project_id"),job_type=job.get("job_type")),
+                            "requires_operator_action":job["attempts"]>=job["max_attempts"],"lease":None,"updated_at":_now()})
+                execution=(self.store.state.get("executions") or {}).get(job.get("execution_id") or "")
+                if isinstance(execution,dict) and execution.get("status")=="RUNNING":
+                    execution.update({"status":"NEEDS_REVIEW" if job["status"]=="NEEDS_REVIEW" else "QUEUED","completed_at":_now(),
+                                      "error_code":code,"error_message":detail,"next_action":job.get("next_action")})
+                log_event(severity="WARNING",operation="worker.lease",code=code,message=detail,job_id=job.get("job_id"),
+                          worker_id=lease.get("worker_id"),project_id=job.get("project_id"),attempt=job.get("attempts"))
+                self._unlock(job); recovered.append(job)
         self.store._save(); return recovered
     def human_takeover(self, job_id, worker_id):
         self._refresh()
@@ -129,24 +162,74 @@ class LocalPipelineWorker:
         from opportunities.service import assess_opportunity
         from outreach.service import OutreachService
         from research.research_agent import FixtureResearchSource, ResearchAgent
-        from scout.scout_agent import FixtureSource, Scout, Target
+        from scout.scout_agent import FixtureSource, OverpassRestaurantSource, Scout, Target
 
         store = context["tracking_store"]
         job_type = job["job_type"]
         job_input = job.get("input") or {}
 
         if job_type == "SCOUT":
-            source_file = job_input.get("source_file")
-            if not source_file:
-                return WorkerResult("FAILED", error="SCOUT job requires input.source_file.", retryable=False)
+            # Discovery used to be reachable only from a hand-made fixture file, so the one live source this
+            # repository owns - and the reason real candidates exist at all - could not be run by the queue,
+            # the API, or n8n. It stays opt-in: a job has to name the source AND carry the operator's
+            # approval, or no request leaves the machine.
+            source_kind = str(job_input.get("source") or "fixture").strip().lower()
+            requested_limit = int(job_input.get("lead_limit") or 5)
             target = Target(
                 country=str(job_input.get("country") or "Nigeria"),
                 city=str(job_input.get("city") or "Lagos"),
                 niche=str(job_input.get("niche") or "Restaurants"),
-                lead_limit=int(job_input.get("lead_limit") or 5),
+                lead_limit=requested_limit,
                 dry_run=bool(job.get("dry_run", True)),
             )
-            scout_res = Scout(target, [FixtureSource(Path(source_file))]).run()
+            if source_kind in {"openstreetmap_overpass", "overpass"}:
+                # A person typing `scout.cli --approve-live-lookups` is present and consenting. A job can be
+                # created by n8n or the HTTP API with nobody watching, so network lookup additionally has to
+                # be permitted by the deployment itself - otherwise "the queue asked" becomes the only
+                # approval on record, which is exactly the asymmetry this system refuses elsewhere.
+                if os.environ.get("AI_WEBSITE_AGENT_ALLOW_LIVE_DISCOVERY") != "1":
+                    return WorkerResult(
+                        "FAILED",
+                        error="Live discovery is not enabled for this deployment; set AI_WEBSITE_AGENT_ALLOW_LIVE_DISCOVERY=1 "
+                              "on the machine that is permitted to query public sources.",
+                        error_code="LIVE_DISCOVERY_NOT_ENABLED",
+                        retryable=False,
+                    )
+                if job_input.get("approve_live_lookups") is not True:
+                    return WorkerResult(
+                        "FAILED",
+                        error="SCOUT live discovery requires input.approve_live_lookups to be true; no request was made.",
+                        error_code="LIVE_DISCOVERY_NOT_APPROVED",
+                        retryable=False,
+                    )
+                timeout = job_input.get("timeout_seconds")
+                max_requests = job_input.get("max_requests")
+                if max_requests is not None and not 1 <= int(max_requests) <= 5:
+                    return WorkerResult("FAILED", error="SCOUT input.max_requests must be between 1 and 5.",
+                                        error_code="SCOUT_INPUT_INVALID", retryable=False)
+                overpass = OverpassRestaurantSource(
+                    **({"timeout_seconds": int(timeout)} if timeout is not None else {}),
+                    **({"max_requests": int(max_requests)} if max_requests is not None else {}),
+                )
+                if job_input.get("endpoint"):
+                    overpass.endpoint = str(job_input["endpoint"])
+                if job_input.get("fallback_endpoints"):
+                    overpass.fallback_endpoints = [str(value) for value in job_input["fallback_endpoints"]]
+                sources = [overpass]
+            elif source_kind == "fixture":
+                source_file = job_input.get("source_file")
+                if not source_file:
+                    return WorkerResult("FAILED", error="SCOUT job requires input.source_file when no live source is named.",
+                                        error_code="SCOUT_INPUT_INVALID", retryable=False)
+                sources = [FixtureSource(Path(source_file))]
+            else:
+                return WorkerResult(
+                    "FAILED",
+                    error=f"Unsupported SCOUT source '{source_kind}'. Permitted: fixture, openstreetmap_overpass.",
+                    error_code="SCOUT_SOURCE_UNKNOWN",
+                    retryable=False,
+                )
+            scout_res = Scout(target, sources).run()
             if scout_res.status != "completed":
                 return WorkerResult("FAILED", error="; ".join(scout_res.errors) or "Scout run failed.", retryable=False)
             lead_ids: list[str] = []
@@ -269,13 +352,48 @@ class LocalPipelineWorker:
                     "sourceUrls": list(lead.get("source_urls") or []),
                 }
             evidence_file = job_input.get("evidence_file")
-            if not candidate or not evidence_file:
-                return WorkerResult("FAILED", error="RESEARCH job requires candidate and input.evidence_file.", retryable=False)
-            res = ResearchAgent([FixtureResearchSource(Path(evidence_file))]).run(candidate)
+            if not candidate:
+                return WorkerResult("FAILED", error="RESEARCH job requires a candidate or a lead with a recorded candidate.", retryable=False)
+            # A job may ask for live research but cannot authorize it: the settings path is fixed to this
+            # repository's local file, and the environment permit is the deployment's to grant. So a job
+            # input, an n8n node, or an HTTP request can never widen what leaves the machine on its own.
+            live_requested = job_input.get("live_research") is True
+            live_source = None
+            if live_requested:
+                from research.live_source import DEFAULT_SETTINGS_PATH, LiveResearchPolicy, PublicWebsiteResearchSource
+
+                policy = LiveResearchPolicy.load(self.repository_root / DEFAULT_SETTINGS_PATH)
+                if not policy.enabled:
+                    return WorkerResult(
+                        "FAILED",
+                        error=policy.refusal_reason() or "live research is not permitted for this deployment; no request was made.",
+                        error_code="LIVE_RESEARCH_NOT_ENABLED",
+                        retryable=False,
+                    )
+                live_source = PublicWebsiteResearchSource(policy)
+            sources: list = []
+            if evidence_file:
+                sources.append(FixtureResearchSource(Path(evidence_file)))
+            if live_source is not None:
+                sources.append(live_source)
+            if not sources:
+                return WorkerResult(
+                    "FAILED",
+                    error="RESEARCH job requires input.evidence_file, or input.live_research with live research permitted for this deployment.",
+                    error_code="RESEARCH_INPUT_INVALID",
+                    retryable=False,
+                )
+            res = ResearchAgent(sources).run(candidate)
             if res.status != "completed":
+                failure_code = None
+                if live_source is not None:
+                    from research.live_source import classify_research_failure
+
+                    failure_code = classify_research_failure(res.errors) or "RESEARCH_FAILED"
                 return WorkerResult(
                     "FAILED",
                     error="; ".join(res.errors) or "Research failed.",
+                    error_code=failure_code,
                     output={"lead_id": job.get("lead_id"), "outcome": "RESEARCH_FAILED"},
                     retryable=bool(job_input.get("retryable", False)),
                 )
@@ -304,6 +422,7 @@ class LocalPipelineWorker:
                 summary=f"Researched lead {ingested['lead_id']} ({ingested['qualification_status']}).",
                 output={
                     "lead_id": ingested["lead_id"],
+                    **({"live_research": live_source.summary()} if live_source is not None else {}),
                     "qualification_id": ingested.get("latest_qualification_id"),
                     "qualification_status": ingested["qualification_status"],
                     "research_qualification_status": r_qual,
@@ -486,14 +605,77 @@ class LocalPipelineWorker:
                 except ValueError as err:
                     return WorkerResult("FAILED", error=str(err), retryable=False)
             build_dir = out_file.parent
+            # A successful deployment for the assigned build is never repeated automatically: an
+            # external publish is not idempotent, so a retried or re-delivered DEPLOY job reuses
+            # the recorded result instead of publishing a second preview.
+            recorded_dep = store.state["deployments"].get(p.get("latest_deployment_id"))
+            if (
+                recorded_dep
+                and recorded_dep.get("build_id") == build_id
+                and recorded_dep.get("project_id") == project_id
+                and recorded_dep.get("deployment_status") == "DEPLOYED"
+            ):
+                return WorkerResult(
+                    "COMPLETED",
+                    summary=f"Preview {recorded_dep.get('deployment_id')} is already deployed for {build_id}; repeat deployment skipped.",
+                    output={
+                        **recorded_dep,
+                        "lead_id": p["lead_id"],
+                        "project_id": project_id,
+                        "build_id": build_id,
+                        "validation_id": p.get("latest_validation_id"),
+                        "outcome": "ALREADY_DEPLOYED_REPEAT_SKIPPED",
+                    },
+                )
+            dry_run = bool(job.get("dry_run", True))
+            if not dry_run:
+                # Server-side pre-publish gate. A dry run needs no authorization because it can never
+                # publish; a real publish may only proceed for the assigned, PASS-validated build that
+                # an explicit human approval still covers. The provider re-verifies this itself, so this
+                # check only produces a clearer refusal earlier - it is not the boundary.
+                gate = store.authorize_preview_deployment(project_id, build_id=build_id,
+                                                         resolve_uncertain_publish=bool(job_input.get("resolve_uncertain_publish")))
+                if gate.get("skip_publish"):
+                    return WorkerResult(
+                        "COMPLETED",
+                        summary=f"Preview {gate.get('deployment_id')} already covers {build_id}; repeat publish skipped.",
+                        output={
+                            "lead_id": p["lead_id"], "project_id": project_id, "build_id": build_id,
+                            "validation_id": p.get("latest_validation_id"), "deployment_id": gate.get("deployment_id"),
+                            "deployment_url": gate.get("deployment_url"), "deployment_status": "DEPLOYED",
+                            "outcome": "ALREADY_DEPLOYED_REPEAT_SKIPPED", "authorization": gate,
+                        },
+                        retryable=False,
+                    )
+                if not gate.get("authorized"):
+                    return WorkerResult(
+                        "NEEDS_REVIEW",
+                        error=f"{gate.get('code')}: {gate.get('reason')}" if gate.get("code") else (gate.get("reason") or "Deployment is not authorized."),
+                        output={
+                            "lead_id": p["lead_id"], "project_id": project_id, "build_id": build_id,
+                            "validation_id": p.get("latest_validation_id"), "outcome": (
+                                # An uncertain prior publish is a distinct, explicitly recoverable state.
+                                "PUBLISH_STATE_UNCERTAIN" if gate.get("code") == "PUBLISH_STATE_UNCERTAIN"
+                                else "DEPLOYMENT_UNAUTHORIZED"
+                            ),
+                            "authorization_code": gate.get("code"), "dry_run": False,
+                        },
+                        retryable=False,
+                    )
             provider = self.deployment_provider or VercelDeploymentProvider(self.repository_root)
-            dep_res = provider.deploy(
-                build_dir,
-                dry_run=bool(job.get("dry_run", True)),
-                approve_needs_review=bool(job_input.get("approve_needs_review")),
-                approve_real_preview=bool(job_input.get("approve_real_preview")),
-                project_name=job_input.get("project_name") or p.get("isolated_preview_project"),
-            )
+            deploy_kwargs = {
+                "dry_run": dry_run,
+                "approve_needs_review": bool(job_input.get("approve_needs_review")),
+                "approve_real_preview": bool(job_input.get("approve_real_preview")),
+                "project_name": job_input.get("project_name") or p.get("isolated_preview_project"),
+            }
+            if not dry_run:
+                deploy_kwargs["resolve_uncertain_publish"] = bool(job_input.get("resolve_uncertain_publish"))
+                # A worker-driven resolution is attributed to the operator named in the job or in the
+                # environment; it is recorded as a claim, never as verified identity.
+                deploy_kwargs["resolution_note"] = job_input.get("resolve_note")
+                deploy_kwargs["resolved_by"] = job_input.get("resolved_by") or os.environ.get("AI_WEBSITE_AGENT_OPERATOR_ID")
+            dep_res = provider.deploy(build_dir, **deploy_kwargs)
             dep_out = {
                 **dep_res.to_dict(),
                 "lead_id": p["lead_id"],
@@ -501,15 +683,40 @@ class LocalPipelineWorker:
                 "build_id": build_id,
                 "validation_id": p.get("latest_validation_id"),
                 "deployment_id": dep_res.deployment_id,
+                "outcome": {
+                    "DEPLOYED": "PREVIEW_DEPLOYED",
+                    "PENDING": "DRY_RUN_VERIFIED_NOT_DEPLOYED",
+                    "NEEDS_REVIEW": "DEPLOYMENT_REQUIRES_HUMAN_REVIEW",
+                }.get(dep_res.deployment_status, "DEPLOYMENT_FAILED"),
             }
             if dep_res.deployment_status == "DEPLOYED":
-                store.record_deployment(project_id, dep_res.to_dict())
+                try:
+                    store.record_deployment(project_id, dep_res.to_dict())
+                except ValueError as err:
+                    # The publish happened but the audit record was refused: surface it as needing
+                    # human review with the live URL, never as a silent success or a retryable failure.
+                    return WorkerResult(
+                        "NEEDS_REVIEW",
+                        error=f"Preview {dep_res.deployment_id} was published but could not be recorded: {err}",
+                        output={**dep_out, "outcome": "DEPLOYMENT_RECORD_FAILED"},
+                        retryable=False,
+                    )
                 return WorkerResult("COMPLETED", summary=f"Deployed preview {dep_res.deployment_id}.", output=dep_out)
             if dep_res.deployment_status == "PENDING":
                 return WorkerResult("COMPLETED", summary=f"Verified dry-run deployment {dep_res.deployment_id}.", output=dep_out)
+            if dep_res.deployment_status == "PUBLISH_UNCERTAIN":
+                return WorkerResult(
+                    "NEEDS_REVIEW",
+                    error=dep_res.error,
+                    output={**dep_out, "outcome": "PUBLISH_STATE_UNCERTAIN"},
+                    retryable=False,
+                )
             if dep_res.deployment_status == "NEEDS_REVIEW":
                 return WorkerResult("NEEDS_REVIEW", error=dep_res.error, output=dep_out, retryable=False)
-            return WorkerResult("FAILED", error=dep_res.error or "Deployment failed.", output=dep_out, retryable=False)
+            # A provider that refused for a configuration reason already names it in the manifest; carrying
+            # that code onto the job is what makes `inspect-job` and the attention list actionable.
+            return WorkerResult("FAILED", error=dep_res.error or "Deployment failed.", output=dep_out,
+                error_code=(dep_res.metadata or {}).get("denial_code"), retryable=False)
 
         if job_type == "PREPARE_OUTREACH":
             project_id = job["project_id"]

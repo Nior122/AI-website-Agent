@@ -1,0 +1,426 @@
+{
+  "name": "06 email cycle and operator notification",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        180,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "max_messages",
+              "value": "10"
+            }
+          ],
+          "boolean": [
+            {
+              "name": "dry_run",
+              "value": false
+            }
+          ]
+        }
+      },
+      "id": "cycle-parameters",
+      "name": "Cycle Parameters",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        400,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL }}/integrations/email/poll",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AI_WEBSITE_AGENT_API_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={\"max_messages\": \"{{ $json.max_messages }}\", \"dry_run\": {{ $json.dry_run }}}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "run-mailbox-cycle",
+      "name": "Run Mailbox Cycle",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        640,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.error_code }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        },
+        "combineOperation": "all"
+      },
+      "id": "if-cycle-refused",
+      "name": "IF Cycle Refused",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        880,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "outcome",
+              "value": "the mailbox cycle did not run"
+            },
+            {
+              "name": "refusal_code",
+              "value": "={{ $json.error_code }}"
+            },
+            {
+              "name": "retryable",
+              "value": "={{ $json.retryable }}"
+            },
+            {
+              "name": "detail",
+              "value": "={{ $json.error }}"
+            },
+            {
+              "name": "operator_next_action",
+              "value": "Read the code before rescheduling: AUTOMATION_HELD means an operator is holding dispatch, GMAIL_NOT_CONFIGURED means no mailbox is authorized here, GMAIL_RATE_LIMITED means wait. Nothing was lost and no cursor moved."
+            }
+          ]
+        }
+      },
+      "id": "outcome-cycle-needs-attention",
+      "name": "Outcome - Cycle Needs Attention",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.fetched }}",
+              "operation": "notEqual",
+              "value2": "0"
+            }
+          ]
+        },
+        "combineOperation": "all"
+      },
+      "id": "if-new-mail",
+      "name": "IF New Mail Arrived",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1120,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "outcome",
+              "value": "no new messages in this cycle"
+            },
+            {
+              "name": "fetched",
+              "value": "={{ $json.fetched }}"
+            },
+            {
+              "name": "cursor",
+              "value": "={{ $json.cursor }}"
+            },
+            {
+              "name": "operator_next_action",
+              "value": "Nothing to tell the operator. The cursor stays where the last completed cycle left it, so the next one picks up from the same recorded position."
+            }
+          ]
+        }
+      },
+      "id": "outcome-nothing-new",
+      "name": "Outcome - Nothing New",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL }}/integrations/telegram/notify",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AI_WEBSITE_AGENT_API_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={\"limit\": \"6\"}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "notify-operator",
+      "name": "Notify Operator Channel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1360,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.notified }}",
+              "operation": "equal",
+              "value2": "0"
+            }
+          ]
+        },
+        "combineOperation": "all"
+      },
+      "id": "if-nothing-notified",
+      "name": "IF Nothing Notified",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1600,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "outcome",
+              "value": "conditions recorded, none newly reportable"
+            },
+            {
+              "name": "suppressed_duplicates",
+              "value": "={{ $json.suppressed_duplicates }}"
+            },
+            {
+              "name": "code",
+              "value": "={{ $json.code }}"
+            },
+            {
+              "name": "operator_next_action",
+              "value": "This is duplicate suppression, not a failure: the same unchanged record was already reported. /attention in Telegram, or `python3 -m orchestration.cli attention`, shows it again."
+            }
+          ]
+        }
+      },
+      "id": "outcome-suppressed",
+      "name": "Outcome - Already Reported",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        1840,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "outcome",
+              "value": "operator notified about the new mail"
+            },
+            {
+              "name": "notified",
+              "value": "={{ $json.notified }}"
+            },
+            {
+              "name": "deferred",
+              "value": "={{ $json.deferred }}"
+            },
+            {
+              "name": "recorded",
+              "value": "={{ $node['Run Mailbox Cycle'].json.recorded }}"
+            },
+            {
+              "name": "unmatched",
+              "value": "={{ $node['Run Mailbox Cycle'].json.unmatched }}"
+            },
+            {
+              "name": "operator_next_action",
+              "value": "Read the intake before replying to anyone: `python3 -m tracking.cli inbound-pending`, or /inbox in the same chat. Nothing replies by itself."
+            }
+          ]
+        }
+      },
+      "id": "outcome-operator-notified",
+      "name": "Outcome - Operator Notified",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        1840,
+        620
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Cycle Parameters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cycle Parameters": {
+      "main": [
+        [
+          {
+            "node": "Run Mailbox Cycle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Mailbox Cycle": {
+      "main": [
+        [
+          {
+            "node": "IF Cycle Refused",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Cycle Refused": {
+      "main": [
+        [
+          {
+            "node": "Outcome - Cycle Needs Attention",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF New Mail Arrived",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF New Mail Arrived": {
+      "main": [
+        [
+          {
+            "node": "Notify Operator Channel",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Outcome - Nothing New",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Operator Channel": {
+      "main": [
+        [
+          {
+            "node": "IF Nothing Notified",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Nothing Notified": {
+      "main": [
+        [
+          {
+            "node": "Outcome - Already Reported",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Outcome - Operator Notified",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "phase48-v1"
+}

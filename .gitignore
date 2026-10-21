@@ -12,6 +12,8 @@ config/system.settings.local.json
 data/leads/*
 !data/leads/.gitkeep
 data/tracking/
+data/social/*
+!data/social/.gitkeep
 jobs/*
 !jobs/.gitkeep
 *.sqlite

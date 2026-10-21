@@ -17,6 +17,26 @@ class DeploymentTests(unittest.TestCase):
         (self.build / "index.html").write_text("<title>Fictional Studio</title>", encoding="utf-8")
         self.manifest = {"lead_id": "fictional-lead", "build_id": "build-001", "output_location": str(self.build / "index.html"), "validation": {"validation_id": "validation-001", "status": "PASS", "passed": True}}
         self._write_manifest()
+        self.approved = False
+
+    def approve_build(self, **overrides):
+        """Record the build-local approval capability a real publish requires (deployment/authorization.py)."""
+        from deployment.authorization import write_approval
+
+        record = {
+            "project_id": "proj-0001",
+            "lead_id": self.manifest["lead_id"],
+            "build_id": self.manifest["build_id"],
+            "validation_id": self.manifest["validation"]["validation_id"],
+            "review_id": "review-0001",
+            "decision": "APPROVED_FOR_PREVIEW",
+            "action": "PREVIEW_DEPLOYMENT",
+            "reviewer": {"reviewer_type": "HUMAN", "reviewer_id": "operator:fixture", "identity_verified": True},
+            "notes": "fixture approval so a real publish is authorized",
+        }
+        record.update(overrides)
+        write_approval(self.build, record)
+        self.approved = True
 
     def tearDown(self):
         self.tempdir.cleanup()
@@ -64,7 +84,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(called, [])
 
     def test_cli_failure_becomes_failed_with_redacted_error(self):
-        self._link_project()
+        self._link_project(); self.approve_build()
         def runner(*args, **kwargs):
             return subprocess.CompletedProcess(args[0], 1, "", "token=super-secret-value")
         result = VercelDeploymentProvider(self.root, runner).deploy(self.build, dry_run=False)
@@ -73,7 +93,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertNotIn("super-secret-value", result.error)
 
     def test_cli_success_normalizes_https_preview_url(self):
-        self._link_project()
+        self._link_project(); self.approve_build()
         def runner(*args, **kwargs):
             self.assertNotIn("--prod", args[0])
             return subprocess.CompletedProcess(args[0], 0, "https://fictional-studio-git-preview.vercel.app\n", "")
@@ -83,7 +103,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(result.vercel_project_id, "prj_fixture")
 
     def test_unexpected_or_production_like_url_is_rejected(self):
-        self._link_project()
+        self._link_project(); self.approve_build()
         for url in ("https://vercel.app", "https://fictional.vercel.app.example.invalid", "http://fictional.vercel.app"):
             with self.subTest(url=url):
                 def runner(*args, **kwargs):
@@ -94,7 +114,7 @@ class DeploymentTests(unittest.TestCase):
                 self.assertIn("did not return an HTTPS preview URL", result.error or "")
 
     def test_missing_authentication_fails_without_a_fabricated_url(self):
-        self._link_project()
+        self._link_project(); self.approve_build()
         def runner(*args, **kwargs):
             return subprocess.CompletedProcess(args[0], 1, "", "Error: Not authenticated")
         result = VercelDeploymentProvider(self.root, runner).deploy(self.build, dry_run=False)
@@ -154,7 +174,7 @@ class DeploymentTests(unittest.TestCase):
             stage_public_payload(self.build, self.root / "staging-secret")
 
     def test_church_link_is_refused_and_dedicated_project_is_targeted(self):
-        self._link_project("grace-light-community-church")
+        self._link_project("grace-light-community-church"); self.approve_build()
         called = []
         def runner(*args, **kwargs):
             called.append(args[0]); return subprocess.CompletedProcess(args[0], 0, "https://fixture.vercel.app", "")
@@ -169,6 +189,40 @@ class DeploymentTests(unittest.TestCase):
         self.assertIn("--project", called[-1])
         self.assertIn("prj_fixture", called[-1])
         self.assertNotIn("--prod", called[-1])
+
+    def test_real_publish_without_human_approval_is_refused_before_any_cli_call(self):
+        self._link_project()
+        called = []
+        def runner(*args, **kwargs):
+            called.append(args[0]); return subprocess.CompletedProcess(args[0], 0, "https://fixture.vercel.app", "")
+        self.assertFalse(self.approved)
+        refused = VercelDeploymentProvider(self.root, runner).deploy(self.build, dry_run=False)
+        self.assertEqual(refused.deployment_status, "NEEDS_REVIEW")
+        self.assertIn("APPROVAL_MISSING", refused.error or "")
+        self.assertIsNone(refused.deployment_url)
+        self.assertEqual(refused.metadata.get("denial_code"), "APPROVAL_MISSING")
+        self.assertEqual(called, [], "a refused approval must not reach the provider CLI")
+        self.assertNotIn("DEPLOYING", (self.build / "deployment-attempts.json").read_text(encoding="utf-8"))
+
+    def test_approval_for_a_stale_artifact_is_refused(self):
+        self._link_project(); self.approve_build()
+        (self.build / "index.html").write_text("<title>Edited after approval</title>", encoding="utf-8")
+        result = VercelDeploymentProvider(self.root).deploy(self.build, dry_run=False)
+        self.assertEqual(result.deployment_status, "NEEDS_REVIEW")
+        self.assertIn("APPROVAL_ARTIFACT_STALE", result.error or "")
+
+    def test_repeat_publish_of_the_same_approved_artifact_is_refused(self):
+        self._link_project(); self.approve_build()
+        calls = []
+        def runner(*args, **kwargs):
+            calls.append(args[0]); return subprocess.CompletedProcess(args[0], 0, "https://fictional-studio-git-preview.vercel.app\n", "")
+        provider = VercelDeploymentProvider(self.root, runner)
+        first = provider.deploy(self.build, dry_run=False)
+        second = provider.deploy(self.build, dry_run=False)
+        self.assertEqual(first.deployment_status, "DEPLOYED")
+        self.assertEqual(second.deployment_status, "FAILED")
+        self.assertIn("DEPLOYMENT_ALREADY_RECORDED", second.error or "")
+        self.assertEqual(len(calls), 1)
 
 
 if __name__ == "__main__":

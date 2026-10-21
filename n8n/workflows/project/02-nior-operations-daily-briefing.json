@@ -1,0 +1,214 @@
+{
+  "name": "02 - Nior Operations: Daily Business Briefing & Alerts",
+  "nodes": [
+    {
+      "id": "9351584d-09dd-446c-a543-82bad2beb4a7",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "daysInterval": 1,
+              "triggerAtHour": 8,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "7633f152-b386-4180-896c-2f185cd84fc0",
+      "name": "Fetch Health & Attention",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        224,
+        96
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL || \"http://127.0.0.1:8787\" }}/health",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "10cb9239-0d3c-45c1-a224-5bab84717aa6",
+      "name": "Fetch Engagement Pipeline",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        448,
+        96
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL || \"http://127.0.0.1:8787\" }}/engagement/pipeline",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "6d775ab5-95eb-4f8a-bcfe-4c31428775f5",
+      "name": "Fetch Outstanding Work",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        672,
+        96
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL || \"http://127.0.0.1:8787\" }}/engagement/outstanding",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "66ee63f5-6dae-4a26-967d-3cb1bd0e9d3a",
+      "name": "Compose Briefing Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        896,
+        96
+      ],
+      "parameters": {
+        "jsCode": "const health = $('Fetch Health & Attention').first()?.json || {};\nconst pipeline = $('Fetch Engagement Pipeline').first()?.json || {};\nconst outstanding = $('Fetch Outstanding Work').first()?.json || {};\n\n// Format Africa/Lagos reference time\nconst now = new Date();\nconst utc = now.getTime() + (now.getTimezoneOffset() * 60000);\nconst lagosTime = new Date(utc + (3600000)); // UTC+1\nconst dateStr = lagosTime.toLocaleDateString('en-GB', {\n  weekday: 'long',\n  year: 'numeric',\n  month: 'long',\n  day: 'numeric'\n});\nconst timeStr = lagosTime.toLocaleTimeString('en-GB', {\n  hour: '2-digit',\n  minute: '2-digit'\n});\n\nconst totalPipelineValue = pipeline.total_pipeline_value || pipeline.pipeline_value || 0;\nconst activeCount = pipeline.active_count || (pipeline.pipeline || []).length || 0;\nconst qualifiedCount = pipeline.qualified_count || 0;\n\nconst dueFollowUps = outstanding.due_follow_ups || [];\nconst overdueTasks = outstanding.overdue_tasks || [];\nconst attentionItems = health.attention || {};\n\nlet msg = '\ud83d\udcca DAILY BUSINESS BRIEFING\\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\\n\\n';\nmsg += '\ud83d\udcc5 DATE\\n' + dateStr + ', ' + timeStr + ' (Africa/Lagos)\\n\\n';\n\nmsg += '\ud83d\udcb0 PIPELINE\\n';\nmsg += '\u2022 Total pipeline: \u20a6' + Number(totalPipelineValue).toLocaleString() + '\\n';\nmsg += '\u2022 Active prospects: ' + activeCount + '\\n';\nmsg += '\u2022 Qualified prospects: ' + qualifiedCount + '\\n\\n';\n\nmsg += '\ud83d\udea8 OVERDUE & ATTENTION\\n';\nif (dueFollowUps.length === 0 && overdueTasks.length === 0) {\n  msg += '\u2022 No overdue tasks or past-due follow-ups recorded.\\n';\n} else {\n  if (dueFollowUps.length > 0) {\n    msg += '\u2022 Past-due follow-ups: ' + dueFollowUps.length + ' requiring review\\n';\n  }\n  if (overdueTasks.length > 0) {\n    msg += '\u2022 Overdue tasks: ' + overdueTasks.length + ' pending\\n';\n  }\n}\nmsg += '\\n';\n\nmsg += '\ud83c\udfaf RECOMMENDED ACTIONS\\n';\nmsg += '1. Recommendation: Review active pipeline prospects and confirm next follow-up dates.\\n';\nmsg += '   Reason: Regular review maintains consistent outreach pace.\\n\\n';\nmsg += '2. Recommendation: Inspect any flagged attention items in operator console.\\n';\nmsg += '   Reason: Resolving pending items prevents operational bottlenecks.\\n';\n\n// Chunk message to mobile limit <= 3900 chars\nconst MAX_LENGTH = 3900;\nconst chunks = [];\nlet remaining = msg.trim();\n\nwhile (remaining.length > MAX_LENGTH) {\n  let splitAt = remaining.lastIndexOf('\\n\\n', MAX_LENGTH);\n  if (splitAt < 2000) splitAt = remaining.lastIndexOf('\\n', MAX_LENGTH);\n  if (splitAt < 1) splitAt = MAX_LENGTH;\n  chunks.push(remaining.slice(0, splitAt).trim());\n  remaining = remaining.slice(splitAt).trim();\n}\nif (remaining) chunks.push(remaining);\n\nreturn chunks.map((chunk, idx) => ({\n  json: {\n    telegram_text: chunks.length > 1 ? 'Nior \u2014 Daily Briefing (Part ' + (idx + 1) + '/' + chunks.length + ')\\n\\n' + chunk : chunk,\n    part_number: idx + 1,\n    total_parts: chunks.length\n  }\n}));"
+      }
+    },
+    {
+      "id": "01ed3c49-231f-4660-aefe-20fc65f479ea",
+      "name": "Send Briefing to Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1120,
+        96
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $env.AI_WEBSITE_AGENT_TELEGRAM_CHAT_ID || \"7722236745\" }}",
+        "text": "={{ $json.telegram_text }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "webhookId": "ec38b844-81c8-42a9-bd5b-09321dd0e066"
+    },
+    {
+      "id": "932c59cb-4bd0-4cf2-9953-573282abf58d",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        192
+      ],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch Health & Attention",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Health & Attention": {
+      "main": [
+        [
+          {
+            "node": "Fetch Engagement Pipeline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Engagement Pipeline": {
+      "main": [
+        [
+          {
+            "node": "Fetch Outstanding Work",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Outstanding Work": {
+      "main": [
+        [
+          {
+            "node": "Compose Briefing Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compose Briefing Text": {
+      "main": [
+        [
+          {
+            "node": "Send Briefing to Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch Health & Attention",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true
+  },
+  "description": "Generates Africa/Lagos daily business briefing with pipeline metrics, overdue tasks, and plain-text Telegram output"
+}

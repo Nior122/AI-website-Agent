@@ -31,15 +31,41 @@ def render_site(data: dict, template_id: str | None = None) -> str:
 
 def _sections(data: dict, template: TemplateDefinition) -> dict:
     parts = [("about", components.about(data))]
-    if template.template_id == "salon-service-v1":
+    tid = template.template_id
+    if tid == "salon-service-v1":
         parts.append(("services", components.card_list("services", "Services", data.get("services", []))))
-    else:
+    elif tid == "restaurant-menu-v1":
         menu_items = data.get("menu_items")
         if menu_items:
             parts.append(("menu", components.card_list("menu", "Signature dishes", menu_items, price=True, fictional=components.is_fictional(data))))
         elif data.get("services"):
             parts.append(("offerings", components.card_list("offerings", "Offerings", data.get("services", []), price=False, fictional=components.is_fictional(data))))
-    parts.extend([("gallery", components.gallery(data.get("images", []))), ("location", components.location(data)), ("hours", components.hours(data)), ("contact", components.contact(data))])
+    elif tid == "clinic-healthcare-v1":
+        if data.get("services"):
+            parts.append(("services", components.card_list("services", "Clinical Specialties & Care", data.get("services", []))))
+        if data.get("practitioners"):
+            parts.append(("practitioners", components.card_list("practitioners", "Specialist Practitioners", data.get("practitioners", []))))
+    elif tid == "legal-practice-v1":
+        areas = data.get("practice_areas") or data.get("services", [])
+        if areas:
+            parts.append(("practice_areas", components.card_list("practice_areas", "Practice Areas", areas)))
+        if data.get("attorneys"):
+            parts.append(("attorneys", components.card_list("attorneys", "Legal Practitioners", data.get("attorneys", []))))
+    elif tid == "automotive-service-v1":
+        if data.get("services"):
+            parts.append(("services", components.card_list("services", "Workshop & Repair Services", data.get("services", []))))
+        if data.get("guarantee"):
+            parts.append(("guarantee", components.card_list("guarantee", "Service Guarantee", data.get("guarantee", []))))
+    else:
+        if data.get("services"):
+            parts.append(("services", components.card_list("services", "Services", data.get("services", []))))
+
+    parts.extend([
+        ("gallery", components.gallery(data.get("images", []))),
+        ("location", components.location(data)),
+        ("hours", components.hours(data)),
+        ("contact", components.contact(data)),
+    ])
     rendered = [(section_id, html) for section_id, html in parts if html]
     return {"nav": [section_id for section_id, _ in rendered], "html": components.hero(data) + "".join(html for _, html in rendered)}
 

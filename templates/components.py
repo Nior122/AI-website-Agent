@@ -11,6 +11,11 @@ def text(value: object) -> str:
     return escape(str(value)) if value is not None else ""
 
 
+# The sentence a fictional page must carry. Shared with the review package on purpose: the check only
+# means something if it asks for exactly what the renderer writes.
+FICTIONAL_DISCLOSURE = "Fictional demonstration website \u00b7 Created for AI Website Agent testing."
+
+
 def is_fictional(data: dict) -> bool:
     """Keep fixture demonstrations visually complete without actionable contacts."""
     return (
@@ -29,11 +34,33 @@ def safe_url(value: object) -> str | None:
 
 def action_links(data: dict) -> str:
     if is_fictional(data):
-        primary_target = "#menu" if data.get("category") in {"restaurant", "food_business"} else "#services"
-        primary_label = "Explore the menu" if primary_target == "#menu" else "Explore services"
+        cat = data.get("category")
+        if cat in {"restaurant", "food_business"} and (data.get("menu_items") or not data.get("services")):
+            primary_target = "#menu"
+            primary_label = "Explore the menu"
+        elif data.get("practice_areas") and not data.get("services"):
+            primary_target = "#practice_areas"
+            primary_label = "Practice areas"
+        elif data.get("services"):
+            primary_target = "#services"
+            primary_label = "Explore services"
+        elif data.get("description") or data.get("content", {}).get("about_text"):
+            primary_target = "#about"
+            primary_label = "About us"
+        else:
+            primary_target = "#contact"
+            primary_label = "Contact us"
+
         has_about = bool(data.get("description") or data.get("content", {}).get("about_text"))
-        secondary_target = "#location" if data.get("address") else "#about" if has_about else "#contact"
-        secondary_label = "Visit the test location" if secondary_target == "#location" else "Read the test story" if secondary_target == "#about" else "View test notice"
+        if data.get("address"):
+            secondary_target = "#location"
+            secondary_label = "Visit the test location"
+        elif has_about and primary_target != "#about":
+            secondary_target = "#about"
+            secondary_label = "Read the test story"
+        else:
+            secondary_target = "#contact"
+            secondary_label = "View test notice"
         return f'<a class="button button-primary" href="{primary_target}">{primary_label}</a><a class="button button-secondary" href="{secondary_target}">{secondary_label}</a>'
     links = []
     labels = data.get("content", {}).get("cta", {})
@@ -163,5 +190,5 @@ def contact(data: dict) -> str:
 
 
 def footer(name: str, fictional: bool = False) -> str:
-    disclosure = '<p class="fictional-disclosure">Fictional demonstration website · Created for AI Website Agent testing.</p>' if fictional else f'<p class="draft-disclosure">Uncommissioned preview draft prepared for internal evaluation · Not an authorized or official website of {text(name)}.</p>'
+    disclosure = f'<p class="fictional-disclosure">{FICTIONAL_DISCLOSURE}</p>' if fictional else f'<p class="draft-disclosure">Uncommissioned preview draft prepared for internal evaluation · Not an authorized or official website of {text(name)}.</p>'
     return f'<footer><a class="brand footer-brand" href="#top">{text(name)}</a>{disclosure}</footer>'

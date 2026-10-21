@@ -61,6 +61,51 @@ class DatabasePersistenceError(RuntimeError):
     """Raised when persistent database storage is required or configured and an operation fails."""
 
 
+# Fields that legitimately differ between two equivalent writes of the same record (retry,
+# replay, or a second worker touching the same row), used only to decide whether a concurrent
+# insert of an already-existing record ID is an idempotent replay or a real conflict.
+VOLATILE_RECORD_FIELDS = frozenset({
+    "created_at",
+    "updated_at",
+    "reviewed_at",
+    "completed_at",
+    "started_at",
+    "heartbeat_at",
+    "last_heartbeat",
+    "timestamp",
+})
+
+
+def _comparable_record(rec: Any) -> Any:
+    if not isinstance(rec, dict):
+        return rec
+    return {k: v for k, v in rec.items() if k not in VOLATILE_RECORD_FIELDS}
+
+
+def _conflict_owner_label(rec: Any) -> str:
+    """Describe which lead/project/build already owns a conflicting row so the error is actionable."""
+    if not isinstance(rec, dict):
+        return "unknown owner"
+    parts = [
+        f"{field}={rec[field]}"
+        for field in ("lead_id", "project_id", "build_id", "job_id", "worker_id", "lease_id", "validation_id", "deployment_id")
+        if rec.get(field)
+    ]
+    return ", ".join(parts) if parts else "unknown owner"
+
+
+def _lease_is_live(rec: Any, *, now_value: datetime | None = None) -> bool:
+    expires_at = (rec or {}).get("expires_at") if isinstance(rec, dict) else None
+    if not expires_at:
+        return False
+    try:
+        parsed = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+    except ValueError:
+        # An unparseable expiry is treated as live: never assume another worker's lock has lapsed.
+        return True
+    return parsed > (now_value or datetime.now(timezone.utc))
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -111,6 +156,26 @@ def sanitize_db_error(exc: BaseException | str, raw_url: str | None = None) -> s
     msg = re.sub(r"(://[^:/\s]+:)[^@\s]+(@)", r"\1***\2", msg)
     msg = re.sub(r"((?:password|passwd|pwd)\s*=\s*)[^\s&'\"]+", r"\1***", msg, flags=re.IGNORECASE)
     return msg
+
+
+def supabase_project_ref(host: str | None) -> str | None:
+    """The Supabase project reference carried by a hostname, when the hostname carries one.
+
+    Direct and session-pool hostnames name the project (`db.<ref>.supabase.co`); the transaction
+    pooler hostnames Supabase publishes (`aws-0-<region>.pooler.supabase.com`) do not. A `None` result
+    therefore means "this URL does not identify a project", never "there is no project" - the preflight
+    says so instead of guessing, because applying a schema to the wrong project is not undoable by hand.
+    """
+    if not host:
+        return None
+    labels = str(host).lower().strip().split(".")
+    if "supabase" not in labels:
+        return None
+    index = labels.index("supabase")
+    if index == 0:
+        return None
+    candidate = labels[index - 1]
+    return candidate if re.fullmatch(r"[a-z0-9]{14,32}", candidate) else None
 
 
 def is_production_mode(env: dict[str, str] | None = None) -> bool:
@@ -244,7 +309,8 @@ class RelationalStateBackend:
     @staticmethod
     def _empty_snapshot() -> dict[str, Any]:
         snap: dict[str, Any] = {col: {} for col in TRACKED_COLLECTIONS}
-        snap["worker_routing"] = {}
+        for collection in RelationalStateBackend.KV_PERSISTED_COLLECTIONS:
+            snap[collection] = {}
         return snap
 
     def _connect(self) -> Any:
@@ -328,6 +394,245 @@ class RelationalStateBackend:
     def _exec(self, cursor: Any, sql: str, params: tuple[Any, ...] = ()) -> Any:
         result = cursor.execute(sql, params)
         return result if result is not None and hasattr(result, "fetchall") else cursor
+
+    #: Tables this application owns. Reported on, never assumed to exist.
+    OWNED_TABLES = (
+        "schema_migrations", "leads", "research_evidence", "qualifications", "projects", "builds",
+        "validations", "reviews", "deployments", "outreach_packages", "jobs", "job_executions",
+        "workers", "project_locks", "system_kv", "build_artifacts",
+    )
+    #: Counted in a preflight so a database that already holds operational records is visible before
+    #: anything is applied to it. A fresh migration and a shared production database look identical
+    #: to `CREATE TABLE IF NOT EXISTS`, which is precisely why the counts are reported.
+    COUNTED_TABLES = ("leads", "projects", "jobs", "reviews", "deployments", "outreach_packages")
+
+    #: Whole-dict state that has no dedicated table and is therefore kept as one JSON document per key in
+    #: ``system_kv`` - the mechanism ``worker_routing`` already uses. The engagement ledger lives here so a
+    #: PostgreSQL deployment persists it with no new DDL in this phase; promoting it to real tables (with
+    #: per-row idempotency and indexes) is the migration that should follow, not a reason to lose records now.
+    KV_PERSISTED_COLLECTIONS = ("worker_routing", "engagements", "proposals", "follow_ups", "outcomes", "contact_blocks", "relationships", "inbound_events", "automation_controls", "provider_sync")
+
+    def identity(self) -> dict[str, Any]:
+        """Where this connection string points, with every secret removed.
+
+        ``redacted_url`` cannot tell two Supabase projects apart, so the identity names the host, port,
+        database, and the project reference embedded in the hostname. Those are the values an operator
+        compares against the Supabase dashboard before running the migration command.
+        """
+        parsed = urlparse(self.database_url)
+        host = (parsed.hostname or "").lower() or None
+        raw_path = parsed.path or ""
+        database = raw_path[1:] if raw_path.startswith("//") else raw_path.lstrip("/")
+        identity: dict[str, Any] = {
+            "dialect": self.dialect,
+            "scheme": parsed.scheme.lower(),
+            "host": host,
+            "port": parsed.port,
+            "database": database or None,
+            "url": self.redacted_url,
+            "supabase_project_ref": supabase_project_ref(host),
+            "is_local_host": host in {"127.0.0.1", "localhost", "::1", "0.0.0.0"},
+            "connect_timeout_seconds": self.connect_timeout,
+        }
+        if self.dialect == "sqlite":
+            identity["host"] = None
+            identity["port"] = None
+            identity["is_local_host"] = True
+        return identity
+
+    def _probe(self, cursor: Any, sql: str, params: tuple[Any, ...] = ()) -> tuple[list[Any], str | None]:
+        """Run one read-only probe; return ``(rows, fault)`` instead of raising.
+
+        Each question a preflight asks is independent: a connection that forbids ``information_schema``
+        or a database with no tables yet should produce one `unknown` field, not a crash that tempts the
+        operator to skip the preflight and run the migration blind.
+        """
+        try:
+            return list(self._exec(cursor, sql, params).fetchall() or []), None
+        except Exception as error:  # any DB-API fault is data for the report, never a traceback
+            return [], sanitize_db_error(error, self.database_url)
+
+    def preflight(self) -> dict[str, Any]:
+        """Identify the target database and report its migration state without running any DDL.
+
+        Read-only by construction: one connection, SELECTs only, then close. No table is created, no row
+        is written, and no local JSON fallback is possible from here. A fault is reported in
+        ``blockers`` with the credential already redacted, so the answer to "can the app reach the
+        database you intend it to" is a document an operator can act on.
+        """
+        report: dict[str, Any] = {
+            "status": "ready",
+            "checked_at": _now_iso(),
+            "ddl_executed": False,
+            "wrote_anything": False,
+            "identity": self.identity(),
+            "reachable": False,
+            "server_version": None,
+            "schema": {"present_tables": [], "missing_tables": list(self.OWNED_TABLES), "row_counts": {},
+                       "populated": None},
+            "migration": {
+                "version": MIGRATION_VERSION,
+                "file": MIGRATION_0001_PATH.name,
+                "expected_checksum": migration_0001_checksum(),
+                "recorded_checksum": None,
+                "applied": False,
+                "checksum_matches": False,
+                # `ensure_schema` is `CREATE TABLE IF NOT EXISTS` plus a keyed checksum row, and it
+                # re-verifies rather than rewrites: repeating it is safe, so say so explicitly.
+                "safe_to_repeat": True,
+            },
+            "blockers": [],
+            "pending": [],
+            "warnings": [],
+            "next_action": None,
+        }
+        try:
+            connection = self._connect()
+        except Exception as error:  # DatabasePersistenceError wraps driver faults, and so should this
+            # "Cannot reach it" and "reached it, something is wrong" send the operator to different
+            # places - a firewall or a wrong hostname versus a schema that was never applied.
+            report["status"] = "unreachable"
+            detail = sanitize_db_error(error, self.database_url)
+            # `_connect` already names the target it failed on. Prefixing it again buries the part an
+            # operator acts on ("Connection refused - is the server running?") under a repeated URL.
+            report["blockers"].append(
+                detail if self.redacted_url in detail else f"Could not connect to {self.redacted_url}: {detail}"
+            )
+            report["next_action"] = (
+                "Start PostgreSQL/Supabase and re-check the connection string, then run "
+                "`python3 -m tracking.cli preflight-db` again."
+            )
+            return report
+
+        try:
+            cursor = connection.cursor()
+            version_sql = "SELECT version()" if self.dialect == "postgres" else "SELECT sqlite_version()"
+            rows, fault = self._probe(cursor, version_sql)
+            if rows:
+                report["server_version"] = str(rows[0][0])
+            elif fault:
+                report["warnings"].append(f"Server version could not be read: {fault}")
+            report["reachable"] = True
+
+            table_sql = (
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema()"
+                if self.dialect == "postgres"
+                else "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+            rows, fault = self._probe(cursor, table_sql)
+            if fault:
+                report["warnings"].append(
+                    f"Table listing could not be read: {fault}. Existence is reported as unknown, not absent."
+                )
+                report["schema"]["present_tables"] = []
+                report["schema"]["missing_tables"] = []
+            else:
+                found = {str(row[0]) for row in rows}
+                report["schema"]["present_tables"] = sorted(found & set(self.OWNED_TABLES))
+                report["schema"]["missing_tables"] = sorted(set(self.OWNED_TABLES) - found)
+
+            report["migration"]["needs_migration"] = False
+            if "schema_migrations" in {str(row[0]) for row in rows} or not report["schema"]["missing_tables"]:
+                rows, fault = self._probe(
+                    cursor,
+                    f"SELECT checksum FROM schema_migrations WHERE version = {self._placeholder()}",
+                    (MIGRATION_VERSION,),
+                )
+                if fault:
+                    report["blockers"].append(f"Migration history could not be read: {fault}")
+                elif rows:
+                    recorded = rows[0][0]
+                    report["migration"]["applied"] = True
+                    report["migration"]["recorded_checksum"] = str(recorded) if recorded else None
+                    if not recorded:
+                        report["blockers"].append(
+                            f"Migration {MIGRATION_VERSION} is recorded without a checksum on "
+                            f"{self.redacted_url}; run `python3 -m tracking.cli migrate-db` to stamp it."
+                        )
+                    elif str(recorded) != report["migration"]["expected_checksum"]:
+                        report["migration"]["safe_to_repeat"] = False
+                        report["blockers"].append(
+                            f"Migration checksum mismatch for {MIGRATION_VERSION} on {self.redacted_url}: "
+                            f"recorded {recorded}, expected {report['migration']['expected_checksum']}. "
+                            "The applied schema is not the one this checkout ships; reconcile by hand "
+                            "rather than re-running the migration."
+                        )
+                    else:
+                        report["migration"]["checksum_matches"] = True
+                else:
+                    report["migration"]["needs_migration"] = True
+                    report["pending"].append(
+                        f"Migration {MIGRATION_VERSION} has not been applied on {self.redacted_url}."
+                    )
+                    report["next_action"] = (
+                        "Run `python3 -m tracking.cli migrate-db` to apply migration "
+                        f"{MIGRATION_VERSION}; it is additive and safe to repeat."
+                    )
+            else:
+                report["migration"]["needs_migration"] = True
+                report["pending"].append(
+                    "The schema is absent (no `schema_migrations` table): migration has not been applied here."
+                )
+                report["next_action"] = (
+                    "Confirm the identity above matches the intended Supabase project, then run "
+                    "`python3 -m tracking.cli migrate-db` to apply the schema."
+                )
+
+            for table in self.COUNTED_TABLES:
+                if table not in report["schema"]["present_tables"]:
+                    continue
+                rows, fault = self._probe(cursor, f"SELECT count(*) FROM {table}")
+                if fault:
+                    report["warnings"].append(f"Row count for {table} could not be read: {fault}")
+                elif rows:
+                    report["schema"]["row_counts"][table] = int(rows[0][0])
+            counts = report["schema"]["row_counts"]
+            if counts:
+                report["schema"]["populated"] = any(value > 0 for value in counts.values())
+                if report["schema"]["populated"]:
+                    report["warnings"].append(
+                        "This database already holds records ("
+                        + ", ".join(f"{name}={count}" for name, count in sorted(counts.items()) if count)
+                        + "). Migration is additive, but a shared or live database deserves a deliberate "
+                        "confirmation."
+                    )
+        finally:
+            try:
+                rollback = getattr(connection, "rollback", None)
+                if callable(rollback):
+                    rollback()
+            except Exception:
+                pass
+            try:
+                connection.close()
+            except Exception:
+                pass
+
+        unresolved = report["identity"]["supabase_project_ref"] is None and self.dialect == "postgres" and not report["identity"]["is_local_host"]
+        if unresolved:
+            report["warnings"].append(
+                "This hostname does not carry a Supabase project reference (a transaction-pooler host "
+                "such as aws-0-<region>.pooler.supabase.com does not), so `--expect-project-ref` cannot "
+                "confirm the project from the URL alone: verify the connection string against the "
+                "Supabase dashboard before migrating."
+            )
+        # "Blocked" and "not migrated yet" are different operator problems: one is a fault to fix, the
+        # other is a step to take. Collapsing them would send an operator off to debug a healthy database.
+        if not report["reachable"]:
+            report["status"] = "unreachable"
+        elif report["blockers"]:
+            report["status"] = "blocked"
+        elif report["migration"]["applied"] and report["migration"]["checksum_matches"]:
+            report["status"] = "ready"
+            if not report["next_action"]:
+                report["next_action"] = (
+                    "Schema verified; no DDL was executed by this command. Start the API with "
+                    "`python3 -m orchestration.cli serve` and check `python3 -m orchestration.cli preflight`."
+                )
+        else:
+            report["status"] = "needs_migration"
+        report["blockers"] = report["blockers"] + report["pending"]
+        return report
 
     def verify_schema(self) -> dict[str, Any]:
         """Verify that schema_migrations exists and matches the expected migration checksum without running DDL."""
@@ -766,10 +1071,11 @@ class RelationalStateBackend:
             })
             state["build_artifacts"][b_id] = payload
 
-        res_kv = self._exec(cur, "SELECT key, payload FROM system_kv WHERE key = 'worker_routing'")
-        kv_rows = res_kv.fetchall()
-        if kv_rows:
-            state["worker_routing"] = self._decode_json(kv_rows[0][1])
+        for kv_key in self.KV_PERSISTED_COLLECTIONS:
+            res_kv = self._exec(cur, f"SELECT key, payload FROM system_kv WHERE key = {self._placeholder()}", (kv_key,))
+            kv_rows = res_kv.fetchall()
+            if kv_rows:
+                state[kv_key] = self._decode_json(kv_rows[0][1])
 
         return state
 
@@ -813,6 +1119,48 @@ class RelationalStateBackend:
 
                 for rec_id, rec in current_col.items():
                     if rec_id not in baseline_col or baseline_col[rec_id] != rec:
+                        db_rec = db_col.get(rec_id)
+                        if db_rec is not None and rec_id not in baseline_col:
+                            # Another connection committed this record ID after our snapshot was
+                            # loaded. Never overwrite it silently.
+                            if _comparable_record(db_rec) == _comparable_record(rec):
+                                # Idempotent replay (same content, retry after a partial failure).
+                                continue
+                            if collection == "project_locks" and not _lease_is_live(db_rec):
+                                pass  # The stored lease has lapsed; taking it over is safe.
+                            elif collection == "project_locks":
+                                raise DatabasePersistenceError(
+                                    f"Project lock conflict for {rec_id}: worker {(db_rec.get('worker_id'))} "
+                                    f"holds a live lease until {db_rec.get('expires_at')} "
+                                    f"(job {db_rec.get('job_id')}). Refusing to overwrite another worker's lock."
+                                )
+                            else:
+                                raise DatabasePersistenceError(
+                                    f"Concurrent-insert conflict on {collection}.{rec_id}: this connection tried to "
+                                    f"insert a new record, but the row already exists with different content "
+                                    f"({_conflict_owner_label(db_rec)}). Load the latest state "
+                                    "(TrackingStore.refresh()) and retry instead of overwriting the other writer."
+                                )
+                        if collection == "projects" and rec_id not in baseline_col and rec.get("project_status") == "ACTIVE":
+                            # Business rule: one ACTIVE project per lead. A concurrent connection
+                            # that already committed one must be reused, never duplicated.
+                            duplicate_project = next(
+                                (
+                                    other
+                                    for other_id, other in db_col.items()
+                                    if other_id != rec_id
+                                    and other.get("lead_id") == rec.get("lead_id")
+                                    and other.get("project_status") == "ACTIVE"
+                                ),
+                                None,
+                            )
+                            if duplicate_project is not None:
+                                raise DatabasePersistenceError(
+                                    f"Lead {rec.get('lead_id')} already has an ACTIVE project "
+                                    f"({duplicate_project.get('project_id')}) committed by another connection; "
+                                    f"refusing to create duplicate project {rec_id}. Reload the latest state "
+                                    "(TrackingStore.refresh()) and reuse the existing project."
+                                )
                         if collection == "jobs":
                             eff_key = str(rec.get("idempotency_key") or f"idemp-{rec_id}")
                             if rec_id not in baseline_col:
@@ -863,19 +1211,19 @@ class RelationalStateBackend:
                             merged_rec["lock_version"] = prev_lock_ver + 1
                         self._upsert_record(cur, collection, rec_id, merged_rec)
 
-            # Persist `worker_routing` system KV if modified
-            baseline_routing = self._loaded_snapshot.get("worker_routing") or {}
-            current_routing = state.get("worker_routing") or {}
-            if current_routing and current_routing != baseline_routing:
-                ph = self._placeholder()
-                cast = self._json_cast()
-                now_val = _now_iso()
-                self._exec(
-                    cur,
-                    f"INSERT INTO system_kv (key, payload, updated_at) VALUES ({ph}, {ph}{cast}, {ph}) "
-                    f"ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at",
-                    ("worker_routing", self._json_param(current_routing), now_val),
-                )
+            # Persist whole-dict system KV collections (worker routing plus the engagement ledger) if modified
+            for kv_key in self.KV_PERSISTED_COLLECTIONS:
+                baseline_kv = self._loaded_snapshot.get(kv_key) or {}
+                current_kv = state.get(kv_key) or {}
+                if current_kv and current_kv != baseline_kv:
+                    ph = self._placeholder()
+                    cast = self._json_cast()
+                    self._exec(
+                        cur,
+                        f"INSERT INTO system_kv (key, payload, updated_at) VALUES ({ph}, {ph}{cast}, {ph}) "
+                        f"ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at",
+                        (kv_key, self._json_param(current_kv), _now_iso()),
+                    )
 
             # Re-read the committed state inside the transaction so concurrent rows are visible
             fresh_state = self._read_all_tables(cur)
@@ -886,12 +1234,12 @@ class RelationalStateBackend:
 
             self._loaded_snapshot = copy.deepcopy(fresh_state)
             for col_key, col_val in fresh_state.items():
-                if col_key == "worker_routing":
-                    if isinstance(state.get("worker_routing"), dict) and isinstance(col_val, dict):
-                        state["worker_routing"].clear()
-                        state["worker_routing"].update(copy.deepcopy(col_val))
+                if col_key in self.KV_PERSISTED_COLLECTIONS:
+                    if isinstance(state.get(col_key), dict) and isinstance(col_val, dict):
+                        state[col_key].clear()
+                        state[col_key].update(copy.deepcopy(col_val))
                     else:
-                        state["worker_routing"] = copy.deepcopy(col_val)
+                        state[col_key] = copy.deepcopy(col_val)
                     continue
                 target_col = state.setdefault(col_key, {})
                 if isinstance(target_col, dict) and isinstance(col_val, dict):
