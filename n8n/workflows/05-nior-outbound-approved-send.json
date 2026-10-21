@@ -1,0 +1,175 @@
+{
+  "name": "05 - Nior Outbound: Approved Send with Fingerprint Gate",
+  "nodes": [
+    {
+      "id": "80916185-c0c7-48f5-b46e-1c721b2b441f",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "37ae4d75-0012-4936-9771-df8f0f952831",
+      "name": "Validate Preconditions & Fail-Closed Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const item = $input.first()?.json || {};\nconst outreachId = String(item.outreach_id || '').trim();\n\nif (!outreachId) {\n  throw new Error('outreach_id is required. An approved send cannot target an anonymous recipient.');\n}\n\n// Fail-closed default: dry_run is always true unless explicitly authorized as false\nconst dryRun = item.dry_run !== undefined ? Boolean(item.dry_run) : true;\nconst confirmation = String(item.confirmation || '').trim();\nconst expectedFingerprint = String(item.expected_fingerprint || '').trim();\nconst actor = String(item.actor || 'operator-n8n').trim();\nconst note = String(item.note || 'Approved send executed via n8n Workflow 05').trim();\n\nreturn [{\n  json: {\n    outreach_id: outreachId,\n    dry_run: dryRun,\n    confirmation: confirmation,\n    expected_fingerprint: expectedFingerprint,\n    actor: actor,\n    note: note\n  }\n}];"
+      }
+    },
+    {
+      "id": "e911d415-2213-49bf-a023-0c8cf9e94725",
+      "name": "Check Outbox Readiness",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        448,
+        0
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL || \"http://127.0.0.1:8787\" }}/integrations/outbox",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "99b9e99f-c47c-4914-b602-4d810542a507",
+      "name": "Execute Approved Send",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        672,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL || \"http://127.0.0.1:8787\" }}/integrations/email/send",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($(\"Validate Preconditions & Fail-Closed Gate\").item.json) }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "a9906525-6ad9-4f37-9e5f-131a0ddf4537",
+      "name": "Inspect Send Result & Safety Ledger",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        896,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const res = $input.first()?.json || {};\nconst sendState = res.send_state || res.error_code || 'UNKNOWN';\nconst outreachId = res.outreach_id || $('Validate Preconditions & Fail-Closed Gate').first()?.json?.outreach_id || 'unknown';\nconst dryRun = Boolean(res.dry_run);\nconst retryAllowed = Boolean(res.retry_allowed);\nconst code = res.code || res.error_code || null;\nconst nextAction = res.next_action || 'Inspect outbox report.';\n\nconst isSuccess = sendState === 'SENT' || (dryRun && (sendState === 'READY_TO_SEND' || sendState === 'WOULD_SEND'));\n\nlet summary = '\ud83d\udce4 OUTBOUND SEND REPORT\\n';\nsummary += '\u2022 Outreach ID: ' + outreachId + '\\n';\nsummary += '\u2022 Send State: ' + sendState + '\\n';\nsummary += '\u2022 Dry Run: ' + dryRun + '\\n';\nif (code) summary += '\u2022 Code: ' + code + '\\n';\nsummary += '\u2022 Retry Allowed: ' + retryAllowed + '\\n';\nsummary += '\u2022 Next Action: ' + nextAction;\n\nreturn [{\n  json: {\n    success: isSuccess,\n    outreach_id: outreachId,\n    send_state: sendState,\n    dry_run: dryRun,\n    code: code,\n    retry_allowed: retryAllowed,\n    summary: summary\n  }\n}];"
+      }
+    },
+    {
+      "id": "b531d470-e290-462a-b9cf-9fe3d6205982",
+      "name": "Notify Operator of Send",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1120,
+        0
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $env.AI_WEBSITE_AGENT_TELEGRAM_CHAT_ID || \"7722236745\" }}",
+        "text": "={{ $json.summary }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "webhookId": "6eb587f3-f0e1-4ab1-8522-41583b090b95"
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validate Preconditions & Fail-Closed Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Preconditions & Fail-Closed Gate": {
+      "main": [
+        [
+          {
+            "node": "Check Outbox Readiness",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Outbox Readiness": {
+      "main": [
+        [
+          {
+            "node": "Execute Approved Send",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Approved Send": {
+      "main": [
+        [
+          {
+            "node": "Inspect Send Result & Safety Ledger",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Inspect Send Result & Safety Ledger": {
+      "main": [
+        [
+          {
+            "node": "Notify Operator of Send",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true
+  },
+  "description": "Executes verified outbound sends strictly gated on human proposal approval, fingerprint binding, and fail-closed dry run"
+}

@@ -1,0 +1,199 @@
+{
+  "name": "01 - Nior Website Agent: Job Lifecycle & Pipeline Runner",
+  "nodes": [
+    {
+      "id": "f502a3c3-82c5-44b1-92ab-7874441e111b",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "85ba3155-a9a9-4fad-bde2-87ca1dd4da42",
+      "name": "Validate Input & Build Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const item = $input.first()?.json || {};\nconst allowedJobTypes = ['SCOUT', 'RESEARCH', 'QUALIFY', 'BUILD', 'VALIDATE'];\nconst rawType = String(item.job_type || 'SCOUT').trim().toUpperCase();\n\nif (!allowedJobTypes.includes(rawType)) {\n  throw new Error('Disallowed job_type: ' + rawType + '. Must be one of: ' + allowedJobTypes.join(', '));\n}\n\nconst execId = String($execution.id || 'manual');\nconst jobId = item.job_id ? String(item.job_id).trim() : 'n8n-' + rawType.toLowerCase() + '-' + execId;\nconst dryRun = item.dry_run !== undefined ? Boolean(item.dry_run) : true;\nconst priority = String(item.priority || 'NORMAL').toUpperCase();\nconst inputData = item.input && typeof item.input === 'object' ? item.input : { mode: 'fixture_only' };\n\nreturn [{\n  json: {\n    job_type: rawType,\n    job_id: jobId,\n    dry_run: dryRun,\n    priority: priority,\n    input: inputData,\n    run: true\n  }\n}];"
+      }
+    },
+    {
+      "id": "d51ee328-75cf-482a-8981-63efc8b69af1",
+      "name": "Check System Health",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        448,
+        0
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL || \"http://127.0.0.1:8787\" }}/health",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "c580f0e8-a134-4bcf-86cd-3ad3f70ae174",
+      "name": "Evaluate Health & Hold",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const healthData = $input.first()?.json || {};\nconst isHeld = Boolean(healthData.health?.automation_held || healthData.attention?.automation_held);\nconst apiStatus = healthData.api_status;\n\nif (apiStatus !== 'OK') {\n  throw new Error('API health check failed or API unreachable: status=' + apiStatus);\n}\n\nif (isHeld) {\n  throw new Error('Global automation is currently HELD. Job execution blocked by operator hold.');\n}\n\nconst req = $('Validate Input & Build Request').first().json;\nreturn [{ json: req }];"
+      }
+    },
+    {
+      "id": "29c8ed67-42c8-4198-88a0-4a1796a988f9",
+      "name": "Create & Run Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        896,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL || \"http://127.0.0.1:8787\" }}/jobs",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "02776c82-dd9d-46be-9b9a-c4ea558e224a",
+      "name": "Inspect Execution Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const res = $input.first()?.json || {};\nconst status = res.status || 'UNKNOWN';\nconst jobId = res.job_id || 'unknown';\nconst jobType = res.job_type || 'unknown';\nconst recoverable = Boolean(res.recoverable);\nconst errorCode = res.error_code || null;\nconst nextAction = res.next_action || null;\n\nconst isSuccess = status === 'COMPLETED';\n\nreturn [{\n  json: {\n    success: isSuccess,\n    job_id: jobId,\n    job_type: jobType,\n    status: status,\n    error_code: errorCode,\n    recoverable: recoverable,\n    next_action: nextAction,\n    summary: isSuccess\n      ? '\u2705 Job ' + jobId + ' (' + jobType + ') completed successfully.'\n      : '\u26a0\ufe0f Job ' + jobId + ' (' + jobType + ') ended with status ' + status + '. Code: ' + (errorCode || 'NONE') + '. Action: ' + (nextAction || 'Review execution history.')\n  }\n}];"
+      }
+    },
+    {
+      "id": "898b41d7-9050-4542-8ee4-bd4d0c2351f4",
+      "name": "Notify Operator",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1344,
+        0
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $env.AI_WEBSITE_AGENT_TELEGRAM_CHAT_ID || \"7722236745\" }}",
+        "text": "={{ $json.summary }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "webhookId": "bc5daf10-bb3b-4e6a-ac8a-1d6e6377e1f6"
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validate Input & Build Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Input & Build Request": {
+      "main": [
+        [
+          {
+            "node": "Check System Health",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check System Health": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Health & Hold",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Health & Hold": {
+      "main": [
+        [
+          {
+            "node": "Create & Run Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create & Run Job": {
+      "main": [
+        [
+          {
+            "node": "Inspect Execution Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Inspect Execution Result": {
+      "main": [
+        [
+          {
+            "node": "Notify Operator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true
+  },
+  "description": "Orchestrates Website Agent pipeline jobs against local API with health guard, prerequisite validation, and operator notification"
+}

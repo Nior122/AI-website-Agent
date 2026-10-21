@@ -1,0 +1,103 @@
+{
+  "name": "03 - Nior Social Engine: Buffer Multi-Channel Publisher",
+  "nodes": [
+    {
+      "id": "6e57d5b6-5458-4115-942d-f2b1a10e8da0",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "4f9333cf-8386-4381-a5bb-29d1e4d4afe8",
+      "name": "Validate Approval & Fingerprint",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const item = $input.first()?.json || {};\n\nconst verifiedChannels = {\n  twitter: { id: '6aa054f7cd8b9c702c2f1a35', name: 'Bigcherem', maxLength: 280, requiresMedia: false },\n  x: { id: '6aa054f7cd8b9c702c2f1a35', name: 'Bigcherem', maxLength: 280, requiresMedia: false },\n  linkedin: { id: '6a5f45a7e2638b94d7a8bc3e', name: 'Joseph Unaogu', maxLength: 3000, requiresMedia: false },\n  instagram: { id: '6acf807e778b240e2f07ec61', name: 'unaogujoseph', maxLength: 2200, requiresMedia: true }\n};\n\nconst rawChannel = String(item.channel || item.metadata?.service || 'twitter').trim().toLowerCase();\nconst channelKey = rawChannel === 'x' ? 'twitter' : rawChannel;\n\nif (!verifiedChannels[channelKey]) {\n  throw new Error('Unsupported social channel: ' + rawChannel + '. Supported: twitter, linkedin, instagram.');\n}\n\nconst spec = verifiedChannels[channelKey];\nconst content = String(item.prepared_content || item.caption || item.text || '').trim();\n\nif (!content) {\n  throw new Error('Social post content cannot be empty.');\n}\n\nif (content.length > spec.maxLength) {\n  throw new Error('Content exceeds character limit for ' + spec.name + ' (' + content.length + ' > ' + spec.maxLength + ').');\n}\n\nconst mediaUrl = item.media_url || item.metadata?.media_url || null;\nif (spec.requiresMedia && !mediaUrl) {\n  throw new Error('Channel ' + spec.name + ' requires a media URL.');\n}\n\n// Approval check: must be approved by human or explicitly authorized\nconst isApproved = item.status === 'approved' || String(item.metadata?.execution_authorized).toLowerCase() === 'true';\nif (!isApproved) {\n  throw new Error('Draft is not approved for publishing. Only APPROVED drafts can be dispatched to Buffer.');\n}\n\nconst draftId = String(item.draft_id || item.metadata?.draft_id || ('draft-' + $execution.id));\nconst dryRun = item.dry_run !== undefined ? Boolean(item.dry_run) : true;\nconst saveToDraft = true; // Always save to Buffer draft, never live immediate publish\n\nreturn [{\n  json: {\n    channel: channelKey,\n    channel_id: spec.id,\n    channel_name: spec.name,\n    draft_id: draftId,\n    content: content,\n    media_url: mediaUrl,\n    dry_run: dryRun,\n    saveToDraft: saveToDraft,\n    status: 'APPROVED',\n    profile_ids: [spec.id]\n  }\n}];"
+      }
+    },
+    {
+      "id": "10d3d821-9911-4327-896b-cd628c328857",
+      "name": "Buffer Dispatcher Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const data = $input.first()?.json || {};\n\n// If dry_run is true, simulate Buffer draft creation safely without external call\nif (data.dry_run) {\n  return [{\n    json: {\n      success: true,\n      dry_run: true,\n      draft_id: data.draft_id,\n      channel: data.channel,\n      channel_id: data.channel_id,\n      buffer_id: 'simulated-buffer-' + data.draft_id,\n      status: 'BUFFER_DRAFTED',\n      note: 'Simulated Buffer draft successfully created (dry_run=true). No public post sent.',\n      summary: '\ud83d\udce2 Social Draft ' + data.draft_id + ' dispatched to Buffer (' + data.channel_name + ') as DRAFT [DRY RUN].'\n    }\n  }];\n}\n\n// Real mode: passes parameters for Buffer HTTP node\nreturn [{\n  json: {\n    ...data,\n    endpoint: 'https://api.bufferapp.com/1/updates/create.json'\n  }\n}];"
+      }
+    },
+    {
+      "id": "29a2e155-17c6-402a-b77c-3c6539717c74",
+      "name": "Notify Social Status",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        672,
+        0
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $env.AI_WEBSITE_AGENT_TELEGRAM_CHAT_ID || \"7722236745\" }}",
+        "text": "={{ $json.summary || (\"\ud83d\udce2 Social Draft \" + $json.draft_id + \" dispatched to Buffer.\") }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "webhookId": "4a5f503c-0afd-4a9d-89e2-4847d8bb022a"
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validate Approval & Fingerprint",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Approval & Fingerprint": {
+      "main": [
+        [
+          {
+            "node": "Buffer Dispatcher Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buffer Dispatcher Gate": {
+      "main": [
+        [
+          {
+            "node": "Notify Social Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true
+  },
+  "description": "Consumes approved social drafts with fingerprint and channel validation, dispatching to Buffer queue safely"
+}

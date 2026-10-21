@@ -1,0 +1,172 @@
+{
+  "name": "04 - Nior Communications: Inbound Ingestion & Intake Router",
+  "nodes": [
+    {
+      "id": "bdcd140a-c780-4f0d-a426-92a78db45a99",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "7204f2ad-30ae-413d-a1e4-571497637a06",
+      "name": "Configure Intake Cycle",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        96
+      ],
+      "parameters": {
+        "jsCode": "const item = $input.first()?.json || {};\nconst maxMessages = item.max_messages ? Math.min(Math.max(1, Number(item.max_messages)), 50) : 10;\nconst dryRun = item.dry_run !== undefined ? Boolean(item.dry_run) : true;\n\nreturn [{\n  json: {\n    max_messages: maxMessages,\n    dry_run: dryRun\n  }\n}];"
+      }
+    },
+    {
+      "id": "4c7a7b69-9ea6-424b-8787-75068acbc286",
+      "name": "Poll Inbound Mailbox",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        448,
+        96
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL || \"http://127.0.0.1:8787\" }}/integrations/email/poll",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "3440e127-9da6-4b63-87dc-03220f3151ec",
+      "name": "Process Intake Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        96
+      ],
+      "parameters": {
+        "jsCode": "const res = $input.first()?.json || {};\nconst fetched = res.fetched || 0;\nconst recorded = res.recorded || 0;\nconst unmatched = res.unmatched || 0;\nconst nextAction = res.next_action || 'No action needed.';\n\nlet summary = '\ud83d\udcec INBOUND INTAKE REPORT\\n';\nsummary += '\u2022 Fetched: ' + fetched + '\\n';\nsummary += '\u2022 Recorded & linked: ' + recorded + '\\n';\nsummary += '\u2022 Unmatched (parked): ' + unmatched + '\\n';\nsummary += '\u2022 Next action: ' + nextAction;\n\nreturn [{\n  json: {\n    fetched: fetched,\n    recorded: recorded,\n    unmatched: unmatched,\n    summary: summary,\n    requires_attention: unmatched > 0\n  }\n}];"
+      }
+    },
+    {
+      "id": "0716e2c9-924e-470b-a8e6-996add46ecf7",
+      "name": "Notify Operator of Intake",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        896,
+        96
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $env.AI_WEBSITE_AGENT_TELEGRAM_CHAT_ID || \"7722236745\" }}",
+        "text": "={{ $json.summary }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "webhookId": "95bee6f5-8e6e-4f88-af55-3eef1c3aba44"
+    },
+    {
+      "id": "408292ff-e664-4c67-b92f-86728760da22",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        192
+      ],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Configure Intake Cycle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Configure Intake Cycle": {
+      "main": [
+        [
+          {
+            "node": "Poll Inbound Mailbox",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll Inbound Mailbox": {
+      "main": [
+        [
+          {
+            "node": "Process Intake Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Intake Results": {
+      "main": [
+        [
+          {
+            "node": "Notify Operator of Intake",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Configure Intake Cycle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true
+  },
+  "description": "Polls inbound Gmail messages via read-only intake, dedupes events, and routes unmatched messages for operator review"
+}

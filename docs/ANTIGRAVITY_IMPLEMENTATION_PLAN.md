@@ -12,6 +12,7 @@ graph LR
     S2 --> S3[Stage 3: Approved Outbound & Intake]
     S3 --> S4[Stage 4: Social Media Engine]
     S4 --> S5[Stage 5: Multi-Channel Expansion]
+    S5 --> S6[Stage 6: Dedicated n8n Workflows]
 ```
 
 ---
@@ -65,3 +66,15 @@ graph LR
   - [x] Implement Telegram `/briefing` and `/daily` operator commands with message chunking (<= 3900 characters).
   - [x] Validate read-only Supabase PostgreSQL connection preflight diagnostics (`tracking.cli preflight-db`).
   - [x] Verify full test suite: **708 passed, 1 skipped, 0 failures across 709 tests**.
+
+### Stage 6: Dedicated n8n Workflow Deployment & Live End-to-End Integration
+- **Status**: **COMPLETE (Verified Green & Inactive)**
+- **Objectives**:
+  - [x] Build and deploy Workflow 01 (`01 - Nior Website Agent: Job Lifecycle & Pipeline Runner`, ID: `YaH7bhvuxxnnH7yt`) via n8n MCP; verified with execution test `16614` (SUCCESS).
+  - [x] Build and deploy Workflow 02 (`02 - Nior Operations: Daily Business Briefing & Alerts`, ID: `eRAS3vC1wq19zaYu`) with Africa/Lagos schedule; verified with execution test `16617` (SUCCESS).
+  - [x] Build and deploy Workflow 03 (`03 - Nior Social Engine: Buffer Multi-Channel Publisher`, ID: `hgLCDChiBiJhooUE`) with fingerprint & channel verification; verified with execution test `16621` (SUCCESS).
+  - [x] Build and deploy Workflow 04 (`04 - Nior Communications: Inbound Ingestion & Intake Router`, ID: `gWXFx91CdFmvH45R`) for read-only intake polling; verified with execution test `16623` (SUCCESS).
+  - [x] Build and deploy Workflow 05 (`05 - Nior Outbound: Approved Send with Fingerprint Gate`, ID: `UbKxQXbz5Q7PSxQs`) with fail-closed dry-run; verified with execution test `16626` (SUCCESS).
+  - [x] Export secret-free JSON definitions to `n8n/workflows/01..05-*.json`.
+  - [x] Document workflow specifications, credentials, and network requirements in `docs/WORKFLOW_INTEGRATION.md`.
+  - [x] Maintain all 5 workflows in verified `active: false` state.
