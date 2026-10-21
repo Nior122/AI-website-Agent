@@ -57,17 +57,28 @@ This document provides a truthful, evidence-backed inventory of implemented capa
 
 ### 5. Telegram Operator Console (`orchestration/telegram_bot.py`)
 - **Status**: Implemented & Tested.
-- **Commands**: 24 interactive commands including:
+- **Commands**: 26 interactive commands including:
   - Queue control: `/jobs`, `/pending`, `/run`, `/recover`, `/cancel`, `/retry`
   - Lead management: `/leads`, `/find`, `/qualify`, `/prospect`
   - Review & Demo: `/review`, `/approve`, `/changes`, `/demo`
   - Outbound email: `/outbox`, `/send`, `/sent`, `/reconcile`
+  - Social media: `/social`, `/post`
   - System controls: `/health`, `/status`, `/attention`, `/hold`, `/release`, `/help`
+
+### 6. Social Media Engine (`social/`)
+- **Status**: Implemented & Tested.
+- **Components**:
+  - `social/models.py`: Channel specifications (`twitter`, `linkedin`, `instagram`), strict character/media bounds, and `to_buffer_approval_payload()` matching n8n Buffer Draft Executor (`zAd3P31ZrTm9Ax94`).
+  - `social/brand.py`: Nior brand voice validation, banned buzzword filtering, and scoring.
+  - `social/generator.py`: Deterministic multi-archetype generator (`tech_insight`, `case_study`, `operator_dispatch`, `local_growth`).
+  - `social/service.py`: Draft lifecycle management (`DRAFT` -> `PROPOSED` -> `APPROVED` / `REJECTED`) and storage.
+  - `social/cli.py`: Command-line operations interface.
+  - `tests/test_social_engine.py`: 21 comprehensive unit/integration tests.
 
 ---
 
 ## 3. Unimplemented & Open Work
 
 1. **Second OAuth Client for `gmail.send`**: The operator must create a dedicated `gmail.send` OAuth client in Google Cloud Console and set `AI_WEBSITE_AGENT_GMAIL_SEND_*` environment variables to enable live email delivery.
-2. **Social Media Content Engine (Stage 4)**: Unifying the social content generation pipeline with Buffer scheduled posts and Botcake conversation history.
-3. **Template Library Expansion**: Additional sector templates (e.g., medical clinic, legal/accounting, auto repair).
+2. **Template Library Expansion (Stage 5)**: Additional sector templates (e.g., medical clinic, legal/accounting, auto repair).
+3. **Automated Daily Briefing**: Scheduled Telegram briefing via n8n workflow `loO3tTJlt6aFdhvb`.

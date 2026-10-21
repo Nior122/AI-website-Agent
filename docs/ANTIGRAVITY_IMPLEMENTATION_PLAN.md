@@ -47,14 +47,14 @@ graph LR
   - **Operator Prerequisite**: Configure second OAuth client for live sending.
 
 ### Stage 4: Social Media Engine & Buffer/Botcake Integration
-- **Status**: **IN PROGRESS**
+- **Status**: **COMPLETE (Verified Green)**
 - **Objectives**:
   - [x] Audit live n8n Buffer & Botcake workflows.
   - [x] Document platform pricing, rate limits, and zero-cost routes (`docs/PLATFORM_CAPABILITIES.md`).
-  - [ ] Develop unified `social/` content generator module with brand voice adherence.
-  - [ ] Add content calendar schema to `TrackingStore`.
-  - [ ] Implement Telegram `/post` interactive draft generation and review loop.
-  - [ ] Connect Python social draft queue to n8n Buffer Draft Executor (`zAd3P31ZrTm9Ax94`).
+  - [x] Develop unified `social/` content generator module with brand voice adherence.
+  - [x] Implement local persistence and lifecycle tracking in `social/service.py`.
+  - [x] Implement Telegram `/post` and `/social` interactive draft generation, review, and approval loop.
+  - [x] Connect Python social draft queue to n8n Buffer Draft Executor (`zAd3P31ZrTm9Ax94`).
 
 ### Stage 5: Multi-Channel Expansion & Operations Scaling
 - **Status**: **PLANNED**
