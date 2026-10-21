@@ -158,16 +158,25 @@ class _Fixture(unittest.TestCase):
             if authenticated:
                 headers["Authorization"] = f"Bearer {override_token if override_token is not None else token}"
             req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", data=data, headers=headers, method=method)
-            try:
-                with urllib.request.urlopen(req, timeout=10) as response:
-                    return response.status, dict(response.headers), json.loads(response.read().decode("utf-8"))
-            except urllib.error.HTTPError as error:
-                raw = error.read().decode("utf-8")
+            last_exc: BaseException | None = None
+            for _attempt in range(3):
                 try:
-                    payload = json.loads(raw)
-                except json.JSONDecodeError:
-                    payload = {"raw": raw}
-                return error.code, dict(error.headers), payload
+                    with urllib.request.urlopen(req, timeout=10) as response:
+                        return response.status, dict(response.headers), json.loads(response.read().decode("utf-8"))
+                except urllib.error.HTTPError as error:
+                    raw = error.read().decode("utf-8")
+                    try:
+                        payload = json.loads(raw)
+                    except json.JSONDecodeError:
+                        payload = {"raw": raw}
+                    return error.code, dict(error.headers), payload
+                except (ConnectionAbortedError, ConnectionResetError, OSError) as exc:
+                    # Windows may briefly abort connections when a previous test's server daemon
+                    # thread is still winding down on the same port (WinError 10053 / 10054).
+                    last_exc = exc
+                    import time
+                    time.sleep(0.05)
+            raise AssertionError(f"request({method} {path}) failed after 3 attempts: {last_exc}") from last_exc
 
         def raw(text: str) -> tuple[int, str, str]:
             """Send a hand-built request so malformed framing reaches the server unchanged."""

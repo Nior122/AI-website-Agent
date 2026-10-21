@@ -607,9 +607,10 @@ class FreshCloneBehaviourTests(unittest.TestCase):
         self.assertIn("recover_from_verified_exports", source)
         self.assertIn("shutil.copyfile(REPO_ROOT / relative, target)", source)
 
+        env = dict(os.environ, PYTHONPATH=str(REPO_ROOT))
         process = subprocess.run([sys.executable, "-m", "unittest", "tests.test_full_system"], cwd=REPO_ROOT,
                                  capture_output=True, text=True, timeout=900,
-                                 env={"PYTHONPATH": str(REPO_ROOT), "PATH": os.environ["PATH"]})
+                                 env=env)
         self.assertEqual(process.returncode, 0, process.stderr[-800:])
 
     def test_the_recovery_path_used_by_the_tests_produces_the_same_project_records(self) -> None:

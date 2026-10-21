@@ -733,7 +733,8 @@ class TelegramOperatorBot:
         """
         flags, positional = _parse_flags(argument)
         count = FIND_COUNT_DEFAULT
-        if positional and positional[-1].isdigit():
+        count_was_provided = bool(positional and positional[-1].isdigit())
+        if count_was_provided:
             count = int(positional.pop())
         if len(positional) < 2:
             raise TelegramBotError(
@@ -748,7 +749,7 @@ class TelegramOperatorBot:
                                        "e.g. `/find Port Harcourt --category restaurants`.",
                                        code="FIND_ARGUMENTS_REQUIRED")
         else:
-            if len(positional) == 2 and count == FIND_COUNT_DEFAULT:
+            if len(positional) == 2 and not count_was_provided:
                 # Two bare words could be "city + category" or a two-word city with no category at all. The bot
                 # refuses the coin flip: an agent that guesses here fills a queue with the wrong kind of business.
                 raise TelegramBotError(

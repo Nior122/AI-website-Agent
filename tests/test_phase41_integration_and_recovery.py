@@ -31,6 +31,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -227,11 +228,19 @@ class _Disposable(unittest.TestCase):
 
         return request
 
-    def module(self, name: str, *argv: str) -> subprocess.CompletedProcess:
-        """Run a module's CLI in this disposable workspace, as an operator at this checkout would."""
+    def _clean_env(self) -> dict[str, str]:
         env = dict(os.environ, PYTHONPATH=str(REPO_ROOT))
         env.pop("AI_WEBSITE_AGENT_OPERATOR_ID", None)
-        return subprocess.run([sys.executable, "-m", name, *argv], cwd=self.root, env=env,
+        filtered_path = [
+            p for p in env.get("PATH", "").split(os.pathsep)
+            if not any((Path(p) / v).is_file() for v in ("vercel", "vercel.cmd", "vercel.exe", "vercel.ps1"))
+        ]
+        env["PATH"] = os.pathsep.join(filtered_path)
+        return env
+
+    def module(self, name: str, *argv: str) -> subprocess.CompletedProcess:
+        """Run a module's CLI in this disposable workspace, as an operator at this checkout would."""
+        return subprocess.run([sys.executable, "-m", name, *argv], cwd=self.root, env=self._clean_env(),
                               capture_output=True, text=True, timeout=180)
 
     def provider(self, runner) -> VercelDeploymentProvider:
@@ -617,8 +626,8 @@ class UncertainPublishCliTests(_Disposable):
 
     def test_a_resolved_retry_is_recorded_then_fails_on_the_absent_cli(self) -> None:
         """No ``vercel`` binary exists here: the decision must still be recorded, and nothing is published."""
-        self.assertNotEqual(subprocess.run(["which", "vercel"], capture_output=True).returncode, 0,
-                            "this environment must not have a real Vercel CLI for the test to mean anything")
+        self.assertIsNone(shutil.which("vercel", path=self._clean_env()["PATH"]),
+                          "this environment must not have a real Vercel CLI for the test to mean anything")
         result = self.deployment_cli("--execute", "--project-id", self.project_id, "--project-name", PROJECT_NAME,
                                     "--resolve-uncertain-publish",
                                     "--resolve-note", "Provider project list shows no deployment for this artifact "

@@ -17,6 +17,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import parse_qs
 
 from orchestration.jobs import JobService, NEXT_ACTIONS
 from orchestration.workers import LocalPipelineWorker
@@ -175,7 +176,9 @@ class ScoutCliTests(unittest.TestCase):
             ])
         self.assertEqual(code, 0)
         self.assertEqual(len(recorder.bodies), 1)
-        self.assertIn('"contact:instagram"', recorder.bodies[0])
+        query = parse_qs(recorder.bodies[0]).get("data", [""])[0]
+        self.assertIn('"contact:instagram"', query)
+        self.assertIn('"contact:facebook"', query)
         # The operator-facing note goes to stderr so stdout and the written file stay machine-parseable.
         self.assertIn("no one is contacted", stderr)
         self.assertNotIn("no one is contacted", stdout)

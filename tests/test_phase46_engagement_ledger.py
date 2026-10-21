@@ -188,7 +188,7 @@ class ConsentAndFollowUpTests(LedgerTestCase):
         self.ledger.schedule_follow_up(self.lead["lead_id"], due_at="2026-12-10", reason="resume", channel="EMAIL")
 
     def test_silence_is_never_a_decision(self) -> None:
-        follow_up = self.ledger.schedule_follow_up(self.lead["lead_id"], due_at="2026-10-20", reason="chase", channel="EMAIL")
+        follow_up = self.ledger.schedule_follow_up(self.lead["lead_id"], due_at="2026-12-15", reason="chase", channel="EMAIL")
         report = self.ledger.due_follow_ups(today="2026-12-31")
         self.assertEqual(report["due_count"], 1)
         self.assertIn(follow_up["follow_up_id"], [row["follow_up_id"] for row in report["due"]])

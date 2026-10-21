@@ -101,6 +101,9 @@ class MonitoringTestCase(unittest.TestCase):
         self.project_id = self.project["project_id"]
         self.build_id = self._build_and_validate("build-0001", "validation-0001")
         self.service = JobService(self.store)
+        patcher = mock.patch("deployment.deployer.shutil.which", return_value=None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     # -- fixtures ---------------------------------------------------------------------------
     def _lead(self, name: str, *, store: TrackingStore | None = None) -> dict:

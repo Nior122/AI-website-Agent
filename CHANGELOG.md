@@ -4,6 +4,27 @@ All notable project changes are recorded here. Dates use ISO 8601 (`YYYY-MM-DD`)
 
 ## [Unreleased]
 
+### Added — 2026-10-21 (Phase 50: operational baseline restoration, 100% green test suite, live n8n audit, and complete engineering documentation)
+
+- **Test suite restored to 100% Green (678 passed, 1 skipped, 0 failures).** Resolved all test failures and cross-test race conditions:
+  - Fixed Windows socket initialization provider error (`WinError 10106`) in [test_phase42_integration_setup_and_preflight.py](file:///c:/Users/PC/Documents/GitHub/AI-website-Agent/tests/test_phase42_integration_setup_and_preflight.py) by preserving OS environment variables (`SystemRoot`, `WINDIR`) in subprocess test executions.
+  - Replaced Unix-specific `subprocess.run(["which", "vercel"])` invocation with cross-platform standard library `shutil.which` in [test_phase41_integration_and_recovery.py](file:///c:/Users/PC/Documents/GitHub/AI-website-Agent/tests/test_phase41_integration_and_recovery.py).
+  - Isolated fixture and CLI tests from host-installed global npm packages (`vercel.cmd`) via mocking in [test_phase39_monitoring_and_operational_controls.py](file:///c:/Users/PC/Documents/GitHub/AI-website-Agent/tests/test_phase39_monitoring_and_operational_controls.py) and environment PATH filtration in [test_phase41_integration_and_recovery.py](file:///c:/Users/PC/Documents/GitHub/AI-website-Agent/tests/test_phase41_integration_and_recovery.py).
+  - Resolved dynamic date drift in [test_phase46_engagement_ledger.py](file:///c:/Users/PC/Documents/GitHub/AI-website-Agent/tests/test_phase46_engagement_ledger.py) by moving fixed `due_at` fixture timestamp forward to prevent premature overdue transition.
+  - Added Windows socket retry with backoff on connection aborted (`WinError 10053`) in [test_phase40_security_hardening.py](file:///c:/Users/PC/Documents/GitHub/AI-website-Agent/tests/test_phase40_security_hardening.py) `request()` helper to handle rapid port reuse race across server teardowns.
+- **Live n8n MCP & Workflows Audit.** Verified and audited live n8n instance via Cloudflare MCP tunnel (`https://drink-ourselves-tube-counseling.trycloudflare.com/mcp-server/http`). Cataloged 34 live workflows and 15 credentials across Telegram, Gmail, Supabase/PostgreSQL, Buffer, Botcake, YouTube, Google Sheets, Groq, OpenRouter, and NVIDIA Nemotron.
+- **Comprehensive Documentation Suite in `docs/`:**
+  - `docs/PROJECT_ARCHITECTURE.md`: Complete package map, state machine, and data flow specifications.
+  - `docs/ANTIGRAVITY_IMPLEMENTATION_PLAN.md`: Staged roadmap tracking implementation progress.
+  - `docs/IMPLEMENTATION_STATUS.md`: Truthful inventory of all implemented and open components.
+  - `docs/DECISIONS.md`: 5 core Architectural Decision Records (ADRs).
+  - `docs/N8N_WORKFLOWS.md`: Live workflows mapping, exported workflow contracts, and governance rules.
+  - `docs/TEST_AND_RELEASE_STATUS.md`: Baseline test audit, defect root cause analyses, and verification commands.
+  - `docs/PLATFORM_CAPABILITIES.md`: Platform API pricing, rate limits, and zero-cost routing strategies.
+  - `docs/ENVIRONMENT_AND_SECRETS.md`: Complete environment variable dictionary and security runbook.
+  - `docs/OPERATIONS_RUNBOOK.md`: Daily operator procedures and incident response guides.
+  - `docs/ANTIGRAVITY_HANDOFF.md`: Master handover document for engineering continuity.
+
 ### Added — 2026-10-16 (Phase 49: approved outbound email, the demo approval that unlocks a preview, and what a send may claim)
 
 - **Sending got its own interface, and the read-only one stayed read-only.** `integrations/gmail_transport.py`

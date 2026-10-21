@@ -22,7 +22,7 @@ import socket
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, urlopen
 
 from orchestration.observability import redact, sanitize_diagnostic
 
@@ -63,7 +63,7 @@ def check_endpoint(url: str) -> str:
     return cleaned
 
 
-class _NoRedirects:
+class _NoRedirects(HTTPRedirectHandler):
     """Turn any redirect into an error so an Authorization header is never forwarded to another host."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001 - urllib protocol
@@ -105,7 +105,7 @@ def provider_request(url: str, *, method: str = "GET", json_body: dict[str, Any]
             raw = response.read(int(max_bytes) + 1)
             status = int(getattr(response, "status", 200) or 200)
     except HTTPError as error:
-        return _map_http_error(error)
+        raise _map_http_error(error) from None
     except (URLError, socket.timeout, TimeoutError) as error:
         reason = getattr(error, "reason", error)
         raise ProviderError(f"The provider did not answer: {redact(str(reason))[:300]}",

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Protocol
 import json
 import re
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 import time
@@ -16,6 +16,8 @@ import time
 
 JOB_STATES = {"pending", "running", "completed", "partial", "failed"}
 WEBSITE_STATUSES = {"none_known", "unknown", "professional", "outdated", "poor", "basic"}
+# First enrichment pilot: never run more than three search queries per job.
+MAX_ENRICHMENT_CANDIDATES = 3
 
 
 def _text(value: Any) -> str | None:
@@ -74,6 +76,14 @@ class DiscoverySource(Protocol):
     def discover(self, target: Target) -> list[dict[str, Any]]: ...
 
 
+class CandidateEnricher(Protocol):
+    """An optional adapter that adds source-backed evidence to a normalized candidate."""
+
+    name: str
+
+    def enrich(self, lead: dict[str, Any], target: Target) -> None: ...
+
+
 @dataclass
 class FixtureSource:
     """Loads intentional test data only; it never reaches the network."""
@@ -121,7 +131,15 @@ class OverpassRestaurantSource:
             if self._last_request_at is not None:
                 remaining = self.min_delay_seconds - (time.monotonic() - self._last_request_at)
                 if remaining > 0: time.sleep(remaining)
-            request = Request(ep, data=query.encode("utf-8"), headers={"Content-Type":"application/x-www-form-urlencoded; charset=utf-8", "User-Agent":"AI-Website-Agent/0.1 review-only contact: local-operator"}, method="POST")
+            request = Request(
+                ep,
+                data=urlencode({"data": query}).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+                    "User-Agent": "AI-Website-Agent/0.1 review-only contact: local-operator",
+                },
+                method="POST",
+            )
             try:
                 self._requests_made += 1; self._last_request_at = time.monotonic()
                 with urlopen(request, timeout=self.timeout_seconds) as response:
@@ -159,7 +177,7 @@ def _overpass_lagos_restaurants_query(limit: int) -> str:
         f'nwr["amenity"="restaurant"][{tag}]{box}' for tag in ('"contact:facebook"', '"contact:instagram"')
     )
     return (
-        f"[out:json][timeout:25];({clauses};nwr[\"amenity\"=\"restaurant\"]{box});"
+        f"[out:json][timeout:25];({clauses};nwr[\"amenity\"=\"restaurant\"]{box};);"
         f"out center {window};"
     )
 
@@ -216,13 +234,19 @@ class ScoutJobResult:
 
 
 class Scout:
-    """Coordinates modular source adapters without coupling to a search provider."""
+    """Coordinates discovery, optional enrichment, and candidate qualification."""
 
-    def __init__(self, target: Target, sources: list[DiscoverySource]) -> None:
+    def __init__(
+        self,
+        target: Target,
+        sources: list[DiscoverySource],
+        enricher: CandidateEnricher | None = None,
+    ) -> None:
         if not sources:
             raise ValueError("at least one discovery source is required")
         self.target = target
         self.sources = sources
+        self.enricher = enricher
 
     def run(self) -> ScoutJobResult:
         now = _now()
@@ -233,6 +257,7 @@ class Scout:
             started_at=now,
         )
         candidates: list[dict[str, Any]] = []
+        # Phase 1: discovery. Preserve any successful source results if another fails.
         for source in self.sources:
             try:
                 discovered = source.discover(self.target)
@@ -240,17 +265,43 @@ class Scout:
                 for candidate in discovered:
                     candidate["_adapter_source"] = source.name
                     candidates.append(candidate)
-            except Exception as error:  # Preserve successful source output for recovery.
+            except Exception as error:
                 job.errors.append(f"{source.name}: {error}")
                 job.source_counts[source.name] = 0
         job.candidate_count = len(candidates)
-        normalized = [_normalize_candidate(candidate, self.target) for candidate in candidates]
+        # Phase 2: normalize and deduplicate before any optional API calls.
+        normalized = [
+            _normalize_candidate(candidate, self.target)
+            for candidate in candidates
+        ]
         merged = _deduplicate(normalized)
         job.deduplicated_count = len(merged)
-        qualified = [_qualify(lead, self.target, now) for lead in merged]
+        # Phase 3: optional enrichment. Never exceed the first pilot's budget.
+        if self.enricher is not None:
+            enrichment_candidates = merged[
+                :min(self.target.lead_limit, MAX_ENRICHMENT_CANDIDATES)
+            ]
+            for lead in enrichment_candidates:
+                business_name = lead.get("businessName") or "unnamed candidate"
+                try:
+                    self.enricher.enrich(lead, self.target)
+                except Exception as error:
+                    # Keep this candidate and continue processing the others.
+                    job.errors.append(
+                        f"{self.enricher.name} ({business_name}): {error}"
+                    )
+        # Phase 4: qualify and rank using both original and enriched evidence.
+        qualified = [
+            _qualify(lead, self.target, now)
+            for lead in merged
+        ]
         qualified.sort(key=_lead_sort_key)
         job.leads = qualified[: self.target.lead_limit]
-        job.status = "partial" if job.errors and job.leads else "failed" if job.errors else "completed"
+        job.status = (
+            "partial" if job.errors and job.leads
+            else "failed" if job.errors
+            else "completed"
+        )
         job.completed_at = _now()
         return job
 
@@ -369,7 +420,11 @@ def _qualify(lead: dict[str, Any], target: Target, checked_at: str) -> dict[str,
     name_present = bool(lead["businessName"])
     target_match = _normal(lead["location"]["city"]) == _normal(target.city) and _normal(lead["location"]["country"]) == _normal(target.country)
     niche_match = _normal(lead["niche"]) == _normal(target.niche)
-    enough_information = bool(lead["sourceUrls"]) and bool(active_signals)
+    actionable_signals = [
+        signal for signal in active_signals
+        if signal in {"social profile", "contact channel"}
+    ]
+    enough_information = bool(lead["sourceUrls"]) and bool(actionable_signals)
     if not name_present:
         result = "skipped"; reasons.append("Missing business name.")
     elif not target_match:
@@ -377,7 +432,16 @@ def _qualify(lead: dict[str, Any], target: Target, checked_at: str) -> dict[str,
     elif not niche_match:
         result = "skipped"; reasons.append("Niche does not match the requested target or is not source-backed.")
     elif not enough_information:
-        result = "skipped"; reasons.append("Insufficient public, source-backed activity information.")
+        if lead["sourceUrls"]:
+            result = "needs_review"
+            reasons.append(
+                "A source-backed business listing exists, but no public social "
+                "profile or contact channel was found. Enrich and verify the "
+                "business before treating it as an actionable website prospect."
+            )
+        else:
+            result = "skipped"
+            reasons.append("Insufficient source-backed information.")
     else:
         reasons.append("Source-backed activity signals: " + ", ".join(active_signals) + ".")
         status = lead["websiteStatus"]
