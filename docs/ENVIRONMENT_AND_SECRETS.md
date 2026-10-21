@@ -86,3 +86,35 @@ The system strictly enforces separate credentials for read-only polling versus o
    ```powershell
    python -m orchestration.cli email-send-check
    ```
+
+---
+
+## 6. Credential Rotation & Security Incident Audit (Stage 8)
+
+* **Incident**: Exposed bearer token in handover logs.
+* **Rotation Action**: Rotated `AI_WEBSITE_AGENT_API_TOKEN` on Render to a freshly generated 43-character token (`secrets.token_urlsafe(32)`).
+* **Affected Clients**:
+  - Render API Service (`ai-website-agent-api`): Updated and redeployed live.
+  - Old token rejection verified: `HTTP 401 Unauthorized`.
+  - New token acceptance verified: `HTTP 200 OK`.
+  - n8n Client (`AI Website Agent Local Test API`): Pending manual token update in n8n UI.
+* **Repository Sanitation**: Git tracked files scanned; zero plaintext bearer tokens found in version control.
+
+---
+
+## 7. Supabase Production Security & Recovery Audit
+
+* **Connection Mode**: Supabase IPv4 Session Pooler (`aws-0-us-east-1.pooler.supabase.com:5432`) with `sslmode=require`.
+* **Row Level Security (RLS)**: Enabled across all 11 core tables (`leads`, `research_evidence`, `projects`, `builds`, `validations`, `deployments`, `outreach_drafts`, `operator_reviews`, `jobs`, `worker_leases`, `schema_migrations`). Public anonymous (`anon`) REST access is restricted.
+* **Backup & Retention Policy**:
+  - **Plan**: Supabase Free Tier.
+  - **Automated Backups**: Daily automated snapshots managed by Supabase, retained for 7 days (Point-in-Time-Recovery / PITR requires Supabase Pro plan).
+  - **Logical Export Procedure**:
+    ```bash
+    pg_dump "$DATABASE_URL" --format=custom --file=backup_$(date +%Y%m%d).dump
+    ```
+  - **Recovery Procedure**:
+    ```bash
+    pg_restore --clean --if-exists --no-owner --dbname="$DATABASE_URL" backup.dump
+    ```
+  - **Recovery Limitations**: Full database restore has not been executed against production data; test restore should be performed in a separate staging project before relying on disaster recovery.

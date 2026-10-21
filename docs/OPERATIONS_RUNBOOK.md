@@ -126,3 +126,83 @@ python -m orchestration.cli hold-automation --actor "operator:name" --reason "In
 # Resume automated dispatches
 python -m orchestration.cli release-automation --actor "operator:name"
 ```
+
+---
+
+## 6. API Bearer Token Rotation Procedure
+
+When `AI_WEBSITE_AGENT_API_TOKEN` needs rotation:
+
+1. **Generate New Secure Token**:
+   ```python
+   import secrets
+   new_token = secrets.token_urlsafe(32)
+   ```
+2. **Update Render Environment Variable**:
+   - Navigate to Render Dashboard -> `ai-website-agent-api` -> **Environment**.
+   - Update `AI_WEBSITE_AGENT_API_TOKEN` to the new token value.
+   - Click **Save Changes** (triggers an automated redeploy).
+3. **Verify Deployment & Refusal**:
+   - Run health probe: `curl -s -i https://ai-website-agent-api.onrender.com/healthz` (should return `200 OK`).
+   - Run readiness with old token: `curl -s -i -H "Authorization: Bearer <old_token>" https://ai-website-agent-api.onrender.com/readiness` (must return `401 Unauthorized`).
+   - Run readiness with new token: `curl -s -i -H "Authorization: Bearer <new_token>" https://ai-website-agent-api.onrender.com/readiness` (must return `200 OK`).
+4. **Update Dependent Clients**:
+   - In the n8n UI, navigate to **Credentials** -> `AI Website Agent Local Test API`.
+   - Update the Bearer Token field with `<new_token>` and save.
+   - If running local CLI tools against Render, set `$env:AI_WEBSITE_AGENT_API_TOKEN="<new_token>"`.
+5. **Never Commit Tokens**:
+   - Verify repository cleanliness: `git status` and `git diff` to ensure no token was written to disk or version control.
+
+---
+
+## 7. Supabase PostgreSQL Backup & Recovery Procedure
+
+### Automated Managed Backups
+Supabase manages automated daily physical snapshots of the Postgres instance.
+
+### Manual On-Demand Logical Backup (Operator Procedure)
+To take a full logical schema and data dump of the 11 production tables:
+
+```bash
+# Set database URL pointing to the session pooler or direct connection
+pg_dump "postgresql://postgres.hkmfpxuctxzzoolenwpe:<password>@aws-0-us-east-1.pooler.supabase.com:5432/postgres?sslmode=require" \
+  --schema=public \
+  --clean \
+  --if-exists \
+  --file=supabase_backup_$(date +%Y%m%d_%H%M%S).sql
+```
+
+### Restore Procedure from SQL Dump
+To restore into an empty or recovered database:
+
+```bash
+psql "postgresql://postgres.hkmfpxuctxzzoolenwpe:<password>@aws-0-us-east-1.pooler.supabase.com:5432/postgres?sslmode=require" \
+  --file=supabase_backup_<timestamp>.sql
+```
+
+After restore, verify database readiness:
+```bash
+python -m tracking.cli preflight-db
+```
+
+---
+
+## 8. Telegram Bot Operator Console Reference
+
+The Telegram operator bot acts as an authenticated mobile console. All actions are restricted to allowlisted operator User IDs.
+
+| Command | Purpose | Safety Gate / Constraints |
+| --- | --- | --- |
+| `/start`, `/help` | List available commands | Only answers allowlisted operator |
+| `/status`, `/health` | System health overview | Read-only; queries tracking store |
+| `/attention` | List pending human review items | Read-only; highlights overdue follow-ups |
+| `/briefing`, `/daily` | Daily business summary report | Lagos timezone; Naira currency; chunked (<= 3900 chars) |
+| `/leads` | List recent leads & review status | Read-only; bounded pagination |
+| `/review <id> <dec>` | Human review for leads/projects | Validates against schema; writes immutable record |
+| `/demo <id>` | Human approval for preview deploy | Writes build-local approval digest; strictly isolated |
+| `/outbox` | View pending outreach drafts | Read-only; shows content fingerprints |
+| `/send <id>` | Execute approved email send | Requires explicit operator confirmation flag |
+| `/post` | Draft a social media post | Interactive brand voice generator |
+| `/social` | View social draft queue | Read-only |
+| `/hold` | Emergency pause all automations | Blocks n8n and background workers immediately |
+| `/release` | Release emergency automation hold | Resumes automated dispatch |

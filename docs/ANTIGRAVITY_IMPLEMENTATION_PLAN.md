@@ -13,6 +13,8 @@ graph LR
     S3 --> S4[Stage 4: Social Media Engine]
     S4 --> S5[Stage 5: Multi-Channel Expansion]
     S5 --> S6[Stage 6: Dedicated n8n Workflows]
+    S6 --> S7[Stage 7: Production Cloud Deployment]
+    S7 --> S8[Stage 8: Security Audit & Live Acceptance]
 ```
 
 ---
@@ -89,4 +91,12 @@ graph LR
   - [x] Verify authenticated readiness probe (`GET /readiness` -> `HTTP 200 {"status": "READY", "storage_backend": "postgres", "production_mode": true}`).
   - [x] Verify transactional persistence against Supabase PostgreSQL (`GET /jobs`).
 
-
+### Stage 8: Production Security, Live Integration Acceptance & Operational Readiness
+- **Status**: **COMPLETE (Verified Live & Green)**
+- **Objectives**:
+  - [x] **Credential Rotation (Priority 0)**: Rotated exposed API bearer token (`AI_WEBSITE_AGENT_API_TOKEN`) on Render to a cryptographically secure 43-character token; verified old token refusal (`HTTP 401`) and new token acceptance (`HTTP 200`); verified zero leaked credentials in git repository.
+  - [x] **Independent Render & Supabase Live Verification (Priority 1)**: Verified `GET /healthz` (`HTTP 200 {"status": "ok"}`) unauthenticated; verified `GET /readiness` (`HTTP 200 {"status": "READY", "storage_backend": "postgres", "production_mode": true}`); verified auth refusals on missing/invalid headers and unsupported HTTP verbs (`HTTP 401` / `405`); verified transactional persistence, idempotency, and restart survival via live test job (`stage8-verify-1792557783`); verified Supabase PostgreSQL Row Level Security (RLS) active across all 11 tables.
+  - [x] **Dedicated n8n Workflow Verification (Priority 2)**: Verified all 5 dedicated workflows (`YaH7bhvuxxnnH7yt`, `eRAS3vC1wq19zaYu`, `hgLCDChiBiJhooUE`, `gWXFx91CdFmvH45R`, `UbKxQXbz5Q7PSxQs`) preserved in `active: false` state; credential mapping documented for n8n UI update.
+  - [x] **Controlled Pipeline Smoke Tests (Priority 3)**: Executed Test A Website Pipeline (36 passed), Test B Social Pipeline (21 passed), Test C Inbound Intake (32 passed), Test D Approved Outbound Gate (97 passed). Total: 186 passed.
+  - [x] **Operator Console Readiness (Priority 4)**: Verified Telegram bot command parser, allowlists, and notification gates (86 passed).
+  - [x] **Operational & Security Runbook Documentation (Priority 5 & 6)**: Documented credential rotation, Supabase backup/restore procedures, and operator command cheat sheet in `docs/OPERATIONS_RUNBOOK.md` and `docs/ENVIRONMENT_AND_SECRETS.md`.

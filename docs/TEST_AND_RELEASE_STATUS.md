@@ -6,12 +6,11 @@ This document records the baseline test suite audit, the defect root causes, the
 
 ## 1. Test Suite Verification Summary
 
-- **Total Test Cases**: 679
-- **Passing**: 678
+- **Total Test Cases**: 709
+- **Passing**: 708
 - **Skipped**: 1 (`test_render_blueprint_matches_documented_topology` - requires Docker/Render environment)
 - **Failures**: **0**
 - **Errors**: **0**
-- **Test Suite Execution Time**: ~106 seconds
 - **Platform**: Windows 11 (Python 3.11.13)
 - **Status**: **100% GREEN (PASS)**
 
@@ -68,3 +67,22 @@ python -m unittest tests.test_phase42_integration_setup_and_preflight
 python -m unittest tests.test_scout_agent
 python -m unittest tests.test_tavily_enrichment
 ```
+
+---
+
+## 4. Stage 8 Live Production Security & Operational Acceptance
+
+| Verification Gate | Target Environment | Method / Command | Result |
+| --- | --- | --- | --- |
+| **API Credential Rotation** | Render (`srv-db7cartg1s2s739vrasg`) | Generated 43-char URL-safe bearer token; updated env var | **PASS**: Old token refused `HTTP 401`; new token accepted `HTTP 200` |
+| **Repo Secret Cleanliness** | Git version control | `git grep` token scan across all commits and files | **PASS**: Zero credentials found in repository |
+| **Health Probe** | `https://ai-website-agent-api.onrender.com` | `GET /healthz` (unauthenticated) | **PASS**: `HTTP 200 {"status": "ok"}` |
+| **Readiness Probe** | `https://ai-website-agent-api.onrender.com` | `GET /readiness` (authenticated) | **PASS**: `HTTP 200 {"status": "READY", "storage_backend": "postgres", "production_mode": true}` |
+| **Transactional Persistence** | Supabase Postgres Pooler | `POST /jobs` test job (`stage8-verify-1792557783`) | **PASS**: `HTTP 201 Created`; verified read-back, idempotency replay, and restart survival |
+| **Refusal & Boundary Gates** | Render API | Unsupported verbs (`POST /healthz`), invalid job types | **PASS**: Refused with `405 Method Not Allowed` / `400 Bad Request` |
+| **Smoke Test A: Website Pipeline** | Local Isolated Fixtures | `tests/test_website_builder.py`, `tests/test_validation.py`, `tests/test_full_system.py` | **PASS**: 36 passed in 6.09s |
+| **Smoke Test B: Social Pipeline** | Local Isolated Fixtures | `tests/test_social_engine.py` | **PASS**: 21 passed in 0.23s |
+| **Smoke Test C: Inbound Intake** | Local Isolated Fixtures | `tests/test_phase47_inbound_intake.py` | **PASS**: 32 passed in 5.17s |
+| **Smoke Test D: Outbound Gates** | Local Isolated Fixtures | `tests/test_phase49_approved_sending.py`, `tests/test_outreach.py` | **PASS**: 97 passed in 16.11s |
+| **Smoke Test E: Operator Console** | Local Isolated Fixtures | `tests/test_phase48_operator_channels.py` | **PASS**: 86 passed in 6.90s |
+| **n8n Dedicated Workflows** | Personal Project `gF2ObH2mvjWtE5pb` | Workflows `01`–`05` audited via exports & execution history | **PASS**: All 5 workflows preserved inactive (`active: false`) |
