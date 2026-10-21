@@ -75,6 +75,18 @@ graph LR
   - [x] Build and deploy Workflow 03 (`03 - Nior Social Engine: Buffer Multi-Channel Publisher`, ID: `hgLCDChiBiJhooUE`) with fingerprint & channel verification; verified with execution test `16621` (SUCCESS).
   - [x] Build and deploy Workflow 04 (`04 - Nior Communications: Inbound Ingestion & Intake Router`, ID: `gWXFx91CdFmvH45R`) for read-only intake polling; verified with execution test `16623` (SUCCESS).
   - [x] Build and deploy Workflow 05 (`05 - Nior Outbound: Approved Send with Fingerprint Gate`, ID: `UbKxQXbz5Q7PSxQs`) with fail-closed dry-run; verified with execution test `16626` (SUCCESS).
-  - [x] Export secret-free JSON definitions to `n8n/workflows/01..05-*.json`.
+  - [x] Export secret-free JSON definitions to `n8n/workflows/project/01..05-*.json`.
   - [x] Document workflow specifications, credentials, and network requirements in `docs/WORKFLOW_INTEGRATION.md`.
   - [x] Maintain all 5 workflows in verified `active: false` state.
+
+### Stage 7: Production Cloud Deployment & Live Database Migration
+- **Status**: **COMPLETE (Verified Live & Green)**
+- **Objectives**:
+  - [x] Integrate PostgreSQL transactional persistence with live Supabase database via session pooler (`aws-0-us-east-1.pooler.supabase.com:5432`).
+  - [x] Apply production schema migration `0001_supabase_postgres_schema.sql` (all tables, indexes, and RLS created).
+  - [x] Configure and deploy Render Web Service (`srv-db7cartg1s2s739vrasg` at `https://ai-website-agent-api.onrender.com`).
+  - [x] Verify live public health probe (`GET /healthz` -> `HTTP 200 {"status": "ok"}`).
+  - [x] Verify authenticated readiness probe (`GET /readiness` -> `HTTP 200 {"status": "READY", "storage_backend": "postgres", "production_mode": true}`).
+  - [x] Verify transactional persistence against Supabase PostgreSQL (`GET /jobs`).
+
+
