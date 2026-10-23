@@ -60,6 +60,25 @@ class SiteManagementTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "SITE_DELETE_CONFIRMATION_STALE")
         self.assertEqual(self.client.deleted, [])
 
+    def test_new_deployment_after_request_invalidates_old_confirmation(self):
+        site = self.service.list_sites()[0]
+        request = self.service.request_delete(site["site_id"], actor="telegram:1001")["request"]
+        self.store.state["deployments"]["deployment-2"] = {
+            "deployment_id": "deployment-2", "project_id": "project-1", "lead_id": "lead-1",
+            "deployment_status": "DEPLOYED", "deployment_url": "https://pitstop-lagos-preview-new.vercel.app",
+            "vercel_project_id": "prj_Test123", "metadata": {"project_name": "pitstop-lagos-preview"},
+            "completed_at": "2026-10-23T11:00:00Z",
+        }
+        self.store._save()
+
+        with self.assertRaises(SiteManagementError) as caught:
+            self.service.confirm_delete(site["site_id"], request["fingerprint"], actor="telegram:1001")
+        self.assertEqual(caught.exception.code, "SITE_DELETE_REQUEST_STALE")
+        self.assertEqual(self.client.deleted, [])
+        record = self.store.state["managed_sites"][site["site_id"]]
+        self.assertEqual(record["site_status"], "DELETE_REVIEW_STALE")
+        self.assertEqual(record["pending_deletion"]["status"], "STALE")
+
     def test_exact_confirmation_deletes_once_and_retains_tombstone(self):
         site = self.service.list_sites()[0]
         request = self.service.request_delete(site["site_id"], actor="telegram:1001")["request"]
