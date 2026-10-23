@@ -261,13 +261,13 @@ class VercelProjectProvisioner:
     def _create_named_project(
         self, tracking_project_id: str, project: dict[str, Any], *, name: str, base_name: str,
     ) -> dict[str, Any]:
+        # Resolve credentials/configuration before persisting a create intent: a missing token/team ID is
+        # a definitive local blocker, not an ambiguous remote creation outcome.
+        api = self._api()
         try:
             self.store.begin_vercel_project_provisioning(tracking_project_id, name, base_name=base_name)
         except ValueError as error:
             raise VercelProjectProvisioningError(str(error), code="VERCEL_PROJECT_INTENT_REFUSED") from None
-        # Resolve credentials/configuration before marking a provider call as in-flight: a missing token
-        # is a definitive local blocker, not an ambiguous remote creation outcome.
-        api = self._api()
         try:
             created = api.create_project(name)
         except ProviderError as error:
