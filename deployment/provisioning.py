@@ -71,7 +71,8 @@ def _is_name_conflict(error: ProviderError) -> bool:
         return False
     text = str(error).casefold()
     return any(phrase in text for phrase in (
-        "already exists", "already taken", "already in use", "name is taken", "project name",
+        "already exists", "already taken", "already in use", "name is taken",
+        "name already exists", "project with this name",
     ))
 
 
@@ -264,8 +265,11 @@ class VercelProjectProvisioner:
             self.store.begin_vercel_project_provisioning(tracking_project_id, name, base_name=base_name)
         except ValueError as error:
             raise VercelProjectProvisioningError(str(error), code="VERCEL_PROJECT_INTENT_REFUSED") from None
+        # Resolve credentials/configuration before marking a provider call as in-flight: a missing token
+        # is a definitive local blocker, not an ambiguous remote creation outcome.
+        api = self._api()
         try:
-            created = self._api().create_project(name)
+            created = api.create_project(name)
         except ProviderError as error:
             if _is_name_conflict(error):
                 self.store.mark_vercel_project_name_conflict(tracking_project_id, project_name=name)
