@@ -80,8 +80,16 @@ class VercelProjectProvisioner:
 
     def __init__(self, store, *, client: VercelProjectsClient | None = None, max_name_attempts: int = 20) -> None:
         self.store = store
-        self.client = client or VercelProjectsClient()
+        self.client = client
         self.max_name_attempts = max(1, min(int(max_name_attempts), 50))
+
+    def _api(self):
+        if self.client is None:
+            try:
+                self.client = VercelProjectsClient()
+            except SiteManagementError as error:
+                raise VercelProjectProvisioningError(str(error), code=error.code) from None
+        return self.client
 
     def _refresh(self) -> None:
         if getattr(self.store, "db_backend", None) is not None and hasattr(self.store, "refresh"):
@@ -103,7 +111,7 @@ class VercelProjectProvisioner:
 
     def _verify(self, project_id: str, expected_name: str) -> dict[str, Any]:
         try:
-            live = self.client.get_project(project_id)
+            live = self._api().get_project(project_id)
         except (ProviderError, SiteManagementError) as error:
             raise VercelProjectProvisioningError(
                 f"Cannot verify the saved Vercel project binding; nothing was deployed: {error}",
@@ -175,7 +183,7 @@ class VercelProjectProvisioner:
                 code="VERCEL_PROJECT_BINDING_REQUIRED",
             )
         try:
-            remote = self.client.get_project_by_name(name)
+            remote = self._api().get_project_by_name(name)
         except (ProviderError, SiteManagementError) as error:
             raise VercelProjectProvisioningError(
                 f"Cannot reconcile the pending project creation: {error}. No new project was created.",
@@ -218,13 +226,24 @@ class VercelProjectProvisioner:
         return self._create_named_project(tracking_project_id, project, name=name,
                                           base_name=str(project.get("vercel_project_base_name") or name))
 
+    @staticmethod
+    def _next_ordinal(base_name: str, current_name: str) -> int:
+        if current_name == base_name:
+            return 2
+        match = re.fullmatch(re.escape(base_name) + r"-(\d+)", current_name)
+        if match:
+            return int(match.group(1)) + 1
+        # The bound comes from project_name_base; if a custom legacy base has no suffix shape,
+        # start at two rather than reusing the name that was just rejected.
+        return 2
+
     def _create_with_next_name(
         self, tracking_project_id: str, project: dict[str, Any], *, base_name: str, first_ordinal: int,
     ) -> dict[str, Any]:
         for ordinal in range(first_ordinal, self.max_name_attempts + 1):
             name = _candidate_name(base_name, ordinal)
             try:
-                existing = self.client.get_project_by_name(name)
+                existing = self._api().get_project_by_name(name)
             except (ProviderError, SiteManagementError) as error:
                 raise VercelProjectProvisioningError(
                     f"Cannot verify whether the generated project name is available: {error}.",
@@ -246,12 +265,13 @@ class VercelProjectProvisioner:
         except ValueError as error:
             raise VercelProjectProvisioningError(str(error), code="VERCEL_PROJECT_INTENT_REFUSED") from None
         try:
-            created = self.client.create_project(name)
+            created = self._api().create_project(name)
         except ProviderError as error:
             if _is_name_conflict(error):
                 self.store.mark_vercel_project_name_conflict(tracking_project_id, project_name=name)
                 return self._create_with_next_name(
-                    tracking_project_id, project, base_name=base_name, first_ordinal=2,
+                    tracking_project_id, project, base_name=base_name,
+                    first_ordinal=self._next_ordinal(base_name, name),
                 )
             if error.status is not None and 400 <= error.status < 500 and error.status not in {408, 429}:
                 target = (self.store.state.get("projects") or {}).get(tracking_project_id) or {}
