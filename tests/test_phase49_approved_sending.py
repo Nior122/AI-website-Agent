@@ -1065,7 +1065,7 @@ class TelegramDemoApprovalTests(OutboundFixture):
         gate = self.store.authorize_preview_deployment(project_id)
         self.assertTrue(gate["authorized"])
         self.assertEqual(gate["code"], "APPROVED_FOR_DEPLOYMENT")
-        self.assertEqual(answer["buttons"], [["Queue preview publish"]],
+        self.assertEqual(answer["buttons"], [["Create isolated Vercel project + publish preview"]],
                          "publishing is offered as a second, separate action")
 
     def test_the_capability_file_records_the_provenance_without_claiming_a_verified_identity(self) -> None:
