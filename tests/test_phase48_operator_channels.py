@@ -416,16 +416,20 @@ class ApprovalTests(BotTestCase):
         row = self.store.state["outreach"][outreach_id]
         self.assertEqual(row["status"], "READY_TO_SEND", "READY_TO_SEND is not SENT, and the bot cannot make it so")
 
-    def test_the_review_list_points_at_drafts_without_reproducing_them(self) -> None:
-        self.draft()
+    def test_review_list_is_minimal_but_explicit_review_shows_full_email_preview(self) -> None:
+        draft = self.draft()
         answer = self.command("/review")
         self.assertEqual(answer["code"], "REVIEW_LIST")
         self.assertIn("await your review", answer["reply"])
-        answer = self.command(f"/review {next(iter(self.store.state['outreach']))}")
+        self.assertNotIn("a concept is ready", answer["reply"], "the list view stays minimal")
+        answer = self.command(f"/review {draft['outreach_id']}")
         prompt = answer["reply"]
         self.assertEqual(answer["buttons"], [["Approve for sending", "Reject"], ["Ask for changes"]])
-        self.assertNotIn("a concept is ready", prompt, "the draft body stays out of the chat")
-        self.assertNotIn("aisha@pitstop.ng", prompt, "the recipient is shown masked, never whole")
+        self.assertIn(draft["draft_message"], prompt, "explicit review must show the exact message body")
+        self.assertIn(draft["recipient"], prompt, "the private operator preview must show the exact recipient")
+        self.assertIn(draft["subject"], prompt)
+        self.assertIn(draft["preview_url"], prompt)
+        self.assertIn(answer["fingerprint"], prompt)
 
 
 class NotificationTests(BotTestCase):
