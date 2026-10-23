@@ -1388,13 +1388,6 @@ class TrackingStore:
         lead = self.state["leads"].get(p["lead_id"]) or {}
         is_real = (lead.get("data_classification") or p.get("data_classification") or build.get("data_classification")) == "REAL_PUBLIC_DATA"
         dep_meta = deployment.get("metadata") or {}
-        if is_real:
-            bound_vercel_id = str(p.get("vercel_project_id") or "").strip()
-            deployed_vercel_id = str(deployment.get("vercel_project_id") or "").strip()
-            if not bound_vercel_id or deployed_vercel_id != bound_vercel_id:
-                raise ValueError(
-                    "Real-business deployment must use the exact verified Vercel project ID persisted on its tracking project."
-                )
         if str(dep_meta.get("target") or "").strip().lower() in {"prod", "production"}:
             raise ValueError("Refusing deployment: production target is forbidden; only preview deployments are supported.")
         dep_project_name = dep_meta.get("project_name")
@@ -1423,6 +1416,15 @@ class TrackingStore:
             raise ValueError(
                 "Real-business deployment requires explicit pre-deployment human review approval (APPROVED_FOR_PREVIEW for action PREVIEW_DEPLOYMENT) bound to the current assigned build."
             )
+        # Enforce project isolation only after the specific target and approval checks above, so an
+        # attempted shared/production/unapproved deployment continues to report its original refusal.
+        if is_real:
+            bound_vercel_id = str(p.get("vercel_project_id") or "").strip()
+            deployed_vercel_id = str(deployment.get("vercel_project_id") or "").strip()
+            if not bound_vercel_id or deployed_vercel_id != bound_vercel_id:
+                raise ValueError(
+                    "Real-business deployment must use the exact verified Vercel project ID persisted on its tracking project."
+                )
         stored_dep = {**deployment, "project_id": project_id, "lead_id": p["lead_id"]}
         self.state["deployments"][dep_id] = stored_dep
         # One approval authorizes one publish: the build-local capability is consumed when the
