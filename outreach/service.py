@@ -53,14 +53,15 @@ class OutreachService:
   if not evidence: raise ValueError("INSUFFICIENT_RESEARCH")
   ident=next_numeric_id(self.store.state.get("outreach") or {}, "outreach")
   generation_metadata={"provider":"deterministic-fallback","prompt_version":"deterministic-v1"}
+  subject=f"A website preview for {lead['business_name']}" if channel=="EMAIL" else None
   body=self._draft(lead,dep["deployment_url"],channel,tone,evidence)
   import os
   if channel=="EMAIL" and os.environ.get("AI_WEBSITE_AGENT_EMAIL_COPYWRITER_ENABLED","").strip().lower() in {"1","true","yes","on"}:
    from outreach.copywriter import MarketingEmailWriter
    generated=MarketingEmailWriter().generate(lead,dep["deployment_url"],evidence)
-   body=generated["body"]; generation_metadata=generated["metadata"]
+   body=generated["body"]; subject=generated["subject"]; generation_metadata=generated["metadata"]
   self._safe(body,lead["business_name"],dep["deployment_url"])
-  item={"outreach_id":ident,"project_id":project_id,"lead_id":lead["lead_id"],"build_id":dep["build_id"],"deployment_id":dep["deployment_id"],"channel":channel,"recipient":self._contact(lead,channel),"subject":f"A website preview for {lead['business_name']}" if channel=="EMAIL" else None,"draft_message":body,"personalization_points":evidence,"preview_url":dep["deployment_url"],"generation_metadata":generation_metadata,"status":"AWAITING_REVIEW","generated_at":now(),"review_notes":None,"content_fingerprint":None,"approved_content_fingerprint":None,"revision_of":existing[-1]["outreach_id"] if existing else None}
+  item={"outreach_id":ident,"project_id":project_id,"lead_id":lead["lead_id"],"build_id":dep["build_id"],"deployment_id":dep["deployment_id"],"channel":channel,"recipient":self._contact(lead,channel),"subject":subject,"draft_message":body,"personalization_points":evidence,"preview_url":dep["deployment_url"],"generation_metadata":generation_metadata,"status":"AWAITING_REVIEW","generated_at":now(),"review_notes":None,"content_fingerprint":None,"approved_content_fingerprint":None,"revision_of":existing[-1]["outreach_id"] if existing else None}
   item["content_fingerprint"]=content_fingerprint(item); self.store.state["outreach"][ident]=item; self.store._save(); return item
  def review(self,outreach_id,status,notes=None,reviewed_by=None,identity_source=None):
   """Record a human's decision on one draft. `reviewed_by` says who, `identity_source` says how we know.
