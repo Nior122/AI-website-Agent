@@ -660,11 +660,14 @@ class TrackingStore:
             # intent from a project that pre-dated it. Never refresh the timestamp to make adoption easier.
             return p
         stamp = now()
+        # Keep millisecond precision here: recovery may adopt a same-named project only when the provider's
+        # creation timestamp proves it was created after this exact intent, never merely in the same second.
+        intent_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         p["isolated_preview_project"] = validated
         p["vercel_project_base_name"] = str(base_name or validated)
         p["vercel_project_status"] = "CREATE_INTENT"
-        p["vercel_project_intent_at"] = stamp
-        p["vercel_project_intent_id"] = f"provision-{hashlib.sha256(f'{project_id}:{validated}:{stamp}'.encode()).hexdigest()[:16]}"
+        p["vercel_project_intent_at"] = intent_at
+        p["vercel_project_intent_id"] = f"provision-{hashlib.sha256(f'{project_id}:{validated}:{intent_at}'.encode()).hexdigest()[:16]}"
         p["updated_at"] = stamp
         self._save()
         return p
