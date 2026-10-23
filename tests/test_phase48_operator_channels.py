@@ -120,6 +120,7 @@ class BotTestCase(unittest.TestCase):
         self.store.state["outreach"][outreach_id] = {
             "outreach_id": outreach_id, "project_id": self.project["project_id"], "lead_id": self.lead["lead_id"],
             "channel": channel, "status": status, "recipient": "aisha@pitstop.ng",
+            "subject": "Your website preview is ready",
             "draft_message": "Hi Fictional Pitstop Test, a concept is ready: https://preview.example/demo",
             "preview_url": "https://preview.example/demo", "generated_at": "2026-10-16T00:00:00Z",
             "review_notes": None, "build_id": None, "deployment_id": None,
@@ -417,12 +418,13 @@ class ApprovalTests(BotTestCase):
         self.assertEqual(row["status"], "READY_TO_SEND", "READY_TO_SEND is not SENT, and the bot cannot make it so")
 
     def test_review_list_is_minimal_but_explicit_review_shows_full_email_preview(self) -> None:
-        draft = self.draft()
+        draft_id = self.draft()
+        draft = self.store.state["outreach"][draft_id]
         answer = self.command("/review")
         self.assertEqual(answer["code"], "REVIEW_LIST")
         self.assertIn("await your review", answer["reply"])
         self.assertNotIn("a concept is ready", answer["reply"], "the list view stays minimal")
-        answer = self.command(f"/review {draft['outreach_id']}")
+        answer = self.command(f"/review {draft_id}")
         prompt = answer["reply"]
         self.assertEqual(answer["buttons"], [["Approve for sending", "Reject"], ["Ask for changes"]])
         self.assertIn(draft["draft_message"], prompt, "explicit review must show the exact message body")
