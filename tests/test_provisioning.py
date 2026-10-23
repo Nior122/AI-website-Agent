@@ -156,6 +156,28 @@ class ProvisioningTests(unittest.TestCase):
             result["id"],
         )
 
+    def test_persisted_name_conflict_recovers_at_next_suffix(self):
+        base = project_name_base(
+            self.lead["business_name"], self.project["project_id"], self.project["lead_id"],
+        )
+        rejected = f"{base}-2"
+        self.store.begin_vercel_project_provisioning(
+            self.project["project_id"], rejected, base_name=base,
+        )
+        self.store.mark_vercel_project_name_conflict(
+            self.project["project_id"], project_name=rejected,
+        )
+        collision = {
+            "id": "prj_PriorSuffix", "name": rejected,
+            "created_at": "2025-01-01T00:00:00Z",
+        }
+        self.client.projects_by_name[rejected] = dict(collision)
+        self.client.projects_by_id[collision["id"]] = dict(collision)
+
+        result = self.provisioner.ensure_project(self.project["project_id"])
+        self.assertEqual(result["name"], f"{base}-3")
+        self.assertEqual(self.client.create_calls, [f"{base}-3"])
+
     def test_verified_historical_deployment_binding_migrates_without_new_project(self):
         name = "coastal-kitchen-preview"
         old = {
