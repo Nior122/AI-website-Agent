@@ -67,6 +67,7 @@ class SiteManagementTests(unittest.TestCase):
 
     def test_provisioned_project_can_be_reviewed_and_deleted_before_first_deployment(self):
         self.store.state["deployments"].clear()
+        self.store.state["leads"]["lead-1"]["data_classification"] = "REAL_PUBLIC_DATA"
         self.store.state["projects"]["project-1"].update({
             "vercel_project_id": "prj_Test123",
             "isolated_preview_project": "pitstop-lagos-preview",
@@ -103,6 +104,7 @@ class SiteManagementTests(unittest.TestCase):
 
     def test_project_only_delete_approval_becomes_stale_if_first_deployment_arrives(self):
         self.store.state["deployments"].clear()
+        self.store.state["leads"]["lead-1"]["data_classification"] = "REAL_PUBLIC_DATA"
         self.store.state["projects"]["project-1"].update({
             "vercel_project_id": "prj_Test123",
             "isolated_preview_project": "pitstop-lagos-preview",
