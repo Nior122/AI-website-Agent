@@ -725,8 +725,12 @@ class TrackingStore:
             return p
         if current_name and current_name != name and p.get("vercel_project_status") != "NAME_CONFLICT":
             raise ValueError("Vercel project name does not match the tracked project's configured target.")
-        if p.get("vercel_project_status") not in {"CREATE_INTENT", "CREATE_UNCERTAIN", "NAME_CONFLICT", "READY"} and not current_name:
-            raise ValueError("Vercel project binding requires a persisted project-creation intent.")
+        if (
+            p.get("vercel_project_status") not in {"CREATE_INTENT", "CREATE_UNCERTAIN", "NAME_CONFLICT", "READY"}
+            and not current_name
+            and binding_source != "historical-ledger"
+        ):
+            raise ValueError("Vercel project binding requires a persisted project-creation intent or matching historical deployment ledger.")
         stamp = now()
         history = p.setdefault("vercel_project_binding_history", [])
         history.append({
