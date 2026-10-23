@@ -1,8 +1,9 @@
 """Approval-gated inventory and lifecycle management for Agent-owned Vercel sites.
 
-Deletion requires a project ID from a recorded successful deployment, a live API read that confirms the
-ID/name pair, an allow-listed operator, and a fingerprint-bound second confirmation. Provider uncertainty is
-recorded and is never retried automatically.
+Deletion requires a live-verified project ID/name pair, an allow-listed operator, and a fingerprint-bound
+second confirmation. The project must be backed either by a successful deployment record or by a verified
+one-to-one managed-provisioning binding for a never-deployed project. Provider uncertainty is recorded and
+is never retried automatically.
 """
 from __future__ import annotations
 
@@ -290,7 +291,8 @@ class ManagedSiteService:
 
         # Provisioning is persisted before the first publish. Include those project bindings in the
         # operator inventory immediately, even if the first deployment failed or has not yet run.
-        # Deletion remains blocked below until a successful deployment exists in the durable ledger.
+        # Project-only deletion is permitted later only when the durable binding history proves exact
+        # ownership, the site has zero deployments, and the same live ID/name is re-confirmed.
         for tracking_project_id, project in projects.items():
             if not isinstance(project, dict):
                 continue
