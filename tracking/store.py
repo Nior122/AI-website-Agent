@@ -658,9 +658,12 @@ class TrackingStore:
                 "Resolve or explicitly bind that target before deploying; it will not be replaced automatically."
             )
         if current_name == validated and current_status in {"CREATE_INTENT", "CREATE_UNCERTAIN"}:
-            # Keep the original timestamp so a later retry can distinguish the project created by that
-            # intent from a project that pre-dated it. Never refresh the timestamp to make adoption easier.
-            return p
+            # Another execution already owns this create attempt. A second POST could race with the first
+            # and leave two workers disagreeing about the same durable target; reconcile the existing intent.
+            raise ValueError(
+                "A Vercel project-creation intent already exists for this name. Reconcile its provider outcome "
+                "before issuing another create request."
+            )
         stamp = now()
         # Keep millisecond precision here: recovery may adopt a same-named project only when the provider's
         # creation timestamp proves it was created after this exact intent, never merely in the same second.
