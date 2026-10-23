@@ -190,6 +190,25 @@ class DeploymentTests(unittest.TestCase):
         self.assertIn("prj_fixture", called[-1])
         self.assertNotIn("--prod", called[-1])
 
+    def test_real_business_publish_without_verified_project_id_is_refused(self):
+        self._link_project("fictional-studio-preview")
+        self.approve_build()
+        manifest_path = self.build / "build.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["data_classification"] = "REAL_PUBLIC_DATA"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        called = []
+        def runner(*args, **kwargs):
+            called.append(args[0])
+            return subprocess.CompletedProcess(args[0], 0, "https://fictional-studio-preview.vercel.app", "")
+        result = VercelDeploymentProvider(self.root, runner).deploy(
+            self.build, dry_run=False, project_name="fictional-studio-preview",
+            approve_real_preview=True,
+        )
+        self.assertEqual(result.deployment_status, "NEEDS_REVIEW")
+        self.assertIn("verified Vercel project ID", result.error or "")
+        self.assertEqual(called, [])
+
     def test_real_publish_without_human_approval_is_refused_before_any_cli_call(self):
         self._link_project()
         called = []
