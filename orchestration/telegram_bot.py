@@ -983,20 +983,14 @@ class TelegramOperatorBot:
             readiness = f"unreadable ({sanitize_diagnostic(error)})"
         lines = [
             f"{outreach_id} - {_name(lead)} ({record.get('channel')})",
-            f"To: {mask_address(record.get('recipient'))} · lead {record.get('lead_id')} · "
-            f"project {record.get('project_id')}",
-            f"Demo: {record.get('preview_url') or 'unrecorded'}",
+            f"Lead: {record.get('lead_id')} · project {record.get('project_id')}",
+            f"Status: {record.get('status')} · generated {record.get('generated_at')} · readiness: {readiness}",
             "FULL EMAIL PREVIEW — review this exact recipient, subject, and body before approving:",
             f"To: {record.get('recipient') or '(recipient missing)'}",
             f"Subject: {record.get('subject') or '(none)'}",
+            f"Preview URL: {record.get('preview_url') or '(preview URL missing)'}",
             "Body:",
             str(record.get('draft_message') or '(body missing)'),
-            f"Preview URL: {record.get('preview_url') or '(preview URL missing)'}",
-            "preview_sensitive": True,
-            f"Status: {record.get('status')} · generated {record.get('generated_at')} · readiness: {readiness}",
-            "Message body is not reproduced here: a Telegram thread is not where a prospect's contact details "
-            "belong. Read the draft in the review package or with "
-            f"`python3 -m tracking.cli outreach {record.get('project_id')} --outreach-id {outreach_id}`.",
         ]
         if record.get("review_notes"):
             lines.append(f"Last note: {mask_address(str(record['review_notes'])[:200])}")
@@ -1008,7 +1002,7 @@ class TelegramOperatorBot:
         lines.append("Pressing a button records the decision against exactly this draft and this version of it. "
                      "If anything changed since this screen appeared, the press is refused as stale.")
         return {"text": "\n".join(lines), "reply_markup": buttons, "code": "REVIEW_PROMPT",
-                "outreach_id": outreach_id, "fingerprint": fingerprint}
+                "outreach_id": outreach_id, "fingerprint": fingerprint, "preview_sensitive": True}
 
     def _command_approve(self, argument: str, **kwargs: Any) -> dict[str, Any]:
         return self._typed_decision("APPROVED", argument, **kwargs)
