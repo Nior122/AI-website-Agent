@@ -162,15 +162,9 @@ class VercelProjectsClient:
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,62}", name):
             raise SiteManagementError("A valid lowercase Vercel project name is required.",
                                       code="VERCEL_PROJECT_NAME_INVALID")
-        answer = self._call("POST", "/v11/projects", json_body={
-            "name": name,
-            "framework": None,
-            "buildCommand": None,
-            "devCommand": None,
-            "installCommand": None,
-            "outputDirectory": None,
-            "skipGitConnectDuringLink": True,
-        })
+        # Keep this payload minimal: no Git repository, environment variables, domains, or
+        # framework-specific build settings are attached during provisioning.
+        answer = self._call("POST", "/v11/projects", json_body={"name": name})
         project = self._normalise_project(answer.get("json"))
         if project["name"] != name:
             raise SiteManagementError("Vercel created a project with a different name; refusing deployment.",
