@@ -634,6 +634,120 @@ class TrackingStore:
         self._save()
         return p
 
+    def begin_vercel_project_provisioning(self, project_id: str, project_name: str, *, base_name: str) -> dict:
+        """Persist project-creation intent before contacting Vercel; do not silently repoint a manual target."""
+        p = self.state["projects"].get(project_id)
+        if not p:
+            raise ValueError(f"Unknown project: {project_id}")
+        lead = self.state["leads"].get(p["lead_id"]) or {}
+        is_real = (lead.get("data_classification") or p.get("data_classification")) == "REAL_PUBLIC_DATA"
+        if not is_real:
+            raise ValueError("Only REAL_PUBLIC_DATA projects may use automatic per-business Vercel provisioning.")
+        validated = validate_preview_project_name(project_name, real_business=True)
+        if p.get("vercel_project_id"):
+            if p.get("isolated_preview_project") != validated:
+                raise ValueError("The tracked project already has a different Vercel project binding.")
+            return p
+        current_name = str(p.get("isolated_preview_project") or "").strip()
+        current_status = str(p.get("vercel_project_status") or "")
+        if current_name and current_name != validated and current_status != "NAME_CONFLICT":
+            raise ValueError(
+                "This project already has a configured preview target but no verified Vercel project ID. "
+                "Resolve or explicitly bind that target before deploying; it will not be replaced automatically."
+            )
+        if current_name == validated and current_status in {"CREATE_INTENT", "CREATE_UNCERTAIN"}:
+            # Keep the original timestamp so a later retry can distinguish the project created by that
+            # intent from a project that pre-dated it. Never refresh the timestamp to make adoption easier.
+            return p
+        stamp = now()
+        p["isolated_preview_project"] = validated
+        p["vercel_project_base_name"] = str(base_name or validated)
+        p["vercel_project_status"] = "CREATE_INTENT"
+        p["vercel_project_intent_at"] = stamp
+        p["vercel_project_intent_id"] = f"provision-{hashlib.sha256(f'{project_id}:{validated}:{stamp}'.encode()).hexdigest()[:16]}"
+        p["updated_at"] = stamp
+        self._save()
+        return p
+
+    def mark_vercel_project_create_uncertain(self, project_id: str, *, error_code: str) -> dict:
+        p = self.state["projects"].get(project_id)
+        if not p:
+            raise ValueError(f"Unknown project: {project_id}")
+        if p.get("vercel_project_id"):
+            raise ValueError("A project with a verified Vercel ID cannot be marked creation-uncertain.")
+        if p.get("vercel_project_status") != "CREATE_INTENT":
+            raise ValueError("Only a recorded project-creation intent can become uncertain.")
+        p["vercel_project_status"] = "CREATE_UNCERTAIN"
+        p["vercel_project_error_code"] = str(error_code or "VERCEL_PROJECT_CREATE_UNCERTAIN")[:100]
+        p["updated_at"] = now()
+        self._save()
+        return p
+
+    def mark_vercel_project_name_conflict(self, project_id: str, *, project_name: str) -> dict:
+        p = self.state["projects"].get(project_id)
+        if not p:
+            raise ValueError(f"Unknown project: {project_id}")
+        if p.get("vercel_project_id") or p.get("isolated_preview_project") != project_name:
+            raise ValueError("Project-name conflict does not match the current unbound creation intent.")
+        if p.get("vercel_project_status") != "CREATE_INTENT":
+            raise ValueError("Only a known rejected creation intent may be changed after a name conflict.")
+        history = p.setdefault("vercel_project_name_conflicts", [])
+        history.append({"name": project_name, "at": now(), "reason": "Vercel explicitly rejected a duplicate name"})
+        p["vercel_project_status"] = "NAME_CONFLICT"
+        p["updated_at"] = now()
+        self._save()
+        return p
+
+    def bind_vercel_project(
+        self, project_id: str, *, vercel_project_id: str, project_name: str,
+        provider_created_at: object = None, binding_source: str = "api-created",
+    ) -> dict:
+        """Persist a verified one-to-one mapping between a tracked business and its Vercel project."""
+        p = self.state["projects"].get(project_id)
+        if not p:
+            raise ValueError(f"Unknown project: {project_id}")
+        lead = self.state["leads"].get(p["lead_id"]) or {}
+        is_real = (lead.get("data_classification") or p.get("data_classification")) == "REAL_PUBLIC_DATA"
+        name = validate_preview_project_name(project_name, real_business=is_real)
+        vercel_id = str(vercel_project_id or "").strip()
+        if not re.fullmatch(r"prj_[A-Za-z0-9]+", vercel_id):
+            raise ValueError("A verified Vercel project ID is required.")
+        for other_id, other in (self.state.get("projects") or {}).items():
+            if other_id != project_id and str(other.get("vercel_project_id") or "") == vercel_id:
+                raise ValueError(
+                    f"Vercel project {vercel_id} is already bound to tracked project {other_id}; refusing shared-site deployment."
+                )
+        current_id = str(p.get("vercel_project_id") or "")
+        current_name = str(p.get("isolated_preview_project") or "")
+        if current_id:
+            if current_id != vercel_id or current_name != name:
+                raise ValueError("This business is already bound to a different Vercel project; explicit migration review is required.")
+            return p
+        if current_name and current_name != name and p.get("vercel_project_status") != "NAME_CONFLICT":
+            raise ValueError("Vercel project name does not match the tracked project's configured target.")
+        if p.get("vercel_project_status") not in {"CREATE_INTENT", "CREATE_UNCERTAIN", "NAME_CONFLICT", "READY"} and not current_name:
+            raise ValueError("Vercel project binding requires a persisted project-creation intent.")
+        stamp = now()
+        history = p.setdefault("vercel_project_binding_history", [])
+        history.append({
+            "vercel_project_id": vercel_id,
+            "project_name": name,
+            "provider_created_at": provider_created_at,
+            "bound_at": stamp,
+            "source": str(binding_source or "unspecified")[:80],
+        })
+        p.update({
+            "vercel_project_id": vercel_id,
+            "isolated_preview_project": name,
+            "vercel_project_status": "READY",
+            "vercel_project_created_at": provider_created_at,
+            "vercel_project_bound_at": stamp,
+            "vercel_project_error_code": None,
+            "updated_at": stamp,
+        })
+        self._save()
+        return p
+
     def ingest_research_record(self, record: dict, *, assessment: dict | None = None, lead_id: str | None = None) -> dict:
         """Create or idempotently return a tracked lead from a ResearchAgent record and optional opportunity assessment."""
         if not isinstance(record, dict) or not isinstance(record.get("candidate"), dict) or not isinstance(record.get("research"), dict):
