@@ -71,12 +71,12 @@ def safe_preview_text(value: Any, *, limit: int = OUTBOUND_LIMIT) -> str:
     Call only from allow-listed, explicit draft-review commands; never use for alerts or customer messages.
     """
     text = str(value or "")
-    lines = [SECRET_MARKER if find_secret_shaped_text(line) is not None else line for line in text.split("\\n")]
-    text = "\\n".join(lines)
+    lines = [SECRET_MARKER if find_secret_shaped_text(line) is not None else line for line in text.split("\n")]
+    text = "\n".join(lines)
     text = _strip_host_paths(redact(text))
     if len(text) <= limit:
         return text
-    return text[:limit].rstrip() + "\\n…[preview truncated; inspect the stored draft before approval]"
+    return text[:limit].rstrip() + "\n…[preview truncated; inspect the stored draft before approval]"
 
 
 def _mask_phone_numbers(text: str) -> str:
