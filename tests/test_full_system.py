@@ -1133,7 +1133,7 @@ class FullSystemTests(unittest.TestCase):
         vercel_dir = self.root / ".vercel"
         vercel_dir.mkdir(exist_ok=True)
         (vercel_dir / "project.json").write_text(
-            json.dumps({"projectId": "prj_temp_isolated", "orgId": "team_temp", "projectName": "temp-pitstop-preview"}),
+            json.dumps({"projectId": "prj_tempisolated", "orgId": "team_temp", "projectName": "temp-pitstop-preview"}),
             encoding="utf-8",
         )
         rc_prep_ok, prep_ok_out, _ = _cli([
@@ -1163,7 +1163,7 @@ class FullSystemTests(unittest.TestCase):
             proj_id, "temp-pitstop-preview", base_name="temp-pitstop-preview",
         )
         s_dep.bind_vercel_project(
-            proj_id, vercel_project_id="prj_temp_isolated", project_name="temp-pitstop-preview",
+            proj_id, vercel_project_id="prj_tempisolated", project_name="temp-pitstop-preview",
             provider_created_at="2026-10-23T00:00:00Z", binding_source="test-fixture",
         )
         s_dep.record_deployment(proj_id, {
@@ -1173,7 +1173,7 @@ class FullSystemTests(unittest.TestCase):
             "validation_status": "PASS",
             "deployment_status": "DEPLOYED",
             "deployment_url": "https://temp-pitstop-preview.vercel.app",
-            "vercel_project_id": "prj_temp_isolated",
+            "vercel_project_id": "prj_tempisolated",
             "metadata": {"project_name": "temp-pitstop-preview"},
         })
         self.assertEqual(s_dep.snapshot(proj_id)["workflow_state"], "ISOLATED_PREVIEW_DEPLOYED")
