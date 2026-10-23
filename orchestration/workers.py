@@ -662,13 +662,52 @@ class LocalPipelineWorker:
                         },
                         retryable=False,
                     )
+            lead = (store.state.get("leads") or {}).get(p.get("lead_id")) or {}
+            is_real_business = (lead.get("data_classification") or p.get("data_classification")) == "REAL_PUBLIC_DATA"
+            provisioned_target = None
+            if not dry_run and is_real_business:
+                # A human must first authorize this exact validated build through the normal gate above,
+                # and the job must also explicitly request a real-business preview. Never create cloud
+                # resources merely because an operator names a target project.
+                if not job_input.get("approve_real_preview"):
+                    return WorkerResult(
+                        "NEEDS_REVIEW",
+                        error="REAL_PUBLIC_DATA deployments require explicit approve_real_preview after the current build approval gate. No Vercel project was created.",
+                        output={
+                            "lead_id": p["lead_id"], "project_id": project_id, "build_id": build_id,
+                            "validation_id": p.get("latest_validation_id"),
+                            "outcome": "REAL_PREVIEW_PROVISIONING_NOT_APPROVED",
+                            "authorization_code": "REAL_PREVIEW_APPROVAL_FLAG_REQUIRED",
+                            "dry_run": False,
+                        },
+                        retryable=False,
+                    )
+                try:
+                    from deployment.provisioning import VercelProjectProvisioner, VercelProjectProvisioningError
+                    provisioned_target = VercelProjectProvisioner(store).ensure_project(project_id)
+                except VercelProjectProvisioningError as error:
+                    return WorkerResult(
+                        "NEEDS_REVIEW",
+                        error=f"{error.code}: {error}",
+                        output={
+                            "lead_id": p["lead_id"], "project_id": project_id, "build_id": build_id,
+                            "validation_id": p.get("latest_validation_id"),
+                            "outcome": "VERCEL_PROJECT_PROVISIONING_BLOCKED",
+                            "authorization_code": error.code,
+                            "dry_run": False,
+                        },
+                        retryable=False,
+                    )
             provider = self.deployment_provider or VercelDeploymentProvider(self.repository_root)
             deploy_kwargs = {
                 "dry_run": dry_run,
                 "approve_needs_review": bool(job_input.get("approve_needs_review")),
                 "approve_real_preview": bool(job_input.get("approve_real_preview")),
-                "project_name": job_input.get("project_name") or p.get("isolated_preview_project"),
+                "project_name": (provisioned_target or {}).get("name")
+                    or job_input.get("project_name") or p.get("isolated_preview_project"),
             }
+            if provisioned_target is not None:
+                deploy_kwargs["vercel_project_id"] = provisioned_target["id"]
             if not dry_run:
                 deploy_kwargs["resolve_uncertain_publish"] = bool(job_input.get("resolve_uncertain_publish"))
                 # A worker-driven resolution is attributed to the operator named in the job or in the
