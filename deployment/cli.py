@@ -19,8 +19,10 @@ from .deployer import VercelDeploymentProvider
 DEFAULT_STATE_PATH = Path("data/tracking/state.json")
 
 
-def _authorization(store_path: Path | None, project_id: str | None, build_id: str | None,
-                   *, resolve_uncertain_publish: bool = False) -> dict:
+def _authorization(
+    store_path: Path | None, project_id: str | None, build_id: str | None,
+    *, resolve_uncertain_publish: bool = False, allow_provisioning: bool = False,
+) -> dict:
     """Consult the durable tracking record; a missing store or project is itself a refusal."""
     if not project_id:
         return {
@@ -41,8 +43,11 @@ def _authorization(store_path: Path | None, project_id: str | None, build_id: st
     from tracking.store import TrackingStore
 
     store = TrackingStore(Path(store_path))
-    gate = store.authorize_preview_deployment(project_id, build_id=build_id,
-                                             resolve_uncertain_publish=resolve_uncertain_publish)
+    gate = store.authorize_preview_deployment(
+        project_id, build_id=build_id,
+        resolve_uncertain_publish=resolve_uncertain_publish,
+        allow_provisioning=allow_provisioning,
+    )
     gate.pop("approval", None)
     return gate
 
@@ -80,8 +85,11 @@ def main(argv: list[str] | None = None) -> int:
     authorization: dict | None = None
     if args.execute:
         try:
-            authorization = _authorization(args.state_path, args.project_id, str(args.build_id) if args.build_id else None,
-                                          resolve_uncertain_publish=args.resolve_uncertain_publish)
+            authorization = _authorization(
+                args.state_path, args.project_id, str(args.build_id) if args.build_id else None,
+                resolve_uncertain_publish=args.resolve_uncertain_publish,
+                allow_provisioning=args.approve_real_preview,
+            )
         except (ValueError, OSError) as error:
             print(json.dumps({"authorized": False, "code": "AUTHORIZATION_UNVERIFIABLE", "reason": str(error)}, indent=2))
             return 1
