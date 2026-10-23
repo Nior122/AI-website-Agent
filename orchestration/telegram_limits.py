@@ -63,6 +63,22 @@ def safe_outbound_text(value: Any, *, limit: int = OUTBOUND_LIMIT) -> str:
     return text[:limit].rstrip() + "\n…[continued in the application's own reports]"
 
 
+def safe_preview_text(value: Any, *, limit: int = OUTBOUND_LIMIT) -> str:
+    """Safe rendering for an explicitly requested private draft preview.
+
+    Unlike ordinary notifications this preserves recipient addresses and phone numbers so the operator can review
+    the exact message. It still removes credential-shaped lines, absolute local paths, and secret-shaped fragments.
+    Call only from allow-listed, explicit draft-review commands; never use for alerts or customer messages.
+    """
+    text = str(value or "")
+    lines = [SECRET_MARKER if find_secret_shaped_text(line) is not None else line for line in text.split("\\n")]
+    text = "\\n".join(lines)
+    text = _strip_host_paths(redact(text))
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "\\n…[preview truncated; inspect the stored draft before approval]"
+
+
 def _mask_phone_numbers(text: str) -> str:
     """Keep the tail of a phone number and hide the rest."""
     text = _INTERNATIONAL_PHONE.sub(lambda m: f"+{m.group(1)[0]}…{m.group(1)[-4:]}", text)
