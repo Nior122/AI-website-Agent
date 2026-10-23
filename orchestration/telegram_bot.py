@@ -985,6 +985,7 @@ class TelegramOperatorBot:
             f"{outreach_id} - {_name(lead)} ({record.get('channel')})",
             f"Lead: {record.get('lead_id')} · project {record.get('project_id')}",
             f"Status: {record.get('status')} · generated {record.get('generated_at')} · readiness: {readiness}",
+            f"Content fingerprint: {fingerprint}",
             "FULL EMAIL PREVIEW — review this exact recipient, subject, and body before approving:",
             f"To: {record.get('recipient') or '(recipient missing)'}",
             f"Subject: {record.get('subject') or '(none)'}",
@@ -1702,9 +1703,10 @@ class TelegramOperatorBot:
                                "text": text + "\nNothing was sent and nothing will be from this keyboard."})
             if action == "send_arm":
                 armed = self._arm_send(identifier, user_id=user_id)
+                preview_text = safe_preview_text(armed.get("text") or "")
                 return {"handled": True, "code": str(armed.get("code") or "SEND_ARMED"),
-                        "notice": armed.get("text"), "reply_markup": armed.get("reply_markup"),
-                        "edit_text": armed.get("text"), "edit_markup": armed.get("reply_markup"),
+                        "notice": preview_text, "reply_markup": armed.get("reply_markup"),
+                        "edit_text": preview_text, "edit_markup": armed.get("reply_markup"),
                         "action": action, "identifier": identifier}
             buttons = inline_keyboard([[("Send this (shows the full check first)",
                                         f"se:{identifier}:{view.get('content_fingerprint')}")]])
