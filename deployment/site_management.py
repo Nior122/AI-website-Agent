@@ -318,6 +318,18 @@ class ManagedSiteService:
                 "There is no unused deletion confirmation for this site. Request a new review if the site is still present.",
                 code="SITE_DELETE_CONFIRMATION_NOT_PENDING",
             )
+        requested_at = str(pending.get("requested_at") or "")
+        try:
+            created = datetime.fromisoformat(requested_at.replace("Z", "+00:00"))
+            age_seconds = (datetime.now(timezone.utc) - created.astimezone(timezone.utc)).total_seconds()
+        except (TypeError, ValueError):
+            age_seconds = 10 * 60 + 1
+        if age_seconds < 0 or age_seconds > 10 * 60:
+            pending["status"] = "EXPIRED"
+            record["site_status"] = "DELETE_CONFIRMATION_EXPIRED"
+            record["updated_at"] = _now()
+            self.store._save()
+            raise SiteManagementError("This deletion confirmation expired after 10 minutes. Re-read the exact project and request a fresh review.", code="SITE_DELETE_CONFIRMATION_EXPIRED")
         supplied = str(fingerprint or "").strip()
         expected = str(pending.get("fingerprint") or "")
         if not supplied or not hmac.compare_digest(supplied, expected):
