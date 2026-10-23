@@ -50,3 +50,15 @@ Do not retry the unresolved historical outreach attempt just because a message a
 ## Verification
 
 The new tests are offline and use fake Vercel/provider clients. The repository's Python test workflow is defined in `.github/workflows/python-tests.yml`. Review the resulting GitHub Actions run and all required checks before merging. A successful Vercel preview status is not a substitute for Python tests or human review.
+
+## Per-business Vercel project provisioning
+
+The approved DEPLOY worker can provision one standalone Vercel project per REAL_PUBLIC_DATA tracking project. It only runs after the current assigned build passes the normal human-approval gate and the job includes the separate explicit approve_real_preview flag. A dry run never creates a Vercel resource. Project creation uses the Vercel Projects API and stores the returned project ID/name on the tracked project before attempting deployment; the CLI is then pointed at that verified ID via VERCEL_ORG_ID and VERCEL_PROJECT_ID. The shared fictional preview project and portfolio projects are never used for real-business output.
+
+The management token therefore needs project read, create, and (only if you use Telegram deletion) project delete permissions in the same team scope. Keep AI_WEBSITE_AGENT_VERCEL_TOKEN and AI_WEBSITE_AGENT_VERCEL_TEAM_ID set on the worker/API runtime. The deploy worker provides the token to the child Vercel CLI through its process environment, not command-line arguments. Do not print process environments or tokens in diagnostic output.
+
+Project names are deterministically derived from the business and tracked project ID, include a preview marker, and fit Vercel's project-name length bound. If a name is already taken, the allocator checks a bounded sequence of suffixed alternatives; it never adopts a project simply because its name matches. Each tracked project may bind to only one Vercel project ID, and the same Vercel project ID cannot be bound to two tracked projects. A saved manual project name without a verified project ID stops automatic provisioning until an operator reconciles it.
+
+Provisioning persists a creation intent before making the API request. If the API response is lost, the agent checks the exact intended name and verifies that provider creation time is consistent with the durable intent before recovering the mapping. If it cannot prove that the project was created by this intent, it stops and requests manual reconciliation instead of creating another project. A definite name collision may advance to another deterministic suffix. An uncertain create or failed binding never proceeds to deployment.
+
+Project provisioning does not import a Git repository, assign a custom domain, buy a domain, deploy to production, or delete any project. It creates a standalone project and deploys a preview artifact only after verifying the exact saved project ID/name pair. Deployment failures after project creation leave the project mapped for safe inspection/retry rather than silently creating a replacement.
