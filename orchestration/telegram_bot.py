@@ -1215,10 +1215,14 @@ class TelegramOperatorBot:
                  f"Publish gate now says: {fresh.get('code') or 'UNKNOWN'}.",
                  "Nothing has been published yet. The publish step re-verifies this approval itself, so a queue "
                  "that runs later still needs the artifact to be unchanged."]
-        buttons = inline_keyboard([[(ACTION_BUTTONS["pq"][1],
+        buttons = inline_keyboard([[( "Create isolated Vercel project + publish preview",
                                     f"pq:{project_id}:{demo_fingerprint(self.store.state['projects'][project_id])}")]])
-        lines.append("Queueing the publish job is a separate press; the job will not run while automated dispatch "
-                     "is held, and a held attempt is recorded as blocked rather than dropped.")
+        lines.append(
+            "The next button explicitly authorizes creating a separate Vercel project for this business if one "
+            "does not already exist, then publishing this approved build to that project. It does not attach or "
+            "purchase a custom domain, send outreach, or delete any project. Queueing is a separate act; the job "
+            "will not run while automated dispatch is held, and a held attempt is recorded as blocked."
+        )
         return {"text": "\n".join(lines), "reply_markup": buttons, "code": "DEMO_APPROVAL_RECORDED",
                 "project_id": project_id, "review_id": (entry or {}).get("review_id"),
                 "edit_text": f"Demo approved for {project_id} (build {assigned}) by telegram:{user_id}. "
@@ -1227,7 +1231,14 @@ class TelegramOperatorBot:
 
     def _queue_publish(self, project_id: str, *, user_id: int | None, chat_id: int | None) -> dict[str, Any]:
         """Enqueue the existing DEPLOY job for the approved build. Enqueue only - the worker publishes."""
-        gate = self._demo_gate(project_id)
+        # This handler is reached only by the separately labeled, fingerprint-bound operator action
+        # that explicitly authorizes isolated project creation + preview publishing. Permit the gate to defer
+        # a missing target to the provisioner; every other approval/build/production check remains enforced.
+        try:
+            gate = self.store.authorize_preview_deployment(project_id, allow_provisioning=True)
+        except Exception as error:  # a gate that cannot be read is a hard stop
+            gate = {"authorized": False, "code": "GATE_UNREADABLE",
+                    "reason": sanitize_diagnostic(error).get("detail") or "approval gate could not be read"}
         if not gate.get("authorized") and gate.get("code") != "ALREADY_DEPLOYED":
             return {"text": (f"Refused: the durable gate says {gate.get('code') or 'UNKNOWN'}, so a publish job "
                              "would only fail. /demo shows what the gate needs."),
@@ -1241,7 +1252,8 @@ class TelegramOperatorBot:
                                    idempotency_key=f"telegram-demo-publish:{project_id}:{assigned}",
                                    input={"requested_by": f"telegram:{user_id}",
                                            "approval_source": "telegram_preview_approval",
-                                           "note": "queued from Telegram after an explicit preview approval"})
+                                           "approve_real_preview": True,
+                                           "note": "operator explicitly authorized isolated Vercel project creation if needed and preview publishing"})
         except ValueError as error:
             return {"text": f"The queue refused: {safe_outbound_text(str(error))}", "code": "PUBLISH_JOB_REFUSED",
                     "alert": True}
