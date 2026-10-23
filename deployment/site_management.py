@@ -380,6 +380,7 @@ class ManagedSiteService:
             pending["detail"] = str(error)[:300]
             record["site_status"] = "DELETE_FAILED"
             record["updated_at"] = _now()
+            record.setdefault("deletion_history", []).append(copy.deepcopy(pending))
             self.store._save()
             raise
         finished = _now()
