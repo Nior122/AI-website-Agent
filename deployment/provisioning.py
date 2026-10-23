@@ -355,6 +355,12 @@ class VercelProjectProvisioner:
             return historical
 
         status = str(project.get("vercel_project_status") or "")
+        if status == "NAME_CONFLICT":
+            base_name = str(project.get("vercel_project_base_name") or project_name)
+            return self._create_with_next_name(
+                tracking_project_id, project, base_name=base_name,
+                first_ordinal=self._next_ordinal(base_name, project_name),
+            )
         if status in {"CREATE_INTENT", "CREATE_UNCERTAIN", "CREATE_FAILED"}:
             return self._reconcile_pending(tracking_project_id, project)
         if project_name:
