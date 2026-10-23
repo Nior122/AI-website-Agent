@@ -1350,13 +1350,10 @@ class TelegramOperatorBot:
                          f"{composition.get('endpoint')} ({composition.get('size_bytes')} bytes, "
                          f"threading: {(composition.get('threading') or {}).get('basis')}, "
                          f"List-Unsubscribe: {'set' if composition.get('list_unsubscribe_present') else 'not set'})")
-            if not dry_run:
-                lines.append("The body is not reproduced here: this bot does not put a prospect's message in a "
-                             "chat thread. Read it in the review package or with `python3 -m tracking.cli "
-                             f"outreach {view.get('project_id')} --outreach-id {outreach_id}`.")
         if dry_run:
             answer = self._perform_send(outreach_id, user_id=user_id, dry_run=True)
             answer["text"] = "\n".join(lines) + "\n\n" + answer["text"]
+            answer["preview_sensitive"] = True
             return answer
         if blockers:
             return {"text": "\n".join(lines), "code": "SEND_BLOCKED", "outreach_id": outreach_id,
