@@ -26,7 +26,7 @@ class FakeVercelClient:
 
     @staticmethod
     def _now():
-        return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
     def get_project_by_name(self, name):
         project = self.projects_by_name.get(name)
@@ -136,6 +136,22 @@ class ProvisioningTests(unittest.TestCase):
             self.store.state["projects"][self.project["project_id"]]["vercel_project_id"],
             result["id"],
         )
+
+    def test_missing_provider_timestamp_does_not_adopt_ambiguous_project(self):
+        self.client.create_then_timeout = True
+        with self.assertRaises(VercelProjectProvisioningError):
+            self.provisioner.ensure_project(self.project["project_id"])
+        name = self.client.create_calls[-1]
+        project = self.client.projects_by_name[name]
+        project["created_at"] = None
+        self.client.projects_by_id[project["id"]]["created_at"] = None
+        self.client.create_then_timeout = False
+
+        with self.assertRaises(VercelProjectProvisioningError) as caught:
+            self.provisioner.ensure_project(self.project["project_id"])
+        self.assertEqual(caught.exception.code, "VERCEL_PROJECT_OWNERSHIP_UNCERTAIN")
+        self.assertEqual(len(self.client.create_calls), 1)
+        self.assertFalse(self.store.state["projects"][self.project["project_id"]].get("vercel_project_id"))
 
     def test_name_collision_uses_a_new_suffix_not_the_same_failed_name(self):
         base = project_name_base(
