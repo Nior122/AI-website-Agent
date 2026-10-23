@@ -984,6 +984,12 @@ class TelegramOperatorBot:
             f"To: {mask_address(record.get('recipient'))} · lead {record.get('lead_id')} · "
             f"project {record.get('project_id')}",
             f"Demo: {record.get('preview_url') or 'unrecorded'}",
+            "FULL EMAIL PREVIEW — review this exact recipient, subject, and body before approving:",
+            f"To: {record.get('recipient') or '(recipient missing)'}",
+            f"Subject: {record.get('subject') or '(none)'}",
+            "Body:",
+            str(record.get('draft_message') or '(body missing)'),
+            f"Preview URL: {record.get('preview_url') or '(preview URL missing)'}",
             f"Status: {record.get('status')} · generated {record.get('generated_at')} · readiness: {readiness}",
             "Message body is not reproduced here: a Telegram thread is not where a prospect's contact details "
             "belong. Read the draft in the review package or with "
