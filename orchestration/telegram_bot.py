@@ -118,6 +118,10 @@ COMMANDS: dict[str, tuple[str, str, bool]] = {
     "post": ("Social media draft operations: list, new, view, approve, reject", "[list | new <channel> <topic> | view <id> | approve <id> | reject <id>]", True),
     "briefing": ("Daily business briefing: pipeline, opportunities, overdue tasks, and recommendations", "[--trigger | --status]", False),
     "daily": ("Alias for /briefing", "[--trigger | --status]", False),
+    "sites": ("List deployed business websites and stable site IDs", "[--all]", False),
+    "site": ("Show one deployed website and its Vercel project identity", "<site_id>", False),
+    "deletesite": ("Request deletion review for one exact Vercel project; does not delete", "<site_id>", True),
+    "confirmdelete": ("Confirm a pending Vercel project deletion by its one-time fingerprint", "<site_id> <fingerprint>", True),
 }
 
 
@@ -881,6 +885,68 @@ class TelegramOperatorBot:
                         "an explicit retry. Every other gate still applies exactly as before.",
                 "code": "AUTOMATION_RESUMED", "held": False, "blocked_jobs": blocked}
 
+    def _managed_sites(self):
+        from deployment.site_management import ManagedSiteService
+        if getattr(self, "_managed_site_service", None) is None:
+            self._managed_site_service = ManagedSiteService(self.store)
+        return self._managed_site_service
+
+    def _command_sites(self, argument: str, **_: Any) -> dict[str, Any]:
+        include_deleted = "--all" in argument.split()
+        rows = self._managed_sites().list_sites(include_deleted=include_deleted, limit=self.row_limit)
+        if not rows:
+            return {"text": "No successful Vercel deployments are recorded yet. A local draft or pending review is not a deployed website.", "code": "SITES_EMPTY", "count": 0}
+        lines = [f"{len(rows)} website(s) shown. Older deployments remain in the tracking history."]
+        for row in rows:
+            lines.append(f"• {row.get('site_id')} | {row.get('business_name')} | {row.get('site_status')}\n  {row.get('deployment_url')}\n  Vercel project: {row.get('vercel_project_name') or 'unrecorded'} | history: {row.get('deployment_history_count', 0)}")
+        lines.append("Use /site <site_id> for details. /deletesite <site_id> only prepares a deletion request; it does not delete anything.")
+        return {"text": "\n".join(lines), "code": "SITES_LIST", "count": len(rows)}
+
+    def _command_site(self, argument: str, **_: Any) -> dict[str, Any]:
+        tokens = argument.split()
+        if not tokens:
+            raise TelegramBotError("Use /site <site_id> from /sites.", code="SITE_ID_REQUIRED")
+        row = self._managed_sites().get_site(tokens[0], include_deleted=True)
+        lines = [f"{row.get('site_id')} — {row.get('business_name')}", f"Status: {row.get('site_status')}",
+                 f"URL: {row.get('deployment_url') or 'not recorded'}",
+                 f"Vercel project: {row.get('vercel_project_name') or 'unrecorded'}",
+                 f"Vercel project ID: {row.get('vercel_project_id') or 'unrecorded'}",
+                 f"Lead: {row.get('lead_id') or 'unrecorded'}",
+                 f"Deployment history count: {row.get('deployment_history_count', 0)}",
+                 f"Last deployed: {row.get('last_deployed_at') or 'unrecorded'}"]
+        pending = row.get("pending_deletion") or {}
+        if pending: lines.append(f"Deletion state: {pending.get('status')}")
+        if row.get("site_status") != "DELETED": lines.append("To review deletion, use /deletesite " + str(row.get("site_id")) + ".")
+        return {"text": "\n".join(lines), "code": "SITE_DETAIL", "site_id": row.get("site_id")}
+
+    def _command_deletesite(self, argument: str, *, user_id: int | None, **_: Any) -> dict[str, Any]:
+        tokens = argument.split()
+        if not tokens: raise TelegramBotError("Use /deletesite <site_id>. This only prepares a request.", code="SITE_ID_REQUIRED")
+        result = self._managed_sites().request_delete(tokens[0], actor=f"telegram:{user_id}")
+        site, request = result["site"], result["request"]
+        lines = ["DELETION REVIEW — NOTHING HAS BEEN DELETED",
+                 f"Business: {site.get('business_name')}", f"Site ID: {site.get('site_id')}",
+                 f"Vercel project: {request.get('vercel_project_name')}",
+                 f"Exact Vercel project ID: {request.get('vercel_project_id')}",
+                 f"Current URL: {request.get('deployment_url')}", f"Request ID: {request.get('request_id')}",
+                 f"One-time confirmation fingerprint: {request.get('fingerprint')}",
+                 "This removes the Vercel project itself, not just one deployment. Attached deployments/domains may be affected.",
+                 "To proceed, send /confirmdelete " + str(site.get("site_id")) + " " + str(request.get("fingerprint")),
+                 "If unsure, do nothing. No resource is removed until the exact fingerprint is confirmed."]
+        return {"text": "\n".join(lines), "code": "SITE_DELETE_AWAITING_CONFIRMATION",
+                "site_id": site.get("site_id"), "request_id": request.get("request_id"),
+                "fingerprint": request.get("fingerprint"), "deletion_performed": False}
+
+    def _command_confirmdelete(self, argument: str, *, user_id: int | None, **_: Any) -> dict[str, Any]:
+        tokens = argument.split()
+        if len(tokens) != 2:
+            raise TelegramBotError("Use /confirmdelete <site_id> <one-time-fingerprint> exactly as shown. Nothing is deleted without both.", code="SITE_DELETE_CONFIRMATION_REQUIRED")
+        result = self._managed_sites().confirm_delete(tokens[0], tokens[1], actor=f"telegram:{user_id}")
+        return {"text": f"Vercel project deletion confirmed by provider for {result.get('business_name')}."
+                f"\nSite ID: {result.get('site_id')}\nProject: {result.get('vercel_project_name')}"
+                f"\nFormer URL: {result.get('deployment_url')}\nStatus: DELETED"
+                "\nHistoric deployment and deletion audit records are retained.",
+                "code": "SITE_DELETED", "site_id": result.get("site_id"), "deletion_performed": True}
     def _command_review(self, argument: str, **_: Any) -> dict[str, Any]:
         rows = [row for row in (self.store.state.get("outreach") or {}).values() if isinstance(row, dict)]
         rows.sort(key=lambda row: str(row.get("generated_at") or ""), reverse=True)
@@ -1262,6 +1328,12 @@ class TelegramOperatorBot:
             f"Approved: {view.get('reviewed_at') or 'unrecorded'} by {view.get('reviewed_by') or 'unattributed'} "
             f"({view.get('reviewer_identity_source') or 'identity source unrecorded'})",
             f"Content fingerprint: {view.get('content_fingerprint')}",
+            "FULL EMAIL PREVIEW — read this exact content before sending:",
+            f"To: {view.get('recipient') or '(recipient missing)'}",
+            f"Subject: {view.get('subject') or '(none)'}",
+            "Body:",
+            str(view.get('draft_message') or '(body missing)'),
+            f"Preview URL: {view.get('preview_url') or '(preview URL missing)'}",
         ]
         if view.get("status") == "SEND_FAILED":
             lines.append("This draft's last attempt failed; sending again reuses the same approval and counts as "
