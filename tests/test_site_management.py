@@ -133,6 +133,18 @@ class SiteManagementTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "SITE_DELETE_REQUEST_STALE")
         self.assertEqual(self.client.deleted, [])
 
+    def test_site_manager_refuses_deletion_of_non_preview_project(self):
+        self.client.project["name"] = "unrelated-site"
+        self.store.state["deployments"]["deployment-1"]["metadata"]["project_name"] = "unrelated-site"
+        self.store._save()
+        site = self.service.list_sites()[0]
+
+        with self.assertRaises(SiteManagementError) as caught:
+            self.service.request_delete(site["site_id"], actor="telegram:1001")
+
+        self.assertEqual(caught.exception.code, "VERCEL_PROJECT_TARGET_INVALID")
+        self.assertEqual(self.client.deleted, [])
+
     def test_request_does_not_delete_and_wrong_fingerprint_is_refused(self):
         site = self.service.list_sites()[0]
         answer = self.service.request_delete(site["site_id"], actor="telegram:1001")
