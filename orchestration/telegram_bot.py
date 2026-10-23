@@ -34,7 +34,7 @@ from typing import Any, Iterable
 from .controls import hold_view, release_hold, set_hold
 from .jobs import JobService
 from .observability import log_event, sanitize_diagnostic
-from .telegram_limits import attention_identity, clip_list, mask_address, safe_outbound_text
+from .telegram_limits import attention_identity, clip_list, mask_address, safe_outbound_text, safe_preview_text
 from integrations.telegram import ProviderError, describe_error as describe_provider_error, inline_keyboard
 from tracking.engagement import (RELATIONSHIP_STAGES, EngagementLedger, LedgerError, redact_contact_details)
 
@@ -283,8 +283,9 @@ class TelegramOperatorBot:
             answer = {"text": f"Something went wrong running /{name}, so nothing was changed by it. "
                               f"The fault was recorded as COMMAND_FAULT.", "code": "COMMAND_FAULT"}
         answer.setdefault("command", name)
+        preview_sensitive = bool(answer.pop("preview_sensitive", False))
         return self._reply(chat_id, answer.pop("text", ""), reply_markup=answer.pop("reply_markup", None),
-                           deliver=deliver, **answer)
+                           deliver=deliver, preview_sensitive=preview_sensitive, **answer)
 
     def handle_callback(self, data: str, *, user_id: int | None, chat_id: int | None,
                         message_id: int | None = None, callback_query_id: str = "") -> dict[str, Any]:
@@ -361,7 +362,8 @@ class TelegramOperatorBot:
 
     def _reply(self, chat_id: int | None, text: str, *, reply_markup: dict[str, Any] | None = None,
                deliver: bool = True, **extra: Any) -> dict[str, Any]:
-        body = safe_outbound_text(text)
+        preview_sensitive = bool(extra.pop("preview_sensitive", False))
+        body = safe_preview_text(text) if preview_sensitive else safe_outbound_text(text)
         report = {"reply": body, "delivered": False, **extra}
         if reply_markup is not None:
             # `buttons` rather than the raw markup: an answer that says which actions it offered is what a test,
@@ -990,6 +992,7 @@ class TelegramOperatorBot:
             "Body:",
             str(record.get('draft_message') or '(body missing)'),
             f"Preview URL: {record.get('preview_url') or '(preview URL missing)'}",
+            "preview_sensitive": True,
             f"Status: {record.get('status')} · generated {record.get('generated_at')} · readiness: {readiness}",
             "Message body is not reproduced here: a Telegram thread is not where a prospect's contact details "
             "belong. Read the draft in the review package or with "
@@ -1371,7 +1374,7 @@ class TelegramOperatorBot:
         lines.append("Pressing confirm sends one email to that address. There is no undo, and no retry: an "
                      "unanswered provider response is reconciled, never resent.")
         return {"text": "\n".join(lines), "reply_markup": buttons, "code": "SEND_ARMED",
-                "outreach_id": outreach_id, "fingerprint": view.get("content_fingerprint")}
+                "outreach_id": outreach_id, "fingerprint": view.get("content_fingerprint"), "preview_sensitive": True}
 
     def _perform_send(self, outreach_id: str, *, user_id: int | None, chat_id: int | None = None,
                       dry_run: bool = False, note: str | None = None) -> dict[str, Any]:
