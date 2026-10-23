@@ -250,9 +250,9 @@ class DeploymentTests(unittest.TestCase):
         command, kwargs = calls[0]
         self.assertIn("--project", command)
         self.assertEqual(command[command.index("--project") + 1], "prj_managed123")
-        self.assertIn("--scope", command)
-        self.assertEqual(command[command.index("--scope") + 1], "team_fixture")
         self.assertEqual(kwargs["env"]["VERCEL_TOKEN"], "fixture-token")
+        self.assertEqual(kwargs["env"]["VERCEL_ORG_ID"], "team_fixture")
+        self.assertEqual(kwargs["env"]["VERCEL_PROJECT_ID"], "prj_managed123")
         self.assertNotIn("fixture-token", " ".join(command))
         self.assertFalse((self.root / ".vercel" / "project.json").exists())
 
