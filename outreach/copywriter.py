@@ -26,7 +26,7 @@ class MarketingEmailWriter:
             raise CopywriterError("Verified business name and HTTPS preview URL are required.", code="COPYWRITER_INPUT_INVALID")
         facts = []
         for item in evidence or []:
-            value = str(item or "").strip()
+            value = str((item.get("claim") if isinstance(item, dict) else item) or "").strip()
             if value and "@" not in value and not re.search(r"(?i)(token|password|secret|api[_ -]?key)\s*[:=]", value):
                 facts.append(value[:300])
             if len(facts) >= 8:
