@@ -137,6 +137,11 @@ class VercelDeploymentProvider:
                 target_project_name = self.expected_project_name
             if is_real and not approve_real_preview:
                 raise NeedsReview("Real-business preview deployment is disabled by default and requires explicit operator authorization (--approve-real-preview).")
+            if is_real and not dry_run and not vercel_project_id:
+                raise NeedsReview(
+                    "A real-business publish requires a verified Vercel project ID persisted on its tracking project. "
+                    "Use the approved per-business provisioning path; a project name or local .vercel link is not sufficient."
+                )
             if is_real and (not target_project_name or target_project_name == EXPECTED_PREVIEW_PROJECT):
                 raise ValueError(
                     f"Refusing deployment: real-business drafts cannot use or fall back to the shared fictional preview project '{EXPECTED_PREVIEW_PROJECT}'; specify an isolated preview project via --project-name."
