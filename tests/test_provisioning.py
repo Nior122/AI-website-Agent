@@ -49,11 +49,11 @@ class FakeVercelClient:
             "created_at": self._now(),
         }
         self.next_id += 1
+        if self.create_error:
+            raise self.create_error
         if not self.create_then_timeout:
             self.projects_by_id[project["id"]] = project
             self.projects_by_name[name] = project
-        if self.create_error:
-            raise self.create_error
         if self.create_then_timeout:
             self.projects_by_id[project["id"]] = project
             self.projects_by_name[name] = project
