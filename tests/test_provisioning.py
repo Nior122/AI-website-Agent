@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import re
 import unittest
 
@@ -184,6 +184,14 @@ class ProvisioningTests(unittest.TestCase):
         with self.assertRaises(VercelProjectProvisioningError):
             self.provisioner.ensure_project(self.project["project_id"])
         self.assertEqual(len(self.client.create_calls), 1)
+        # Provider timestamps have millisecond precision. Make this fake outcome provably later than
+        # the durable intent rather than depending on two clock reads landing in different milliseconds.
+        name = self.client.create_calls[-1]
+        project = self.client.projects_by_name[name]
+        intent_at = self.store.state["projects"][self.project["project_id"]]["vercel_project_intent_at"]
+        created_after_intent = datetime.fromisoformat(intent_at.replace("Z", "+00:00")) + timedelta(milliseconds=1)
+        project["created_at"] = created_after_intent.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        self.client.projects_by_id[project["id"]]["created_at"] = project["created_at"]
         self.client.create_then_timeout = False
         result = self.provisioner.ensure_project(self.project["project_id"])
         self.assertEqual(len(self.client.create_calls), 1)
