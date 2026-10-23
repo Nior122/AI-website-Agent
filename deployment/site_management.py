@@ -23,6 +23,10 @@ PROTECTED_PROJECT_NAMES = frozenset({
     "ai-website-agent-preview",
     "digitaljoe",
     "portfolio",
+    "josephportifolio",
+    "joseph-portifolio",
+    "josephportfolio",
+    "joseph-portfolio",
 })
 
 
