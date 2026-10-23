@@ -288,6 +288,42 @@ class ManagedSiteService:
                                                 or row.get("vercel_project_name") or "").strip() or None,
                 })
 
+        # Provisioning is persisted before the first publish. Include those project bindings in the
+        # operator inventory immediately, even if the first deployment failed or has not yet run.
+        # Deletion remains blocked below until a successful deployment exists in the durable ledger.
+        for tracking_project_id, project in projects.items():
+            if not isinstance(project, dict):
+                continue
+            vercel_id = str(project.get("vercel_project_id") or "").strip()
+            if not vercel_id:
+                continue
+            lead_id = str(project.get("lead_id") or "")
+            lead = leads.get(lead_id) or {}
+            key = vercel_id
+            row = grouped.get(key)
+            if row is None:
+                row = {
+                    "site_id": _site_id(vercel_id),
+                    "vercel_project_id": vercel_id,
+                    "vercel_project_name": str(project.get("isolated_preview_project") or "").strip() or None,
+                    "business_name": str(lead.get("business_name") or "Unknown business"),
+                    "lead_id": lead_id or None,
+                    "tracking_project_ids": [],
+                    "deployment_id": None,
+                    "deployment_url": None,
+                    "deployment_status": "NOT_DEPLOYED",
+                    "deployment_history_count": 0,
+                    "last_deployed_at": None,
+                    "project_provisioned_at": project.get("vercel_project_bound_at") or project.get("vercel_project_created_at"),
+                    "site_status": "PROJECT_PROVISIONED",
+                    "managed": True,
+                }
+                grouped[key] = row
+            elif not row.get("project_provisioned_at"):
+                row["project_provisioned_at"] = project.get("vercel_project_bound_at") or project.get("vercel_project_created_at")
+            if tracking_project_id and tracking_project_id not in row["tracking_project_ids"]:
+                row["tracking_project_ids"].append(tracking_project_id)
+
         merged: dict[str, dict[str, Any]] = {}
         for base in grouped.values():
             site_id = base["site_id"]
