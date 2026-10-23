@@ -1,6 +1,6 @@
 # Managed business sites and AI outreach drafts
 
-This phase adds inventory and explicit deletion approval for Vercel projects already represented by successful deployment records. It also adds an opt-in AI email copywriter. It does **not** yet create a Vercel project or deploy a new business site automatically; that needs a separate project-provisioning/deployment change so it cannot overwrite the shared preview project.
+This phase adds per-business Vercel project provisioning for approved preview deployments, inventory and explicit deletion approval, and an opt-in AI email copywriter. Project creation is separate from deployment: the agent records a durable creation intent, verifies the provider's returned project ID/name, binds that exact project to one tracked business, and only then attempts to publish. It never repurposes the shared preview project, attaches or purchases custom domains, deploys to production, or deletes a project as part of provisioning.
 
 ## Telegram site commands
 
