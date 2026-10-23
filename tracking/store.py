@@ -385,6 +385,7 @@ def _empty_state() -> dict:
         "inbound_events": {},
         "automation_controls": {},
         "provider_sync": {},
+        "managed_sites": {},
     }
 
 
