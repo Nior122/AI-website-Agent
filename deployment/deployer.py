@@ -204,12 +204,14 @@ class VercelDeploymentProvider:
                     "check": False, "timeout": self.deploy_timeout_seconds,
                 }
                 if vercel_project_id:
-                    # API-created projects are unlinked intentionally. Point the CLI at the verified ID and
-                    # exact team, and provide its credential only through the child environment (never argv/logs).
+                    # API-created projects are unlinked intentionally. Vercel CLI supports headless
+                    # targeting through ORG_ID/PROJECT_ID, avoiding a workspace link or interactive prompt.
+                    # Credentials are passed only in the child environment, never as command-line arguments.
                     client = self._vercel_client()
-                    cmd.extend(["--scope", client.team_id])
                     run_env = os.environ.copy()
                     run_env["VERCEL_TOKEN"] = client.token
+                    run_env["VERCEL_ORG_ID"] = client.team_id
+                    run_env["VERCEL_PROJECT_ID"] = project["projectId"]
                     run_kwargs["env"] = run_env
                 try:
                     completed = self.runner(cmd, **run_kwargs)
