@@ -377,6 +377,9 @@ class ManagedSiteService:
         project = (self.store.state.get("projects") or {}).get(tracking_project_id)
         if not isinstance(project, dict):
             return None
+        lead = (self.store.state.get("leads") or {}).get(project.get("lead_id")) or {}
+        if (lead.get("data_classification") or project.get("data_classification")) != "REAL_PUBLIC_DATA":
+            return None
         if (
             str(project.get("vercel_project_id") or "") != project_id
             or str(project.get("isolated_preview_project") or "") != project_name
