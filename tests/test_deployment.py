@@ -225,5 +225,59 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
 
+    def test_api_bound_project_deploys_without_workspace_link_and_passes_exact_team(self):
+        self.approve_build()
+        client = type("FakeVercelClient", (), {
+            "token": "fixture-token",
+            "team_id": "team_fixture",
+            "get_project": lambda self, project_id: {
+                "id": project_id, "name": "fictional-studio-preview",
+            },
+        })()
+        calls = []
+        def runner(*args, **kwargs):
+            calls.append((args[0], kwargs))
+            return subprocess.CompletedProcess(args[0], 0, "https://fictional-studio-preview-abc.vercel.app\\n", "")
+        from unittest.mock import patch
+        with patch("deployment.site_management.VercelProjectsClient", return_value=client):
+            result = VercelDeploymentProvider(self.root, runner).deploy(
+                self.build, dry_run=False, project_name="fictional-studio-preview",
+                vercel_project_id="prj_managed123",
+            )
+        self.assertEqual(result.deployment_status, "DEPLOYED")
+        self.assertEqual(result.vercel_project_id, "prj_managed123")
+        self.assertEqual(result.metadata["project_name"], "fictional-studio-preview")
+        command, kwargs = calls[0]
+        self.assertIn("--project", command)
+        self.assertEqual(command[command.index("--project") + 1], "prj_managed123")
+        self.assertIn("--scope", command)
+        self.assertEqual(command[command.index("--scope") + 1], "team_fixture")
+        self.assertEqual(kwargs["env"]["VERCEL_TOKEN"], "fixture-token")
+        self.assertNotIn("fixture-token", " ".join(command))
+        self.assertFalse((self.root / ".vercel" / "project.json").exists())
+
+    def test_api_bound_project_name_mismatch_is_refused_before_cli_call(self):
+        self.approve_build()
+        client = type("FakeVercelClient", (), {
+            "token": "fixture-token",
+            "team_id": "team_fixture",
+            "get_project": lambda self, project_id: {
+                "id": project_id, "name": "someone-elses-preview",
+            },
+        })()
+        calls = []
+        def runner(*args, **kwargs):
+            calls.append(args[0])
+            return subprocess.CompletedProcess(args[0], 0, "https://fixture.vercel.app", "")
+        from unittest.mock import patch
+        with patch("deployment.site_management.VercelProjectsClient", return_value=client):
+            result = VercelDeploymentProvider(self.root, runner).deploy(
+                self.build, dry_run=False, project_name="fictional-studio-preview",
+                vercel_project_id="prj_managed123",
+            )
+        self.assertEqual(result.deployment_status, "FAILED")
+        self.assertEqual(result.metadata.get("denial_code"), "VERCEL_PROJECT_BINDING_MISMATCH")
+        self.assertEqual(calls, [])
+
 if __name__ == "__main__":
     unittest.main()
