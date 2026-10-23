@@ -360,6 +360,45 @@ class ManagedSiteService:
         raise SiteManagementError(f"No managed website is recorded as {ident}. Run /sites to see site IDs.",
                                   code="SITE_NOT_FOUND")
 
+    def _verified_provisioned_only_binding(
+        self, site: dict[str, Any], project_id: str, project_name: str,
+    ) -> dict[str, str] | None:
+        """Prove a never-deployed project is an Agent-created one-to-one binding before allowing cleanup."""
+        tracking_ids = site.get("tracking_project_ids") or []
+        if len(tracking_ids) != 1 or int(site.get("deployment_history_count") or 0) != 0:
+            return None
+        tracking_project_id = str(tracking_ids[0] or "").strip()
+        if not tracking_project_id:
+            return None
+        project = (self.store.state.get("projects") or {}).get(tracking_project_id)
+        if not isinstance(project, dict):
+            return None
+        if (
+            str(project.get("vercel_project_id") or "") != project_id
+            or str(project.get("isolated_preview_project") or "") != project_name
+            or str(project.get("vercel_project_status") or "") != "READY"
+        ):
+            return None
+        intent_id = str(project.get("vercel_project_intent_id") or "").strip()
+        provisioned_at = str(project.get("vercel_project_bound_at") or project.get("vercel_project_created_at") or "").strip()
+        history = project.get("vercel_project_binding_history") or []
+        verified_history = any(
+            isinstance(entry, dict)
+            and str(entry.get("vercel_project_id") or "") == project_id
+            and str(entry.get("project_name") or "") == project_name
+            and str(entry.get("source") or "") in {
+                "api-created", "recovered-create-intent", "historical-ledger",
+            }
+            for entry in history
+        )
+        if not intent_id or not provisioned_at or not verified_history:
+            return None
+        return {
+            "tracking_project_id": tracking_project_id,
+            "provisioning_intent_id": intent_id,
+            "project_provisioned_at": provisioned_at,
+        }
+
     def request_delete(self, site_id: str, *, actor: str) -> dict[str, Any]:
         """Create a fingerprint-bound deletion request; this operation does not delete anything."""
         site = self.get_site(site_id, include_deleted=True)
@@ -385,13 +424,18 @@ class ManagedSiteService:
                 code="VERCEL_PROJECT_PROTECTED",
             )
         latest_deployment = self._latest_recorded_deployment(project_id)
+        project_only_binding = None
         if latest_deployment is None:
-            raise SiteManagementError(
-                "No current successful deployment record matches this Vercel project. Reconcile the inventory before requesting deletion.",
-                code="SITE_DEPLOYMENT_RECORD_MISSING",
-            )
-        # Use current ledger evidence, not fields copied from a potentially older deletion snapshot.
-        site.update(latest_deployment)
+            project_only_binding = self._verified_provisioned_only_binding(site, current["id"], current["name"])
+            if project_only_binding is None:
+                raise SiteManagementError(
+                    "No successful deployment or verified never-deployed provisioning binding matches this project. "
+                    "Reconcile the inventory before requesting deletion.",
+                    code="SITE_DEPLOYMENT_RECORD_MISSING",
+                )
+        else:
+            # Use current ledger evidence, not fields copied from a potentially older deletion snapshot.
+            site.update(latest_deployment)
         recorded_name = str(site.get("vercel_project_name") or "").strip()
         if recorded_name and recorded_name != current["name"]:
             raise SiteManagementError(
@@ -410,9 +454,13 @@ class ManagedSiteService:
         requested_at = _now()
         material = {
             "site_id": site_id, "vercel_project_id": current["id"], "vercel_project_name": current["name"],
+            "deletion_target": "PROJECT_ONLY" if project_only_binding else "DEPLOYED_SITE",
             "deployment_id": site.get("deployment_id"), "deployment_url": site.get("deployment_url"),
-            "last_deployed_at": site.get("last_deployed_at"), "request_id": request_id,
-            "requested_by": str(actor or "unknown"), "requested_at": requested_at,
+            "last_deployed_at": site.get("last_deployed_at"),
+            "project_provisioned_at": (project_only_binding or {}).get("project_provisioned_at"),
+            "tracking_project_id": (project_only_binding or {}).get("tracking_project_id"),
+            "provisioning_intent_id": (project_only_binding or {}).get("provisioning_intent_id"),
+            "request_id": request_id, "requested_by": str(actor or "unknown"), "requested_at": requested_at,
         }
         fingerprint = hashlib.sha256(json.dumps(material, sort_keys=True).encode("utf-8")).hexdigest()[:16]
         record = {
@@ -467,12 +515,23 @@ class ManagedSiteService:
         project_id = str(pending.get("vercel_project_id") or "")
         expected_name = str(pending.get("vercel_project_name") or "")
         latest_deployment = self._latest_recorded_deployment(project_id)
-        deployment_changed = (
-            latest_deployment is None
-            or str(latest_deployment.get("deployment_id") or "") != str(pending.get("deployment_id") or "")
-            or str(latest_deployment.get("deployment_url") or "") != str(pending.get("deployment_url") or "")
-            or str(latest_deployment.get("last_deployed_at") or "") != str(pending.get("last_deployed_at") or "")
-        )
+        target_kind = str(pending.get("deletion_target") or "DEPLOYED_SITE")
+        if target_kind == "PROJECT_ONLY":
+            current_binding = self._verified_provisioned_only_binding(record, project_id, expected_name)
+            deployment_changed = (
+                latest_deployment is not None
+                or current_binding is None
+                or current_binding.get("tracking_project_id") != pending.get("tracking_project_id")
+                or current_binding.get("provisioning_intent_id") != pending.get("provisioning_intent_id")
+                or current_binding.get("project_provisioned_at") != pending.get("project_provisioned_at")
+            )
+        else:
+            deployment_changed = (
+                latest_deployment is None
+                or str(latest_deployment.get("deployment_id") or "") != str(pending.get("deployment_id") or "")
+                or str(latest_deployment.get("deployment_url") or "") != str(pending.get("deployment_url") or "")
+                or str(latest_deployment.get("last_deployed_at") or "") != str(pending.get("last_deployed_at") or "")
+            )
         if deployment_changed:
             pending["status"] = "STALE"
             pending["stale_at"] = _now()
