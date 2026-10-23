@@ -633,8 +633,12 @@ class LocalPipelineWorker:
                 # publish; a real publish may only proceed for the assigned, PASS-validated build that
                 # an explicit human approval still covers. The provider re-verifies this itself, so this
                 # check only produces a clearer refusal earlier - it is not the boundary.
-                gate = store.authorize_preview_deployment(project_id, build_id=build_id,
-                                                         resolve_uncertain_publish=bool(job_input.get("resolve_uncertain_publish")))
+                gate = store.authorize_preview_deployment(
+                    project_id,
+                    build_id=build_id,
+                    resolve_uncertain_publish=bool(job_input.get("resolve_uncertain_publish")),
+                    allow_provisioning=bool(job_input.get("approve_real_preview")),
+                )
                 if gate.get("skip_publish"):
                     return WorkerResult(
                         "COMPLETED",
