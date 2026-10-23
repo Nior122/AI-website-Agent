@@ -159,6 +159,27 @@ class ManagedSiteService:
             self.store.refresh()
         self.store.state.setdefault("managed_sites", {})
 
+    def _latest_recorded_deployment(self, vercel_project_id: str) -> dict[str, Any] | None:
+        """Return the newest successful deployment for a Vercel project from the durable ledger."""
+        candidates: list[dict[str, Any]] = []
+        for deployment in (self.store.state.get("deployments") or {}).values():
+            if not isinstance(deployment, dict) or deployment.get("deployment_status") != "DEPLOYED":
+                continue
+            url = str(deployment.get("deployment_url") or "")
+            if not url.startswith("https://"):
+                continue
+            metadata = deployment.get("metadata") if isinstance(deployment.get("metadata"), dict) else {}
+            recorded_id = str(deployment.get("vercel_project_id") or metadata.get("vercel_project_id") or "").strip()
+            if recorded_id != vercel_project_id:
+                continue
+            candidates.append({
+                "deployment_id": str(deployment.get("deployment_id") or ""),
+                "deployment_url": url,
+                "last_deployed_at": str(deployment.get("completed_at") or deployment.get("created_at") or ""),
+            })
+        candidates.sort(key=lambda row: (row["last_deployed_at"], row["deployment_id"]), reverse=True)
+        return candidates[0] if candidates else None
+
     def list_sites(self, *, include_deleted: bool = False, limit: int = 100) -> list[dict[str, Any]]:
         """List projects represented by successful deployment records plus durable deletion tombstones."""
         self._refresh()
@@ -221,8 +242,14 @@ class ManagedSiteService:
         for base in grouped.values():
             site_id = base["site_id"]
             persisted = registry.get(site_id) if isinstance(registry.get(site_id), dict) else {}
-            row = {**base, **copy.deepcopy(persisted)}
+            # Live deployment facts must win over the last lifecycle snapshot. Preserve only the
+            # durable deletion/tombstone state from the registry so a new deployment cannot be hidden
+            # behind an old deletion request.
+            row = {**copy.deepcopy(persisted), **base}
             row["site_id"] = site_id
+            for lifecycle_field in ("site_status", "pending_deletion", "deletion_history", "deleted_at", "updated_at"):
+                if lifecycle_field in persisted:
+                    row[lifecycle_field] = copy.deepcopy(persisted[lifecycle_field])
             if len(row.get("tracking_project_ids") or []) > 1:
                 row["shared_tracking_projects"] = True
             merged[site_id] = row
@@ -271,6 +298,14 @@ class ManagedSiteService:
                 f"Vercel project '{current['name']}' is protected. No deletion request was created.",
                 code="VERCEL_PROJECT_PROTECTED",
             )
+        latest_deployment = self._latest_recorded_deployment(project_id)
+        if latest_deployment is None:
+            raise SiteManagementError(
+                "No current successful deployment record matches this Vercel project. Reconcile the inventory before requesting deletion.",
+                code="SITE_DEPLOYMENT_RECORD_MISSING",
+            )
+        # Use current ledger evidence, not fields copied from a potentially older deletion snapshot.
+        site.update(latest_deployment)
         recorded_name = str(site.get("vercel_project_name") or "").strip()
         if recorded_name and recorded_name != current["name"]:
             raise SiteManagementError(
@@ -289,7 +324,8 @@ class ManagedSiteService:
         requested_at = _now()
         material = {
             "site_id": site_id, "vercel_project_id": current["id"], "vercel_project_name": current["name"],
-            "deployment_url": site.get("deployment_url"), "request_id": request_id,
+            "deployment_id": site.get("deployment_id"), "deployment_url": site.get("deployment_url"),
+            "last_deployed_at": site.get("last_deployed_at"), "request_id": request_id,
             "requested_by": str(actor or "unknown"), "requested_at": requested_at,
         }
         fingerprint = hashlib.sha256(json.dumps(material, sort_keys=True).encode("utf-8")).hexdigest()[:16]
@@ -344,6 +380,24 @@ class ManagedSiteService:
             )
         project_id = str(pending.get("vercel_project_id") or "")
         expected_name = str(pending.get("vercel_project_name") or "")
+        latest_deployment = self._latest_recorded_deployment(project_id)
+        deployment_changed = (
+            latest_deployment is None
+            or str(latest_deployment.get("deployment_id") or "") != str(pending.get("deployment_id") or "")
+            or str(latest_deployment.get("deployment_url") or "") != str(pending.get("deployment_url") or "")
+            or str(latest_deployment.get("last_deployed_at") or "") != str(pending.get("last_deployed_at") or "")
+        )
+        if deployment_changed:
+            pending["status"] = "STALE"
+            pending["stale_at"] = _now()
+            pending["error_code"] = "SITE_DELETE_REQUEST_STALE"
+            record["site_status"] = "DELETE_REVIEW_STALE"
+            record["updated_at"] = _now()
+            self.store._save()
+            raise SiteManagementError(
+                "The website deployment changed after deletion was reviewed. Nothing was deleted; inspect the current site and request a fresh confirmation.",
+                code="SITE_DELETE_REQUEST_STALE",
+            )
         client = self._client()
         current = client.get_project(project_id)
         if current["name"] != expected_name or _is_protected(current["id"], current["name"]):
