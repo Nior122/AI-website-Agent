@@ -50,13 +50,20 @@ class SiteManagementTests(unittest.TestCase):
         self.assertEqual(rows[0]["vercel_project_id"], "prj_Test123")
         self.assertEqual(rows[0]["deployment_history_count"], 1)
 
-    def test_provisioned_project_is_listed_before_first_deployment_but_not_deletable(self):
+    def test_provisioned_project_can_be_reviewed_and_deleted_before_first_deployment(self):
         self.store.state["deployments"].clear()
         self.store.state["projects"]["project-1"].update({
             "vercel_project_id": "prj_Test123",
             "isolated_preview_project": "pitstop-lagos-preview",
             "vercel_project_status": "READY",
             "vercel_project_bound_at": "2026-10-23T10:00:00Z",
+            "vercel_project_intent_id": "provision-intent-1",
+            "vercel_project_binding_history": [{
+                "vercel_project_id": "prj_Test123",
+                "project_name": "pitstop-lagos-preview",
+                "bound_at": "2026-10-23T10:00:00Z",
+                "source": "api-created",
+            }],
         })
         self.store._save()
 
@@ -65,10 +72,19 @@ class SiteManagementTests(unittest.TestCase):
         self.assertEqual(rows[0]["site_status"], "PROJECT_PROVISIONED")
         self.assertEqual(rows[0]["deployment_status"], "NOT_DEPLOYED")
         self.assertIsNone(rows[0]["deployment_url"])
-        with self.assertRaises(SiteManagementError) as caught:
-            self.service.request_delete(rows[0]["site_id"], actor="telegram:1001")
-        self.assertEqual(caught.exception.code, "SITE_DEPLOYMENT_RECORD_MISSING")
+
+        review = self.service.request_delete(rows[0]["site_id"], actor="telegram:1001")
+        self.assertFalse(review["deletion_performed"])
+        self.assertEqual(review["request"]["deletion_target"], "PROJECT_ONLY")
         self.assertEqual(self.client.deleted, [])
+
+        answer = self.service.confirm_delete(
+            rows[0]["site_id"], review["request"]["fingerprint"], actor="telegram:1001"
+        )
+        self.assertEqual(answer["site_status"], "DELETED")
+        self.assertEqual(self.client.deleted, ["prj_Test123"])
+        self.assertEqual(self.service.list_sites(), [])
+        self.assertEqual(self.service.list_sites(include_deleted=True)[0]["site_status"], "DELETED")
 
     def test_request_does_not_delete_and_wrong_fingerprint_is_refused(self):
         site = self.service.list_sites()[0]
