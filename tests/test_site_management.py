@@ -86,6 +86,38 @@ class SiteManagementTests(unittest.TestCase):
         self.assertEqual(self.service.list_sites(), [])
         self.assertEqual(self.service.list_sites(include_deleted=True)[0]["site_status"], "DELETED")
 
+    def test_project_only_delete_approval_becomes_stale_if_first_deployment_arrives(self):
+        self.store.state["deployments"].clear()
+        self.store.state["projects"]["project-1"].update({
+            "vercel_project_id": "prj_Test123",
+            "isolated_preview_project": "pitstop-lagos-preview",
+            "vercel_project_status": "READY",
+            "vercel_project_bound_at": "2026-10-23T10:00:00Z",
+            "vercel_project_intent_id": "provision-intent-1",
+            "vercel_project_binding_history": [{
+                "vercel_project_id": "prj_Test123",
+                "project_name": "pitstop-lagos-preview",
+                "bound_at": "2026-10-23T10:00:00Z",
+                "source": "api-created",
+            }],
+        })
+        self.store._save()
+        site = self.service.list_sites()[0]
+        request = self.service.request_delete(site["site_id"], actor="telegram:1001")["request"]
+        self.assertEqual(request["deletion_target"], "PROJECT_ONLY")
+
+        self.store.state["deployments"]["deployment-2"] = {
+            "deployment_id": "deployment-2", "project_id": "project-1", "lead_id": "lead-1",
+            "deployment_status": "DEPLOYED", "deployment_url": "https://pitstop-lagos-preview.vercel.app",
+            "vercel_project_id": "prj_Test123", "metadata": {"project_name": "pitstop-lagos-preview"},
+            "completed_at": "2026-10-23T11:00:00Z",
+        }
+        self.store._save()
+        with self.assertRaises(SiteManagementError) as caught:
+            self.service.confirm_delete(site["site_id"], request["fingerprint"], actor="telegram:1001")
+        self.assertEqual(caught.exception.code, "SITE_DELETE_REQUEST_STALE")
+        self.assertEqual(self.client.deleted, [])
+
     def test_request_does_not_delete_and_wrong_fingerprint_is_refused(self):
         site = self.service.list_sites()[0]
         answer = self.service.request_delete(site["site_id"], actor="telegram:1001")
