@@ -85,17 +85,19 @@ class VercelProjectsClient:
                 code="VERCEL_TEAM_ID_MISSING",
             )
 
-    def _call(self, method: str, path: str) -> dict[str, Any]:
+    def _call(self, method: str, path: str, *, json_body: dict[str, Any] | None = None) -> dict[str, Any]:
         url = f"{API_ROOT}{path}"
         joiner = "&" if "?" in url else "?"
         url += joiner + urlencode({"teamId": self.team_id})
-        answer = self.request(
-            url,
-            method=method,
-            headers={"Authorization": f"Bearer {self.token}"},
-            timeout=15.0,
-            max_bytes=1_000_000,
-        )
+        request_args: dict[str, Any] = {
+            "method": method,
+            "headers": {"Authorization": f"Bearer {self.token}"},
+            "timeout": 15.0,
+            "max_bytes": 1_000_000,
+        }
+        if json_body is not None:
+            request_args["json_body"] = json_body
+        answer = self.request(url, **request_args)
         if not isinstance(answer, dict):
             raise SiteManagementError("Vercel returned an invalid API response.", code="VERCEL_RESPONSE_INVALID")
         return answer
@@ -120,6 +122,60 @@ class VercelProjectsClient:
             )
         return {"id": actual_id, "name": actual_name, "updated_at": payload.get("updatedAt"),
                 "created_at": payload.get("createdAt")}
+
+    @staticmethod
+    def _normalise_project(payload: Any) -> dict[str, Any]:
+        if isinstance(payload, dict) and isinstance(payload.get("project"), dict):
+            payload = payload["project"]
+        if not isinstance(payload, dict):
+            raise SiteManagementError("Vercel did not return a project record.",
+                                      code="VERCEL_PROJECT_RESPONSE_INVALID")
+        project_id = str(payload.get("id") or "").strip()
+        name = str(payload.get("name") or "").strip()
+        if not re.fullmatch(r"prj_[A-Za-z0-9]+", project_id) or not name:
+            raise SiteManagementError("Vercel returned an invalid project ID/name pair.",
+                                      code="VERCEL_PROJECT_RESPONSE_INVALID")
+        return {"id": project_id, "name": name, "updated_at": payload.get("updatedAt"),
+                "created_at": payload.get("createdAt")}
+
+    def get_project_by_name(self, project_name: str) -> dict[str, Any] | None:
+        """Look up a project name without ever treating an API outage as name availability."""
+        name = str(project_name or "").strip()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,62}", name):
+            raise SiteManagementError("A valid lowercase Vercel project name is required.",
+                                      code="VERCEL_PROJECT_NAME_INVALID")
+        try:
+            answer = self._call("GET", f"/v9/projects/{quote(name, safe='')}")
+        except ProviderError as error:
+            if error.status == 404:
+                return None
+            raise
+        project = self._normalise_project(answer.get("json"))
+        if project["name"] != name:
+            raise SiteManagementError("Vercel project lookup returned a different name; refusing to adopt it.",
+                                      code="VERCEL_PROJECT_IDENTITY_MISMATCH")
+        return project
+
+    def create_project(self, project_name: str) -> dict[str, Any]:
+        """Create a standalone, unlinked static-site project; this method never attaches domains."""
+        name = str(project_name or "").strip()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,62}", name):
+            raise SiteManagementError("A valid lowercase Vercel project name is required.",
+                                      code="VERCEL_PROJECT_NAME_INVALID")
+        answer = self._call("POST", "/v11/projects", json_body={
+            "name": name,
+            "framework": None,
+            "buildCommand": None,
+            "devCommand": None,
+            "installCommand": None,
+            "outputDirectory": None,
+            "skipGitConnectDuringLink": True,
+        })
+        project = self._normalise_project(answer.get("json"))
+        if project["name"] != name:
+            raise SiteManagementError("Vercel created a project with a different name; refusing deployment.",
+                                      code="VERCEL_PROJECT_IDENTITY_MISMATCH")
+        return project
 
     def delete_project(self, project_id: str, *, expected_name: str) -> dict[str, Any]:
         """Delete only the exact project reviewed by the operator. Re-read identity immediately before DELETE."""
