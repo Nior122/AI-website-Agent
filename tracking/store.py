@@ -1492,8 +1492,10 @@ class TrackingStore:
         result.update(extra)
         return result
 
-    def authorize_preview_deployment(self, project_id: str, *, build_id: str | None = None, action: str = PREVIEW_DEPLOYMENT_ACTION,
-                                     resolve_uncertain_publish: bool = False) -> dict:
+    def authorize_preview_deployment(
+        self, project_id: str, *, build_id: str | None = None, action: str = PREVIEW_DEPLOYMENT_ACTION,
+        resolve_uncertain_publish: bool = False, allow_provisioning: bool = False,
+    ) -> dict:
         """Answer 'may this exact build be published right now?' for every server-side entry point.
 
         This is the durable audit-side half of the deployment gate: it reads project ownership,
@@ -1643,11 +1645,22 @@ class TrackingStore:
             )
         if data_class == "REAL_PUBLIC_DATA":
             effective_target = str(p.get("isolated_preview_project") or "").strip()
-            if not effective_target or effective_target == SHARED_FICTIONAL_PREVIEW_PROJECT:
+            # Public authorization/read endpoints retain the strict existing rule. Only the two real
+            # deploy entry points may defer a *missing* target to the provisioner, and only when the caller
+            # separately requested the real-preview workflow. A shared/production/custom target is never
+            # made acceptable by this option. The exact build approval capability is checked immediately
+            # below before the gate can return authorized=True.
+            may_provision_target = (
+                bool(allow_provisioning)
+                and not effective_target
+                and not str(p.get("vercel_project_id") or "").strip()
+            )
+            if (not effective_target and not may_provision_target) or effective_target == SHARED_FICTIONAL_PREVIEW_PROJECT:
                 return self._authorization_result(
                     False, "REAL_ISOLATED_TARGET_REQUIRED",
                     f"Real-business project {project_id} must configure an isolated preview project "
-                    f"(never the shared fictional '{SHARED_FICTIONAL_PREVIEW_PROJECT}') before it can be deployed.",
+                    f"(never the shared fictional '{SHARED_FICTIONAL_PREVIEW_PROJECT}') before it can be deployed, "
+                    "unless the approved deploy workflow is explicitly provisioning a new isolated project.",
                     build_id=assigned, validation_id=validation_id, review_id=review_id, **common,
                 )
         build_dir = self._build_directory(build, self.state.get("build_artifacts"))
