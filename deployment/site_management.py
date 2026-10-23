@@ -29,6 +29,8 @@ PROTECTED_PROJECT_NAMES = frozenset({
     "joseph-portifolio",
     "josephportfolio",
     "joseph-portfolio",
+    # Existing non-agent project explicitly refused by the deployment provider as a target.
+    "grace-light-community-church",
 })
 
 
@@ -424,6 +426,17 @@ class ManagedSiteService:
             raise SiteManagementError(
                 f"Vercel project '{current['name']}' is protected. No deletion request was created.",
                 code="VERCEL_PROJECT_PROTECTED",
+            )
+        clean_name = str(current.get("name") or "").strip()
+        if (
+            not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,62}", clean_name)
+            or "preview" not in clean_name
+            or re.search(r"(?:^|-)prod(?:uction)?(?:$|-)|(?:^|-)live(?:$|-)", clean_name)
+        ):
+            raise SiteManagementError(
+                "Site commands can delete only dedicated preview projects. This project is not an eligible "
+                "managed preview target; nothing was deleted.",
+                code="VERCEL_PROJECT_TARGET_INVALID",
             )
         latest_deployment = self._latest_recorded_deployment(project_id)
         project_only_binding = None
