@@ -50,6 +50,21 @@ class SiteManagementTests(unittest.TestCase):
         self.assertEqual(rows[0]["vercel_project_id"], "prj_Test123")
         self.assertEqual(rows[0]["deployment_history_count"], 1)
 
+    def test_unpublished_project_without_durable_binding_proof_cannot_be_deleted(self):
+        self.store.state["deployments"].clear()
+        self.store.state["projects"]["project-1"].update({
+            "vercel_project_id": "prj_Test123",
+            "isolated_preview_project": "pitstop-lagos-preview",
+            "vercel_project_status": "READY",
+            "vercel_project_bound_at": "2026-10-23T10:00:00Z",
+        })
+        self.store._save()
+        site = self.service.list_sites()[0]
+        with self.assertRaises(SiteManagementError) as caught:
+            self.service.request_delete(site["site_id"], actor="telegram:1001")
+        self.assertEqual(caught.exception.code, "SITE_DEPLOYMENT_RECORD_MISSING")
+        self.assertEqual(self.client.deleted, [])
+
     def test_provisioned_project_can_be_reviewed_and_deleted_before_first_deployment(self):
         self.store.state["deployments"].clear()
         self.store.state["projects"]["project-1"].update({
