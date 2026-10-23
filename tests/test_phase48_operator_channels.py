@@ -333,6 +333,25 @@ class ReadCommandTests(BotTestCase):
         self.assertEqual(self.command("/project project-9999")["code"], "PROJECT_NOT_FOUND")
         self.assertEqual(self.command("/package")["code"], "PROJECT_ID_REQUIRED")
 
+    def test_publish_queue_binds_explicit_isolated_project_creation_consent(self) -> None:
+        project = self.store.state["projects"][self.project["project_id"]]
+        project["assigned_build_id"] = "build-fixture-approved"
+        self.store._save()
+        with mock.patch.object(
+            self.store, "authorize_preview_deployment",
+            return_value={"authorized": True, "code": "AUTHORIZED"},
+        ) as gate:
+            answer = self.bot._queue_publish(
+                self.project["project_id"], user_id=OPERATOR, chat_id=CHAT,
+            )
+
+        self.assertEqual(answer["code"], "PUBLISH_JOB_QUEUED")
+        gate.assert_called_once_with(self.project["project_id"], allow_provisioning=True)
+        job = self.store.state["jobs"][answer["job_id"]]
+        self.assertFalse(job["dry_run"])
+        self.assertTrue(job["input"]["approve_real_preview"])
+        self.assertIn("isolated Vercel project creation", job["input"]["note"])
+
     def test_help_is_generated_from_the_same_registry_the_bot_dispatches_from(self) -> None:
         reply = self.command("/help")["reply"]
         for name in COMMANDS:
