@@ -636,6 +636,8 @@ class TrackingStore:
 
     def begin_vercel_project_provisioning(self, project_id: str, project_name: str, *, base_name: str) -> dict:
         """Persist project-creation intent before contacting Vercel; do not silently repoint a manual target."""
+        if self.db_backend is not None:
+            self.refresh()
         p = self.state["projects"].get(project_id)
         if not p:
             raise ValueError(f"Unknown project: {project_id}")
@@ -673,6 +675,8 @@ class TrackingStore:
         return p
 
     def mark_vercel_project_create_uncertain(self, project_id: str, *, error_code: str) -> dict:
+        if self.db_backend is not None:
+            self.refresh()
         p = self.state["projects"].get(project_id)
         if not p:
             raise ValueError(f"Unknown project: {project_id}")
@@ -687,6 +691,8 @@ class TrackingStore:
         return p
 
     def mark_vercel_project_name_conflict(self, project_id: str, *, project_name: str) -> dict:
+        if self.db_backend is not None:
+            self.refresh()
         p = self.state["projects"].get(project_id)
         if not p:
             raise ValueError(f"Unknown project: {project_id}")
@@ -706,6 +712,8 @@ class TrackingStore:
         provider_created_at: object = None, binding_source: str = "api-created",
     ) -> dict:
         """Persist a verified one-to-one mapping between a tracked business and its Vercel project."""
+        if self.db_backend is not None:
+            self.refresh()
         p = self.state["projects"].get(project_id)
         if not p:
             raise ValueError(f"Unknown project: {project_id}")
