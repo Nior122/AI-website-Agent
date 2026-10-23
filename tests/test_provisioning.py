@@ -129,6 +129,25 @@ class ProvisioningTests(unittest.TestCase):
                 binding_source="historical-ledger",
             )
 
+    def test_missing_local_provider_configuration_does_not_leave_create_intent(self):
+        from unittest.mock import patch
+
+        with patch.object(
+            self.provisioner, "_api",
+            side_effect=VercelProjectProvisioningError(
+                "Vercel project management is not configured.",
+                code="VERCEL_TOKEN_MISSING",
+            ),
+        ):
+            with self.assertRaises(VercelProjectProvisioningError) as caught:
+                self.provisioner.ensure_project(self.project["project_id"])
+
+        self.assertEqual(caught.exception.code, "VERCEL_TOKEN_MISSING")
+        saved = self.store.state["projects"][self.project["project_id"]]
+        self.assertFalse(saved.get("vercel_project_intent_at"))
+        self.assertFalse(saved.get("vercel_project_id"))
+        self.assertEqual(self.client.create_calls, [])
+
     def test_creates_and_binds_once_then_reuses_exact_project_id(self):
         first = self.provisioner.ensure_project(self.project["project_id"])
         second = self.provisioner.ensure_project(self.project["project_id"])
