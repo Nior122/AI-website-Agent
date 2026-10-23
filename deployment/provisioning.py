@@ -193,25 +193,25 @@ class VercelProjectProvisioner:
         if remote is not None:
             intended = _epoch_ms(intent_at)
             created = _epoch_ms(remote.get("created_at"))
-            if intended is not None and created is not None and created >= intended:
-                live = self._verify(remote["id"], name)
-                try:
-                    self.store.bind_vercel_project(
-                        tracking_project_id, vercel_project_id=live["id"], project_name=live["name"],
-                        provider_created_at=live.get("created_at"), binding_source="recovered-create-intent",
-                    )
-                except ValueError as error:
-                    raise VercelProjectProvisioningError(str(error), code="VERCEL_PROJECT_BINDING_CONFLICT") from None
-                return live
-            if status == "CREATE_UNCERTAIN":
+            # Only a timestamp strictly later than the high-precision local intent can prove this
+            # is the project created by the interrupted request. Missing/equal/earlier timestamps
+            # are ambiguous (including provider clock skew), so never adopt or create a replacement.
+            if intended is None or created is None or created <= intended:
                 raise VercelProjectProvisioningError(
-                    "A project with the requested name exists, but its creation time does not prove it came from "
-                    "this agent's recorded intent. Nothing was adopted or deployed; review the exact project ID.",
+                    "A project with the requested name exists, but its provider creation timestamp does not "
+                    "prove it was created after this exact request. Nothing was adopted or deployed; review "
+                    "the exact project ID and resolve the intent before retrying.",
                     code="VERCEL_PROJECT_OWNERSHIP_UNCERTAIN",
                 )
-            # A project that pre-dates a known, still-unsubmitted intent is a collision, not a project to adopt.
-            self.store.mark_vercel_project_name_conflict(tracking_project_id, project_name=name)
-            return self._create_with_next_name(tracking_project_id, project, base_name=str(project.get("vercel_project_base_name") or name), first_ordinal=2)
+            live = self._verify(remote["id"], name)
+            try:
+                self.store.bind_vercel_project(
+                    tracking_project_id, vercel_project_id=live["id"], project_name=live["name"],
+                    provider_created_at=live.get("created_at"), binding_source="recovered-create-intent",
+                )
+            except ValueError as error:
+                raise VercelProjectProvisioningError(str(error), code="VERCEL_PROJECT_BINDING_CONFLICT") from None
+            return live
         if status in {"CREATE_INTENT", "CREATE_UNCERTAIN"}:
             if status == "CREATE_INTENT":
                 self.store.mark_vercel_project_create_uncertain(
