@@ -93,6 +93,42 @@ class ProvisioningTests(unittest.TestCase):
         self.assertRegex(first, r"^[a-z0-9][a-z0-9-]+$")
         self.assertIn("preview", first)
 
+    def test_existing_unbound_create_intent_cannot_issue_a_second_create(self):
+        name = project_name_base(
+            self.lead["business_name"], self.project["project_id"], self.project["lead_id"],
+        )
+        self.store.begin_vercel_project_provisioning(
+            self.project["project_id"], name, base_name=name,
+        )
+        intent = self.store.state["projects"][self.project["project_id"]]["vercel_project_intent_id"]
+        with self.assertRaisesRegex(ValueError, "intent already exists"):
+            self.store.begin_vercel_project_provisioning(
+                self.project["project_id"], name, base_name=name,
+            )
+        saved = self.store.state["projects"][self.project["project_id"]]
+        self.assertEqual(saved["vercel_project_status"], "CREATE_INTENT")
+        self.assertEqual(saved["vercel_project_intent_id"], intent)
+        self.assertEqual(self.client.create_calls, [])
+
+    def test_same_vercel_project_id_cannot_be_bound_to_two_tracking_projects(self):
+        first = self.provisioner.ensure_project(self.project["project_id"])
+        other_lead = self.store.create_lead({
+            "business_name": "Second Independent Business",
+            "city": "Abuja",
+            "country": "Nigeria",
+            "qualification_status": "QUALIFIED",
+            "data_classification": "REAL_PUBLIC_DATA",
+            "demo": False,
+        })
+        other_project = self.store.create_project(other_lead["lead_id"])
+        with self.assertRaisesRegex(ValueError, "already bound to tracked project"):
+            self.store.bind_vercel_project(
+                other_project["project_id"],
+                vercel_project_id=first["id"],
+                project_name=first["name"],
+                binding_source="historical-ledger",
+            )
+
     def test_creates_and_binds_once_then_reuses_exact_project_id(self):
         first = self.provisioner.ensure_project(self.project["project_id"])
         second = self.provisioner.ensure_project(self.project["project_id"])
