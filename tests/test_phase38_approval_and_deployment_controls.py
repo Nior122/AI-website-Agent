@@ -773,6 +773,13 @@ class EntryPathParityTests(ApprovalTestCase):
             "get_project": lambda self, project_id: {
                 "id": project_id, "name": "fictional-salon-preview",
             },
+            # The managed publish path must prove project ownership and READY state via provider read-back.
+            "get_deployment_by_url": lambda self, url: {
+                "id": "dpl_fixture",
+                "url": "fictional-studio-git-preview.vercel.app",
+                "project_id": "prj_fixture",
+                "ready_state": "READY",
+            },
         })()
         from unittest.mock import patch
         with patch("deployment.site_management.VercelProjectsClient", return_value=api_client):
