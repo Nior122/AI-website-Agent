@@ -124,7 +124,7 @@ class VercelProjectsClient:
                 code="VERCEL_PROJECT_IDENTITY_MISMATCH",
             )
         return {"id": actual_id, "name": actual_name, "updated_at": payload.get("updatedAt"),
-                "created_at": payload.get("createdAt")}
+                "created_at": payload.get("createdAt"), "sso_protection": payload.get("ssoProtection")}
 
     def get_deployment_by_url(self, deployment_url: str) -> dict[str, Any]:
         """Fetch an exact Vercel preview deployment by hostname for authoritative post-publish checks."""
@@ -189,7 +189,7 @@ class VercelProjectsClient:
             raise SiteManagementError("Vercel returned an invalid project ID/name pair.",
                                       code="VERCEL_PROJECT_RESPONSE_INVALID")
         return {"id": project_id, "name": name, "updated_at": payload.get("updatedAt"),
-                "created_at": payload.get("createdAt")}
+                "created_at": payload.get("createdAt"), "sso_protection": payload.get("ssoProtection")}
 
     def get_project_by_name(self, project_name: str) -> dict[str, Any] | None:
         """Look up a project name without ever treating an API outage as name availability."""
@@ -210,22 +210,47 @@ class VercelProjectsClient:
         return project
 
     def create_project(self, project_name: str) -> dict[str, Any]:
-        """Create a standalone, unlinked static-site project; this method never attaches domains."""
+        """Create an isolated static-site project with verified public preview access."""
         name = str(project_name or "").strip()
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,62}", name):
             raise SiteManagementError("A valid lowercase Vercel project name is required.",
                                       code="VERCEL_PROJECT_NAME_INVALID")
-        # Keep this payload minimal: no Git repository, environment variables, domains, or
-        # framework-specific build settings are attached during provisioning.
-                # Customer previews are intended to be opened directly by the business, without requiring
-        # the operator to grant Vercel-team access. Explicitly clear inherited Vercel Authentication
-        # on the standalone preview project; the published payload is validated public-site content.
-        answer = self._call("POST", "/v11/projects", json_body={"name": name, "ssoProtection": None})
+        # Keep the create payload minimal: no Git repository, environment variables, or domains.
+        answer = self._call("POST", "/v11/projects", json_body={"name": name})
         project = self._normalise_project(answer.get("json"))
         if project["name"] != name:
             raise SiteManagementError("Vercel created a project with a different name; refusing deployment.",
                                       code="VERCEL_PROJECT_IDENTITY_MISMATCH")
-        return project
+        # Team defaults can enable Vercel Authentication on new projects. Customer-facing previews are
+        # intentionally public, so clear that one setting and verify the result before binding/deploying.
+        return self.ensure_public_preview_access(project["id"], expected_name=name)
+
+    def ensure_public_preview_access(self, project_id: str, *, expected_name: str) -> dict[str, Any]:
+        """Ensure the verified standalone preview is not protected by team-only Vercel Authentication."""
+        current = self.get_project(project_id)
+        if current["name"] != expected_name:
+            raise SiteManagementError(
+                "Vercel project identity changed while configuring customer preview access.",
+                code="VERCEL_PROJECT_IDENTITY_MISMATCH",
+            )
+        if current.get("sso_protection") is not None:
+            self._call(
+                "PATCH", f"/v9/projects/{quote(project_id, safe='')}",
+                json_body={"ssoProtection": None},
+            )
+        verified = self.get_project(project_id)
+        if verified["name"] != expected_name or verified["id"] != project_id:
+            raise SiteManagementError(
+                "Vercel project identity did not match after access configuration; refusing deployment.",
+                code="VERCEL_PROJECT_IDENTITY_MISMATCH",
+            )
+        if verified.get("sso_protection") is not None:
+            raise SiteManagementError(
+                "Vercel Authentication is still enabled on the customer preview; deployment is blocked until "
+                "the preview can be opened without Vercel-team membership.",
+                code="VERCEL_PREVIEW_ACCESS_NOT_PUBLIC",
+            )
+        return verified
 
     def delete_project(self, project_id: str, *, expected_name: str) -> dict[str, Any]:
         """Delete only the exact project reviewed by the operator. Re-read identity immediately before DELETE."""
