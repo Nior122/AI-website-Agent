@@ -285,6 +285,16 @@ class ProvisioningTests(unittest.TestCase):
         )
 
 
+    def test_customer_project_with_vercel_authentication_enabled_is_refused(self):
+        binding = self.provisioner.ensure_project(self.project["project_id"])
+        self.client.projects_by_id[binding["id"]]["sso_protection"] = {
+            "deploymentType": "all_except_custom_domains",
+        }
+        with self.assertRaises(VercelProjectProvisioningError) as caught:
+            self.provisioner.ensure_project(self.project["project_id"])
+        self.assertEqual(caught.exception.code, "VERCEL_PREVIEW_ACCESS_NOT_PUBLIC")
+        self.assertEqual(len(self.client.create_calls), 1)
+
 class VercelProjectsClientTests(unittest.TestCase):
     def test_deployment_readback_is_team_scoped_and_normalizes_authoritative_identity(self):
         recorded = {}
