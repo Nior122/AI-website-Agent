@@ -6,7 +6,7 @@ from tracking.store import TrackingStore
 
 class WorkerTests(unittest.TestCase):
  def setUp(self):
-  self.tmp=tempfile.TemporaryDirectory(); self.s=TrackingStore(Path(self.tmp.name)/"state.json"); self.j=JobService(self.s,max_attempts=2); self.r=WorkerRegistry(self.s,lease_seconds=1,heartbeat_seconds=60,preferences={"BUILD":["a","b"]}); self.l=self.s.create_lead({"business_name":"Fictional","qualification_status":"QUALIFIED"}); self.p=self.s.create_project(self.l["lead_id"])
+  self.tmp=tempfile.TemporaryDirectory(); self.s=TrackingStore(Path(self.tmp.name)/"state.json"); self.j=JobService(self.s,max_attempts=2); self.r=WorkerRegistry(self.s,lease_seconds=30,heartbeat_seconds=60,preferences={"BUILD":["a","b"]}); self.l=self.s.create_lead({"business_name":"Fictional","qualification_status":"QUALIFIED"}); self.p=self.s.create_project(self.l["lead_id"])
   self.r.register("a",name="A",worker_type="LOCAL_AGENT",capabilities=["BUILD"],priority=1); self.r.register("b",name="B",worker_type="REMOTE_AGENT",capabilities=["BUILD"],priority=2); self.r.register("human",name="Human",worker_type="HUMAN",capabilities=["BUILD"])
  def tearDown(self): self.tmp.cleanup()
  def job(self,i="build",build=None): return self.j.create("BUILD",job_id=i,lead_id=self.l["lead_id"],project_id=self.p["project_id"],build_id=build)
