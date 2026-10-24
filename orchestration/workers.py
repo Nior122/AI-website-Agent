@@ -57,7 +57,7 @@ class WorkerRegistry:
         if job["job_type"] in {"BUILD","VALIDATE","DEPLOY","DEPLOY_PREVIEW"} and job.get("build_id") and job["project_id"]:
             p=self.store.state["projects"].get(job["project_id"])
             if not p or (job["job_type"]!="BUILD" and p.get("assigned_build_id")!=job["build_id"]) or (job["job_type"]=="BUILD" and p.get("assigned_build_id") and p.get("assigned_build_id")!=job["build_id"]): raise ValueError("Job build version is stale for this project.")
-        stamp=_now(); expiry=(datetime.now(timezone.utc)+timedelta(seconds=self.lease_seconds)).replace(microsecond=0).isoformat().replace("+00:00","Z"); lease=f"lease-{uuid4().hex}"
+        stamp=_now(); expiry=(datetime.now(timezone.utc)+timedelta(seconds=self.lease_seconds)).isoformat().replace("+00:00","Z"); lease=f"lease-{uuid4().hex}"
         job.update({"status":"RUNNING","attempts":job["attempts"]+1,"started_at":job.get("started_at") or stamp,"updated_at":stamp,"heartbeat_at":stamp,"lease":{"lease_id":lease,"worker_id":worker_id,"claimed_at":stamp,"heartbeat_at":stamp,"expires_at":expiry}})
         worker.update({"status":"BUSY","current_job_id":job_id,"updated_at":stamp})
         if job.get("project_id") and job["job_type"] in MUTATING: self.store.state["project_locks"][job["project_id"]]={"project_id":job["project_id"],"job_id":job_id,"worker_id":worker_id,"lease_id":lease,"expires_at":expiry}
@@ -66,7 +66,7 @@ class WorkerRegistry:
         self._refresh()
         job=self.store.state["jobs"].get(job_id); lease=(job or {}).get("lease",{})
         if lease.get("worker_id")!=worker_id or lease.get("lease_id")!=lease_id: raise ValueError("Invalid worker lease.")
-        expiry=(datetime.now(timezone.utc)+timedelta(seconds=self.lease_seconds)).replace(microsecond=0).isoformat().replace("+00:00","Z"); lease.update({"heartbeat_at":_now(),"expires_at":expiry}); job["heartbeat_at"]=_now()
+        expiry=(datetime.now(timezone.utc)+timedelta(seconds=self.lease_seconds)).isoformat().replace("+00:00","Z"); lease.update({"heartbeat_at":_now(),"expires_at":expiry}); job["heartbeat_at"]=_now()
         lock=self.store.state["project_locks"].get(job.get("project_id"));
         if lock and lock["lease_id"]==lease_id: lock["expires_at"]=expiry
         self.store._save(); return job
@@ -633,8 +633,12 @@ class LocalPipelineWorker:
                 # publish; a real publish may only proceed for the assigned, PASS-validated build that
                 # an explicit human approval still covers. The provider re-verifies this itself, so this
                 # check only produces a clearer refusal earlier - it is not the boundary.
-                gate = store.authorize_preview_deployment(project_id, build_id=build_id,
-                                                         resolve_uncertain_publish=bool(job_input.get("resolve_uncertain_publish")))
+                gate = store.authorize_preview_deployment(
+                    project_id,
+                    build_id=build_id,
+                    resolve_uncertain_publish=bool(job_input.get("resolve_uncertain_publish")),
+                    allow_provisioning=bool(job_input.get("approve_real_preview")),
+                )
                 if gate.get("skip_publish"):
                     return WorkerResult(
                         "COMPLETED",
@@ -662,13 +666,52 @@ class LocalPipelineWorker:
                         },
                         retryable=False,
                     )
+            lead = (store.state.get("leads") or {}).get(p.get("lead_id")) or {}
+            is_real_business = (lead.get("data_classification") or p.get("data_classification")) == "REAL_PUBLIC_DATA"
+            provisioned_target = None
+            if not dry_run and is_real_business:
+                # A human must first authorize this exact validated build through the normal gate above,
+                # and the job must also explicitly request a real-business preview. Never create cloud
+                # resources merely because an operator names a target project.
+                if not job_input.get("approve_real_preview"):
+                    return WorkerResult(
+                        "NEEDS_REVIEW",
+                        error="REAL_PUBLIC_DATA deployments require explicit approve_real_preview after the current build approval gate. No Vercel project was created.",
+                        output={
+                            "lead_id": p["lead_id"], "project_id": project_id, "build_id": build_id,
+                            "validation_id": p.get("latest_validation_id"),
+                            "outcome": "REAL_PREVIEW_PROVISIONING_NOT_APPROVED",
+                            "authorization_code": "REAL_PREVIEW_APPROVAL_FLAG_REQUIRED",
+                            "dry_run": False,
+                        },
+                        retryable=False,
+                    )
+                try:
+                    from deployment.provisioning import VercelProjectProvisioner, VercelProjectProvisioningError
+                    provisioned_target = VercelProjectProvisioner(store).ensure_project(project_id)
+                except VercelProjectProvisioningError as error:
+                    return WorkerResult(
+                        "NEEDS_REVIEW",
+                        error=f"{error.code}: {error}",
+                        output={
+                            "lead_id": p["lead_id"], "project_id": project_id, "build_id": build_id,
+                            "validation_id": p.get("latest_validation_id"),
+                            "outcome": "VERCEL_PROJECT_PROVISIONING_BLOCKED",
+                            "authorization_code": error.code,
+                            "dry_run": False,
+                        },
+                        retryable=False,
+                    )
             provider = self.deployment_provider or VercelDeploymentProvider(self.repository_root)
             deploy_kwargs = {
                 "dry_run": dry_run,
                 "approve_needs_review": bool(job_input.get("approve_needs_review")),
                 "approve_real_preview": bool(job_input.get("approve_real_preview")),
-                "project_name": job_input.get("project_name") or p.get("isolated_preview_project"),
+                "project_name": (provisioned_target or {}).get("name")
+                    or job_input.get("project_name") or p.get("isolated_preview_project"),
             }
+            if provisioned_target is not None:
+                deploy_kwargs["vercel_project_id"] = provisioned_target["id"]
             if not dry_run:
                 deploy_kwargs["resolve_uncertain_publish"] = bool(job_input.get("resolve_uncertain_publish"))
                 # A worker-driven resolution is attributed to the operator named in the job or in the

@@ -1065,7 +1065,7 @@ class TelegramDemoApprovalTests(OutboundFixture):
         gate = self.store.authorize_preview_deployment(project_id)
         self.assertTrue(gate["authorized"])
         self.assertEqual(gate["code"], "APPROVED_FOR_DEPLOYMENT")
-        self.assertEqual(answer["buttons"], [["Queue preview publish"]],
+        self.assertEqual(answer["buttons"], [["Create isolated Vercel project + publish preview"]],
                          "publishing is offered as a second, separate action")
 
     def test_the_capability_file_records_the_provenance_without_claiming_a_verified_identity(self) -> None:
@@ -1197,8 +1197,11 @@ class TelegramSendSurfaceTests(OutboundFixture):
         self.assertEqual(armed["buttons"], [["Confirm: send it now", "Preview only (no provider contact)"]])
         self.assertEqual(self.client.calls, [], "arming must not contact the provider")
         body = str(self.store.state["outreach"][draft["outreach_id"]]["draft_message"])
-        self.assertNotIn(body[:40], armed["reply"], "the body is not pasted into the chat")
-        self.assertIn("The body is not reproduced here", armed["reply"])
+        self.assertIn(body, armed["reply"], "the exact email body must be previewed before confirmation")
+        self.assertIn(draft["recipient"], armed["reply"], "the exact recipient must be visible before confirmation")
+        self.assertIn(draft["subject"], armed["reply"])
+        self.assertIn(draft["preview_url"], armed["reply"])
+        self.assertIn(content_fingerprint(draft), armed["reply"])
         self.assertIn("There is no undo, and no retry", armed["reply"])
 
         fingerprint = content_fingerprint(self.store.state["outreach"][draft["outreach_id"]])

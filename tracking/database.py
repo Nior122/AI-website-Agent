@@ -410,7 +410,7 @@ class RelationalStateBackend:
     #: ``system_kv`` - the mechanism ``worker_routing`` already uses. The engagement ledger lives here so a
     #: PostgreSQL deployment persists it with no new DDL in this phase; promoting it to real tables (with
     #: per-row idempotency and indexes) is the migration that should follow, not a reason to lose records now.
-    KV_PERSISTED_COLLECTIONS = ("worker_routing", "engagements", "proposals", "follow_ups", "outcomes", "contact_blocks", "relationships", "inbound_events", "automation_controls", "provider_sync")
+    KV_PERSISTED_COLLECTIONS = ("worker_routing", "engagements", "proposals", "follow_ups", "outcomes", "contact_blocks", "relationships", "inbound_events", "automation_controls", "provider_sync", "managed_sites")
 
     def identity(self) -> dict[str, Any]:
         """Where this connection string points, with every secret removed.

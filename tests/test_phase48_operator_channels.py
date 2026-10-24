@@ -120,6 +120,7 @@ class BotTestCase(unittest.TestCase):
         self.store.state["outreach"][outreach_id] = {
             "outreach_id": outreach_id, "project_id": self.project["project_id"], "lead_id": self.lead["lead_id"],
             "channel": channel, "status": status, "recipient": "aisha@pitstop.ng",
+            "subject": "Your website preview is ready",
             "draft_message": "Hi Fictional Pitstop Test, a concept is ready: https://preview.example/demo",
             "preview_url": "https://preview.example/demo", "generated_at": "2026-10-16T00:00:00Z",
             "review_notes": None, "build_id": None, "deployment_id": None,
@@ -332,6 +333,25 @@ class ReadCommandTests(BotTestCase):
         self.assertEqual(self.command("/project project-9999")["code"], "PROJECT_NOT_FOUND")
         self.assertEqual(self.command("/package")["code"], "PROJECT_ID_REQUIRED")
 
+    def test_publish_queue_binds_explicit_isolated_project_creation_consent(self) -> None:
+        project = self.store.state["projects"][self.project["project_id"]]
+        project["assigned_build_id"] = "build-fixture-approved"
+        self.store._save()
+        with mock.patch.object(
+            self.store, "authorize_preview_deployment",
+            return_value={"authorized": True, "code": "AUTHORIZED"},
+        ) as gate:
+            answer = self.bot._queue_publish(
+                self.project["project_id"], user_id=OPERATOR, chat_id=CHAT,
+            )
+
+        self.assertEqual(answer["code"], "PUBLISH_JOB_QUEUED")
+        gate.assert_called_once_with(self.project["project_id"], allow_provisioning=True)
+        job = self.store.state["jobs"][answer["job_id"]]
+        self.assertFalse(job["dry_run"])
+        self.assertTrue(job["input"]["approve_real_preview"])
+        self.assertIn("isolated Vercel project creation", job["input"]["note"])
+
     def test_help_is_generated_from_the_same_registry_the_bot_dispatches_from(self) -> None:
         reply = self.command("/help")["reply"]
         for name in COMMANDS:
@@ -416,16 +436,21 @@ class ApprovalTests(BotTestCase):
         row = self.store.state["outreach"][outreach_id]
         self.assertEqual(row["status"], "READY_TO_SEND", "READY_TO_SEND is not SENT, and the bot cannot make it so")
 
-    def test_the_review_list_points_at_drafts_without_reproducing_them(self) -> None:
-        self.draft()
+    def test_review_list_is_minimal_but_explicit_review_shows_full_email_preview(self) -> None:
+        draft_id = self.draft()
+        draft = self.store.state["outreach"][draft_id]
         answer = self.command("/review")
         self.assertEqual(answer["code"], "REVIEW_LIST")
         self.assertIn("await your review", answer["reply"])
-        answer = self.command(f"/review {next(iter(self.store.state['outreach']))}")
+        self.assertNotIn("a concept is ready", answer["reply"], "the list view stays minimal")
+        answer = self.command(f"/review {draft_id}")
         prompt = answer["reply"]
         self.assertEqual(answer["buttons"], [["Approve for sending", "Reject"], ["Ask for changes"]])
-        self.assertNotIn("a concept is ready", prompt, "the draft body stays out of the chat")
-        self.assertNotIn("aisha@pitstop.ng", prompt, "the recipient is shown masked, never whole")
+        self.assertIn(draft["draft_message"], prompt, "explicit review must show the exact message body")
+        self.assertIn(draft["recipient"], prompt, "the private operator preview must show the exact recipient")
+        self.assertIn(draft["subject"], prompt)
+        self.assertIn(draft["preview_url"], prompt)
+        self.assertIn(answer["fingerprint"], prompt)
 
 
 class NotificationTests(BotTestCase):
