@@ -335,6 +335,8 @@ class VercelProjectsClientTests(unittest.TestCase):
         self.assertIn("/v11/projects?teamId=team_fixture", recorded["url"])
         self.assertEqual(recorded["method"], "POST")
         self.assertEqual(recorded["json_body"]["name"], "coastal-kitchen-preview")
+        self.assertIsNone(recorded["json_body"].get("ssoProtection"),
+                           "public prospect previews must not inherit team-only Vercel Authentication")
         self.assertNotIn("gitRepository", recorded["json_body"])
         self.assertNotIn("domains", recorded["json_body"])
         self.assertNotIn("customDomains", recorded["json_body"])
