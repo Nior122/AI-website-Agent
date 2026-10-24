@@ -227,18 +227,27 @@ class VercelProjectsClient:
 
     def ensure_public_preview_access(self, project_id: str, *, expected_name: str) -> dict[str, Any]:
         """Ensure the verified standalone preview is not protected by team-only Vercel Authentication."""
-        current = self.get_project(project_id)
-        if current["name"] != expected_name:
+        try:
+            current = self.get_project(project_id)
+            if current["name"] != expected_name:
+                raise SiteManagementError(
+                    "Vercel project identity changed while configuring customer preview access.",
+                    code="VERCEL_PROJECT_IDENTITY_MISMATCH",
+                )
+            if current.get("sso_protection") is not None:
+                self._call(
+                    "PATCH", f"/v9/projects/{quote(project_id, safe='')}",
+                    json_body={"ssoProtection": None},
+                )
+            verified = self.get_project(project_id)
+        except ProviderError:
+            # The project creation may already have succeeded. Do not report this as an ordinary
+            # create failure or continue to bind/deploy when the access state could not be read.
             raise SiteManagementError(
-                "Vercel project identity changed while configuring customer preview access.",
-                code="VERCEL_PROJECT_IDENTITY_MISMATCH",
-            )
-        if current.get("sso_protection") is not None:
-            self._call(
-                "PATCH", f"/v9/projects/{quote(project_id, safe='')}",
-                json_body={"ssoProtection": None},
-            )
-        verified = self.get_project(project_id)
+                "The Vercel project may exist, but its public preview access could not be verified. "
+                "No binding or deployment should proceed until the project state is reconciled.",
+                code="VERCEL_PREVIEW_ACCESS_UNVERIFIABLE",
+            ) from None
         if verified["name"] != expected_name or verified["id"] != project_id:
             raise SiteManagementError(
                 "Vercel project identity did not match after access configuration; refusing deployment.",
