@@ -286,6 +286,40 @@ class ProvisioningTests(unittest.TestCase):
 
 
 class VercelProjectsClientTests(unittest.TestCase):
+    def test_deployment_readback_is_team_scoped_and_normalizes_authoritative_identity(self):
+        recorded = {}
+        def request(url, **kwargs):
+            recorded["url"] = url
+            recorded.update(kwargs)
+            return {"status": 200, "json": {
+                "id": "dpl_Verified123",
+                "url": "coastal-kitchen-preview-abc.vercel.app",
+                "projectId": "prj_Project123",
+                "readyState": "READY",
+            }, "text": ""}
+        client = VercelProjectsClient(token="fixture-token", team_id="team_fixture", request=request)
+        result = client.get_deployment_by_url("https://coastal-kitchen-preview-abc.vercel.app")
+        self.assertEqual(result, {
+            "id": "dpl_Verified123",
+            "url": "coastal-kitchen-preview-abc.vercel.app",
+            "project_id": "prj_Project123",
+            "ready_state": "READY",
+        })
+        self.assertIn("/v13/deployments/coastal-kitchen-preview-abc.vercel.app?teamId=team_fixture", recorded["url"])
+        self.assertEqual(recorded["method"], "GET")
+        self.assertNotIn("fixture-token", recorded["url"])
+
+    def test_deployment_readback_refuses_non_preview_host_before_network_call(self):
+        calls = []
+        client = VercelProjectsClient(
+            token="fixture-token", team_id="team_fixture",
+            request=lambda url, **kwargs: calls.append(url),
+        )
+        with self.assertRaises(Exception) as caught:
+            client.get_deployment_by_url("https://production.example.com")
+        self.assertEqual(getattr(caught.exception, "code", None), "VERCEL_DEPLOYMENT_URL_INVALID")
+        self.assertEqual(calls, [])
+
     def test_create_project_uses_team_scoped_api_and_does_not_attach_domains(self):
         recorded = {}
         def request(url, **kwargs):

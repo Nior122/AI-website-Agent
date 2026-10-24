@@ -16,7 +16,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 
 from integrations.http import ProviderError, provider_request
 
@@ -125,6 +125,56 @@ class VercelProjectsClient:
             )
         return {"id": actual_id, "name": actual_name, "updated_at": payload.get("updatedAt"),
                 "created_at": payload.get("createdAt")}
+
+    def get_deployment_by_url(self, deployment_url: str) -> dict[str, Any]:
+        """Fetch an exact Vercel preview deployment by hostname for authoritative post-publish checks."""
+        parsed = urlsplit(str(deployment_url or "").strip())
+        host = (parsed.hostname or "").rstrip(".").casefold()
+        if (
+            parsed.scheme != "https"
+            or not host
+            or not host.endswith(".vercel.app")
+            or host == "vercel.app"
+            or parsed.username
+            or parsed.password
+            or parsed.port not in (None, 443)
+        ):
+            raise SiteManagementError(
+                "Deployment verification requires an HTTPS Vercel preview hostname.",
+                code="VERCEL_DEPLOYMENT_URL_INVALID",
+            )
+        answer = self._call("GET", f"/v13/deployments/{quote(host, safe='')}")
+        payload = answer.get("json")
+        if isinstance(payload, dict) and isinstance(payload.get("deployment"), dict):
+            payload = payload["deployment"]
+        if not isinstance(payload, dict):
+            raise SiteManagementError(
+                "Vercel did not return the requested deployment record.",
+                code="VERCEL_DEPLOYMENT_RESPONSE_INVALID",
+            )
+        remote_url = str(payload.get("url") or "").strip()
+        remote_parsed = urlsplit(remote_url if "://" in remote_url else f"https://{remote_url}")
+        remote_host = (remote_parsed.hostname or "").rstrip(".").casefold()
+        project = payload.get("project") if isinstance(payload.get("project"), dict) else {}
+        project_id = str(payload.get("projectId") or project.get("id") or "").strip()
+        deployment_id = str(payload.get("id") or "").strip()
+        ready_state = str(payload.get("readyState") or payload.get("state") or "").strip().upper()
+        if (
+            not deployment_id
+            or not project_id
+            or not re.fullmatch(r"prj_[A-Za-z0-9]+", project_id)
+            or remote_host != host
+        ):
+            raise SiteManagementError(
+                "Vercel's deployment record did not match the requested hostname or include a verified project ID.",
+                code="VERCEL_DEPLOYMENT_IDENTITY_MISMATCH",
+            )
+        return {
+            "id": deployment_id,
+            "url": remote_host,
+            "project_id": project_id,
+            "ready_state": ready_state,
+        }
 
     @staticmethod
     def _normalise_project(payload: Any) -> dict[str, Any]:

@@ -252,6 +252,12 @@ class DeploymentTests(unittest.TestCase):
             "get_project": lambda self, project_id: {
                 "id": project_id, "name": "fictional-studio-preview",
             },
+            "get_deployment_by_url": lambda self, url: {
+                "id": "dpl_fixture123",
+                "url": "fictional-studio-preview-abc.vercel.app",
+                "project_id": "prj_managed123",
+                "ready_state": "READY",
+            },
         })()
         calls = []
         def runner(*args, **kwargs):
@@ -265,6 +271,8 @@ class DeploymentTests(unittest.TestCase):
             )
         self.assertEqual(result.deployment_status, "DEPLOYED")
         self.assertEqual(result.vercel_project_id, "prj_managed123")
+        self.assertEqual(result.vercel_deployment_id, "dpl_fixture123")
+        self.assertEqual(result.metadata["provider_verification"]["status"], "VERIFIED")
         self.assertEqual(result.metadata["project_name"], "fictional-studio-preview")
         command, kwargs = calls[0]
         self.assertIn("--project", command)
@@ -274,6 +282,40 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(kwargs["env"]["VERCEL_PROJECT_ID"], "prj_managed123")
         self.assertNotIn("fixture-token", " ".join(command))
         self.assertFalse((self.root / ".vercel" / "project.json").exists())
+
+    def test_api_bound_publish_is_not_marked_deployed_when_readback_targets_another_project(self):
+        self.approve_build()
+        target_url = "https://fictional-studio-preview-abc.vercel.app"
+        client = type("FakeVercelClient", (), {
+            "token": "fixture-token",
+            "team_id": "team_fixture",
+            "get_project": lambda self, project_id: {
+                "id": project_id, "name": "fictional-studio-preview",
+            },
+            "get_deployment_by_url": lambda self, url: {
+                "id": "dpl_wrongtarget123",
+                "url": "fictional-studio-preview-abc.vercel.app",
+                "project_id": "prj_someoneelse",
+                "ready_state": "READY",
+            },
+        })()
+        calls = []
+        def runner(*args, **kwargs):
+            calls.append((args[0], kwargs))
+            return subprocess.CompletedProcess(args[0], 0, target_url + "\\n", "")
+        from unittest.mock import patch
+        with patch("deployment.site_management.VercelProjectsClient", return_value=client):
+            result = VercelDeploymentProvider(self.root, runner).deploy(
+                self.build, dry_run=False, project_name="fictional-studio-preview",
+                vercel_project_id="prj_managed123",
+            )
+        self.assertEqual(result.deployment_status, "PUBLISH_UNCERTAIN")
+        self.assertEqual(result.deployment_url, target_url)
+        self.assertIsNone(result.vercel_deployment_id)
+        self.assertEqual(result.metadata["provider_verification"]["status"], "UNVERIFIED")
+        attempts = json.loads((self.build / "deployment-attempts.json").read_text(encoding="utf-8"))
+        self.assertEqual(attempts[-1]["deployment_status"], "PUBLISH_UNCERTAIN")
+        self.assertEqual(len(calls), 1, "an unverified provider result must not be auto-published again")
 
     def test_api_bound_project_name_mismatch_is_refused_before_cli_call(self):
         self.approve_build()

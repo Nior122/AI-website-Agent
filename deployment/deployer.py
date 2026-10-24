@@ -244,7 +244,52 @@ class VercelDeploymentProvider:
                 if completed.returncode != 0: raise RuntimeError(_safe_error(output) or f"Vercel CLI exited with code {completed.returncode}.")
                 url = _preview_url(output)
                 if not url: raise RuntimeError("Vercel CLI completed but did not return an HTTPS preview URL.")
-                result.deployment_url, result.vercel_deployment_id, result.deployment_status = url, _deployment_id_from_url(url), "DEPLOYED"
+                result.deployment_url = url
+                if vercel_project_id:
+                    try:
+                        verified_deployment = self._vercel_client().get_deployment_by_url(url)
+                        expected_host = (urlsplit(url).hostname or "").rstrip(".").casefold()
+                        if verified_deployment.get("project_id") != project["projectId"]:
+                            raise ValueError("Vercel reports that this deployment belongs to a different project ID.")
+                        if verified_deployment.get("url") != expected_host:
+                            raise ValueError("Vercel's deployment record does not match the returned preview hostname.")
+                        if verified_deployment.get("ready_state") != "READY":
+                            raise ValueError(
+                                "Vercel's deployment is not READY "
+                                f"(provider state: {verified_deployment.get('ready_state') or 'unknown'})."
+                            )
+                    except Exception as error:
+                        # The CLI may have uploaded a deployment, so this is not an ordinary retryable failure.
+                        # Preserve the exact URL and require operator reconciliation instead of publishing again.
+                        result.deployment_status = "PUBLISH_UNCERTAIN"
+                        result.vercel_deployment_id = None
+                        result.error = (
+                            "Vercel returned a preview URL, but authoritative read-back verification did not "
+                            "prove that the deployment is READY and belongs to the approved project. "
+                            f"Provider detail: {_safe_error(str(error)) or 'verification unavailable'}. "
+                            "The URL is preserved for reconciliation; do not retry the publish automatically."
+                        )
+                        result.metadata["provider_verification"] = {
+                            "status": "UNVERIFIED",
+                            "error_code": str(getattr(error, "code", "") or "VERCEL_DEPLOYMENT_VERIFICATION_FAILED"),
+                        }
+                        result.completed_at = _now()
+                        _write_manifest(build_path, result)
+                        _append_attempt(
+                            build_path, result, "PUBLISH_UNCERTAIN",
+                            provider_verification="UNVERIFIED",
+                        )
+                        return result
+                    result.vercel_deployment_id = verified_deployment["id"]
+                    result.metadata["provider_verification"] = {
+                        "status": "VERIFIED",
+                        "project_id": verified_deployment["project_id"],
+                        "ready_state": verified_deployment["ready_state"],
+                    }
+                else:
+                    # A URL slug is not a Vercel deployment ID; leave the ID unset unless Vercel confirms it.
+                    result.vercel_deployment_id = None
+                result.deployment_status = "DEPLOYED"
         except NeedsReview as error:
             result.deployment_status, result.error = "NEEDS_REVIEW", str(error)
         except ProviderConfigurationError as error:
