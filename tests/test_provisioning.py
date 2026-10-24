@@ -362,5 +362,21 @@ class VercelProjectsClientTests(unittest.TestCase):
         self.assertTrue(all("teamId=team_fixture" in call["url"] for call in calls))
         self.assertTrue(all("fixture-token" not in call["url"] for call in calls))
 
+    def test_access_update_provider_failure_is_not_misreported_as_a_confirmed_create_failure(self):
+        calls = []
+        def request(url, **kwargs):
+            calls.append({"url": url, **kwargs})
+            if kwargs["method"] == "PATCH":
+                raise ProviderError("configuration update unavailable", code="PROVIDER_UNRESPONSIVE", retryable=True)
+            return {"status": 200, "json": {
+                "id": "prj_New123", "name": "coastal-kitchen-preview",
+                "createdAt": 1790000000000,
+                "ssoProtection": {"deploymentType": "all_except_custom_domains"},
+            }, "text": ""}
+        client = VercelProjectsClient(token="fixture-token", team_id="team_fixture", request=request)
+        with self.assertRaises(SiteManagementError) as caught:
+            client.create_project("coastal-kitchen-preview")
+        self.assertEqual(caught.exception.code, "VERCEL_PREVIEW_ACCESS_UNVERIFIABLE")
+        self.assertEqual([call["method"] for call in calls], ["POST", "GET", "PATCH"])
 if __name__ == "__main__":
     unittest.main()
