@@ -302,7 +302,7 @@ class DeploymentTests(unittest.TestCase):
         calls = []
         def runner(*args, **kwargs):
             calls.append((args[0], kwargs))
-            return subprocess.CompletedProcess(args[0], 0, target_url + "\\n", "")
+            return subprocess.CompletedProcess(args[0], 0, target_url + "\n", "")
         from unittest.mock import patch
         with patch("deployment.site_management.VercelProjectsClient", return_value=client):
             result = VercelDeploymentProvider(self.root, runner).deploy(

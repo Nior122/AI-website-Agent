@@ -9,7 +9,7 @@ from deployment.provisioning import (
     VercelProjectProvisioningError,
     project_name_base,
 )
-from deployment.site_management import VercelProjectsClient
+from deployment.site_management import SiteManagementError, VercelProjectsClient
 from integrations.http import ProviderError
 from tracking.store import TrackingStore
 
@@ -315,7 +315,7 @@ class VercelProjectsClientTests(unittest.TestCase):
             token="fixture-token", team_id="team_fixture",
             request=lambda url, **kwargs: calls.append(url),
         )
-        with self.assertRaises(Exception) as caught:
+        with self.assertRaises(SiteManagementError) as caught:
             client.get_deployment_by_url("https://production.example.com")
         self.assertEqual(getattr(caught.exception, "code", None), "VERCEL_DEPLOYMENT_URL_INVALID")
         self.assertEqual(calls, [])
