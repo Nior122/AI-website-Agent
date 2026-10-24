@@ -217,7 +217,10 @@ class VercelProjectsClient:
                                       code="VERCEL_PROJECT_NAME_INVALID")
         # Keep this payload minimal: no Git repository, environment variables, domains, or
         # framework-specific build settings are attached during provisioning.
-        answer = self._call("POST", "/v11/projects", json_body={"name": name})
+                # Customer previews are intended to be opened directly by the business, without requiring
+        # the operator to grant Vercel-team access. Explicitly clear inherited Vercel Authentication
+        # on the standalone preview project; the published payload is validated public-site content.
+        answer = self._call("POST", "/v11/projects", json_body={"name": name, "ssoProtection": None})
         project = self._normalise_project(answer.get("json"))
         if project["name"] != name:
             raise SiteManagementError("Vercel created a project with a different name; refusing deployment.",
