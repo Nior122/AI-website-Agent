@@ -320,28 +320,37 @@ class VercelProjectsClientTests(unittest.TestCase):
         self.assertEqual(getattr(caught.exception, "code", None), "VERCEL_DEPLOYMENT_URL_INVALID")
         self.assertEqual(calls, [])
 
-    def test_create_project_uses_team_scoped_api_and_does_not_attach_domains(self):
-        recorded = {}
+    def test_create_project_verifies_public_access_and_does_not_attach_domains(self):
+        calls = []
+        protected = {"enabled": True}
         def request(url, **kwargs):
-            recorded["url"] = url
-            recorded.update(kwargs)
-            return {"status": 200, "json": {
-                "id": "prj_New123", "name": "coastal-kitchen-preview",
-                "createdAt": 1790000000000,
-            }, "text": ""}
+            calls.append({"url": url, **kwargs})
+            method = kwargs["method"]
+            project = {"id": "prj_New123", "name": "coastal-kitchen-preview",
+                       "createdAt": 1790000000000}
+            if method == "POST":
+                project["ssoProtection"] = {"deploymentType": "all_except_custom_domains"}
+                return {"status": 200, "json": project, "text": ""}
+            if method == "PATCH":
+                self.assertIsNone(kwargs["json_body"].get("ssoProtection"))
+                protected["enabled"] = False
+                return {"status": 200, "json": project, "text": ""}
+            if method == "GET" and protected["enabled"]:
+                project["ssoProtection"] = {"deploymentType": "all_except_custom_domains"}
+            return {"status": 200, "json": project, "text": ""}
         client = VercelProjectsClient(token="fixture-token", team_id="team_fixture", request=request)
         result = client.create_project("coastal-kitchen-preview")
         self.assertEqual(result["id"], "prj_New123")
-        self.assertIn("/v11/projects?teamId=team_fixture", recorded["url"])
-        self.assertEqual(recorded["method"], "POST")
-        self.assertEqual(recorded["json_body"]["name"], "coastal-kitchen-preview")
-        self.assertIsNone(recorded["json_body"].get("ssoProtection"),
-                           "public prospect previews must not inherit team-only Vercel Authentication")
-        self.assertNotIn("gitRepository", recorded["json_body"])
-        self.assertNotIn("domains", recorded["json_body"])
-        self.assertNotIn("customDomains", recorded["json_body"])
-        self.assertNotIn("fixture-token", recorded["url"])
-
+        self.assertIsNone(result["sso_protection"])
+        self.assertEqual([call["method"] for call in calls], ["POST", "GET", "PATCH", "GET"])
+        self.assertIn("/v11/projects?teamId=team_fixture", calls[0]["url"])
+        self.assertEqual(calls[0]["json_body"]["name"], "coastal-kitchen-preview")
+        self.assertNotIn("gitRepository", calls[0]["json_body"])
+        self.assertNotIn("domains", calls[0]["json_body"])
+        self.assertNotIn("customDomains", calls[0]["json_body"])
+        self.assertEqual(calls[2]["json_body"], {"ssoProtection": None})
+        self.assertTrue(all("teamId=team_fixture" in call["url"] for call in calls))
+        self.assertTrue(all("fixture-token" not in call["url"] for call in calls))
 
 if __name__ == "__main__":
     unittest.main()
