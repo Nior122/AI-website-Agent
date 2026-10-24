@@ -129,6 +129,12 @@ class VercelProjectProvisioner:
                 "This Vercel project is protected and cannot be used as a per-business deployment target.",
                 code="VERCEL_PROJECT_PROTECTED",
             )
+        if live.get("sso_protection") is not None:
+            raise VercelProjectProvisioningError(
+                "Vercel Authentication is enabled on this customer preview. Public preview access must be "
+                "verified before binding or deployment; no deployment was attempted.",
+                code="VERCEL_PREVIEW_ACCESS_NOT_PUBLIC",
+            )
         try:
             validate_preview_project_name(live["name"], real_business=True)
         except ValueError as error:
