@@ -57,7 +57,7 @@ class WorkerRegistry:
         if job["job_type"] in {"BUILD","VALIDATE","DEPLOY","DEPLOY_PREVIEW"} and job.get("build_id") and job["project_id"]:
             p=self.store.state["projects"].get(job["project_id"])
             if not p or (job["job_type"]!="BUILD" and p.get("assigned_build_id")!=job["build_id"]) or (job["job_type"]=="BUILD" and p.get("assigned_build_id") and p.get("assigned_build_id")!=job["build_id"]): raise ValueError("Job build version is stale for this project.")
-        stamp=_now(); expiry=(datetime.now(timezone.utc)+timedelta(seconds=self.lease_seconds)).replace(microsecond=0).isoformat().replace("+00:00","Z"); lease=f"lease-{uuid4().hex}"
+        stamp=_now(); expiry=(datetime.now(timezone.utc)+timedelta(seconds=self.lease_seconds)).isoformat().replace("+00:00","Z"); lease=f"lease-{uuid4().hex}"
         job.update({"status":"RUNNING","attempts":job["attempts"]+1,"started_at":job.get("started_at") or stamp,"updated_at":stamp,"heartbeat_at":stamp,"lease":{"lease_id":lease,"worker_id":worker_id,"claimed_at":stamp,"heartbeat_at":stamp,"expires_at":expiry}})
         worker.update({"status":"BUSY","current_job_id":job_id,"updated_at":stamp})
         if job.get("project_id") and job["job_type"] in MUTATING: self.store.state["project_locks"][job["project_id"]]={"project_id":job["project_id"],"job_id":job_id,"worker_id":worker_id,"lease_id":lease,"expires_at":expiry}
@@ -66,7 +66,7 @@ class WorkerRegistry:
         self._refresh()
         job=self.store.state["jobs"].get(job_id); lease=(job or {}).get("lease",{})
         if lease.get("worker_id")!=worker_id or lease.get("lease_id")!=lease_id: raise ValueError("Invalid worker lease.")
-        expiry=(datetime.now(timezone.utc)+timedelta(seconds=self.lease_seconds)).replace(microsecond=0).isoformat().replace("+00:00","Z"); lease.update({"heartbeat_at":_now(),"expires_at":expiry}); job["heartbeat_at"]=_now()
+        expiry=(datetime.now(timezone.utc)+timedelta(seconds=self.lease_seconds)).isoformat().replace("+00:00","Z"); lease.update({"heartbeat_at":_now(),"expires_at":expiry}); job["heartbeat_at"]=_now()
         lock=self.store.state["project_locks"].get(job.get("project_id"));
         if lock and lock["lease_id"]==lease_id: lock["expires_at"]=expiry
         self.store._save(); return job
