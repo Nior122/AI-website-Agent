@@ -1,0 +1,543 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Demo Apex Health Clinic</title><meta name="description" content="A fictional healthcare clinic used only to demonstrate the reusable clinic template system. Comprehensive primary care and specialist consultations for the whole family."><meta property="og:title" content="Demo Apex Health Clinic"><meta property="og:description" content="A fictional healthcare clinic used only to demonstrate the reusable clinic template system. Comprehensive primary care and specialist consultations for the whole family."><style>/* ───────────────────────────────────────────────────────────────
+   AI Website Agent · Premium Reusable Template Foundation
+   ─────────────────────────────────────────────────────────────── */
+
+/* ── Design tokens ──────────────────────────────────────────── */
+:root {
+  /* Primary palette – deep forest green + warm parchment */
+  --primary: #173B2F;
+  --primary-rgb: 23,59,47;
+  --secondary: #F8F4EA;
+  --accent: #C9653B;
+  --accent-hover: #e07a50;
+  --gold: #E5B95F;
+  --gold-soft: #f4d08a;
+
+  /* Surface & text */
+  --background: #F8F4EA;
+  --surface: #FFFDF8;
+  --surface-elevated: #ffffff;
+  --text: #242721;
+  --text-secondary: #5a6358;
+  --muted: #6D796F;
+  --line: rgba(23,59,47,.13);
+  --line-strong: rgba(23,59,47,.22);
+
+  /* Glass */
+  --glass-bg: rgba(255,253,248,.72);
+  --glass-border: rgba(23,59,47,.08);
+  --glass-shadow: 0 8px 32px rgba(23,59,47,.06);
+
+  /* Layout */
+  --radius: 1.15rem;
+  --radius-lg: 1.6rem;
+  --radius-pill: 999px;
+  --space: 1.5rem;
+  --content: 76rem;
+
+  /* Typography */
+  --display: 'DM Serif Display', Iowan Old Style, Baskerville, Palatino Linotype, Book Antiqua, Georgia, serif;
+  --body: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+
+  /* Transitions */
+  --ease-out: cubic-bezier(.22,1,.36,1);
+  --ease-spring: cubic-bezier(.34,1.56,.64,1);
+  --duration-fast: .2s;
+  --duration-normal: .35s;
+  --duration-slow: .5s;
+}
+
+/* ── Reset & base ───────────────────────────────────────────── */
+*,*::before,*::after { box-sizing: border-box; }
+html { scroll-behavior: smooth; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--text);
+  font-family: var(--body);
+  font-size: 1rem;
+  line-height: 1.68;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+}
+
+a { color: inherit; }
+img { max-width: 100%; display: block; }
+
+/* ── Layout spine ───────────────────────────────────────────── */
+.site-header, main, footer {
+  width: min(calc(100% - 2.5rem), var(--content));
+  margin-inline: auto;
+}
+
+/* ── Header ─────────────────────────────────────────────────── */
+.site-header {
+  min-height: 5.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: .68rem;
+  color: var(--primary);
+  font-family: var(--display);
+  font-size: 1.12rem;
+  font-weight: 700;
+  letter-spacing: .01em;
+  text-decoration: none;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+.brand:hover { opacity: .78; }
+
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 2.2rem;
+  height: 2.2rem;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+  font-family: var(--body);
+  font-size: .66rem;
+  font-weight: 800;
+  letter-spacing: .08em;
+  transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+.brand:hover .brand-mark {
+  background: var(--primary);
+  color: var(--secondary);
+}
+
+nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 1.25rem;
+}
+nav a {
+  position: relative;
+  color: var(--muted);
+  font-size: .76rem;
+  font-weight: 750;
+  letter-spacing: .07em;
+  text-decoration: none;
+  text-transform: uppercase;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+nav a::after {
+  content: '';
+  position: absolute;
+  inset: auto 0 -4px 0;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 1px;
+  transform: scaleX(0);
+  transform-origin: center;
+  transition: transform var(--duration-normal) var(--ease-spring);
+}
+nav a:hover { color: var(--accent); }
+nav a:hover::after { transform: scaleX(1); }
+
+/* ── Main ───────────────────────────────────────────────────── */
+main { overflow: hidden; }
+section { padding: clamp(4.5rem, 10vw, 8.5rem) 0; }
+
+/* ── Typography ─────────────────────────────────────────────── */
+h1,h2,h3,p { margin-top: 0; }
+h1,h2,h3 {
+  color: var(--primary);
+  font-family: var(--display);
+  letter-spacing: -.025em;
+  line-height: .98;
+}
+h1 { max-width: 14ch; margin-bottom: 1.35rem; font-size: clamp(3rem, 6vw, 5.8rem); }
+h2 { max-width: 15ch; margin-bottom: 1.35rem; font-size: clamp(2.45rem, 4.8vw, 4.2rem); }
+h3 { margin-bottom: .5rem; font-size: 1.5rem; letter-spacing: -.015em; }
+
+.eyebrow, .section-kicker {
+  margin-bottom: .9rem;
+  color: var(--accent);
+  font-size: .72rem;
+  font-weight: 800;
+  letter-spacing: .15em;
+  text-transform: uppercase;
+}
+
+/* ── Hero ────────────────────────────────────────────────────── */
+.hero {
+  margin-top: 2rem;
+  padding: clamp(2.5rem, 7vw, 6rem);
+  background: var(--secondary);
+  border-radius: var(--radius-lg);
+  position: relative;
+  overflow: hidden;
+}
+.hero::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at 30% 0%, rgba(var(--primary-rgb),.04) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+/* Restaurant hero */
+.hero-restaurant {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(19rem, .86fr);
+  align-items: center;
+  gap: clamp(1.5rem, 6vw, 6rem);
+  isolation: isolate;
+  background: var(--primary);
+  color: var(--secondary);
+  overflow: hidden;
+}
+.hero-restaurant::before {
+  position: absolute;
+  z-index: -1;
+  inset: auto -11rem -11rem auto;
+  width: 31rem;
+  height: 31rem;
+  content: '';
+  border: 1px solid rgba(229,185,95,.20);
+  border-radius: 50%;
+  animation: hero-ring-pulse 6s var(--ease-out) infinite alternate;
+}
+@keyframes hero-ring-pulse {
+  0% { opacity: .3; transform: scale(1); }
+  100% { opacity: .6; transform: scale(1.06); }
+}
+.hero-restaurant.no-art { grid-template-columns: 1fr; }
+.hero-restaurant.no-art .hero-copy { max-width: 48rem; }
+.hero h1 { color: inherit; }
+.hero-intro {
+  max-width: 34rem;
+  color: rgba(248,244,234,.84);
+  font-size: clamp(1rem, 1.4vw, 1.18rem);
+}
+.hero-restaurant .eyebrow { color: var(--gold); }
+
+/* ── Actions & buttons ──────────────────────────────────────── */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .85rem;
+  margin-top: 2rem;
+}
+
+.button {
+  display: inline-flex;
+  min-height: 3rem;
+  align-items: center;
+  justify-content: center;
+  padding: .78rem 1.35rem;
+  border: 1.5px solid transparent;
+  border-radius: var(--radius-pill);
+  font-size: .83rem;
+  font-weight: 800;
+  letter-spacing: .03em;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-spring),
+    box-shadow var(--duration-fast) var(--ease-out);
+}
+.button:hover {
+  transform: translateY(-2px);
+}
+.button:active {
+  transform: translateY(0);
+}
+
+.button-primary {
+  background: var(--gold);
+  color: var(--primary);
+  box-shadow: 0 2px 8px rgba(229,185,95,.25);
+}
+.button-primary:hover {
+  background: var(--gold-soft);
+  box-shadow: 0 6px 20px rgba(229,185,95,.35);
+}
+
+.button-secondary {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: transparent;
+}
+.button-secondary:hover {
+  background: var(--primary);
+  color: var(--secondary);
+  box-shadow: 0 4px 16px rgba(23,59,47,.15);
+}
+
+.hero-restaurant .button-secondary {
+  border-color: rgba(248,244,234,.55);
+  color: var(--secondary);
+}
+.hero-restaurant .button-secondary:hover {
+  background: var(--secondary);
+  color: var(--primary);
+}
+
+.text-link {
+  color: var(--primary);
+  font-weight: 800;
+  text-underline-offset: .24em;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+.text-link:hover { color: var(--accent); }
+.hero-restaurant .text-link { color: var(--gold); }
+.hero-restaurant .text-link:hover { color: var(--gold-soft); }
+
+.contact-detail {
+  margin-top: .75rem;
+  color: var(--text-secondary);
+  font-size: .95rem;
+}
+
+/* ── Hero art ───────────────────────────────────────────────── */
+.hero-art { position: relative; width: min(100%, 32rem); margin-inline: auto; }
+.hero-art svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  filter: drop-shadow(0 1.25rem 1.6rem rgba(0,0,0,.2));
+}
+.art-sun { fill: var(--gold); }
+.art-leaf { fill: #547461; }
+.art-leaf-alt { fill: #95aa77; }
+.art-platter { fill: #123127; }
+.art-bowl { fill: #C9653B; }
+.art-rice { fill: #F8E7B6; }
+.art-garnish { fill: #547461; }
+.art-steam { fill: none; stroke: #F8F4EA; stroke-linecap: round; stroke-width: 9; }
+.art-caption {
+  position: absolute;
+  right: 2%;
+  bottom: 3%;
+  color: var(--gold);
+  font-family: var(--display);
+  font-size: 1.18rem;
+  font-style: italic;
+}
+
+/* ── Story / About (two-column) ─────────────────────────────── */
+.story-section {
+  display: grid;
+  grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr);
+  gap: clamp(2rem, 8vw, 9rem);
+  border-bottom: 1px solid var(--line);
+}
+.story-copy {
+  max-width: 39rem;
+  margin-top: .65rem;
+  font-family: var(--display);
+  font-size: clamp(1.35rem, 2vw, 1.85rem);
+  line-height: 1.42;
+}
+
+/* ── Cards ──────────────────────────────────────────────────── */
+.menu-section { padding-bottom: clamp(4.5rem, 10vw, 8.5rem); }
+
+.section-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 2rem;
+  margin-bottom: 2.5rem;
+}
+.section-heading h2 { margin-bottom: 0; }
+.section-note {
+  max-width: 20rem;
+  margin: 0;
+  color: var(--muted);
+  font-size: .9rem;
+}
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  border-top: 1px solid var(--line);
+}
+
+.card {
+  display: flex;
+  gap: 1rem;
+  min-height: 15rem;
+  padding: 2rem 1.4rem 1.7rem 0;
+  border-bottom: 1px solid var(--line);
+  transition: background var(--duration-normal) var(--ease-out);
+}
+.card:hover {
+  background: rgba(var(--primary-rgb), .025);
+}
+.card:not(:first-child) {
+  padding-left: 1.4rem;
+  border-left: 1px solid var(--line);
+}
+.card p {
+  margin-bottom: 0;
+  color: var(--text-secondary);
+  font-size: .95rem;
+}
+.card h3 {
+  transition: color var(--duration-fast) var(--ease-out);
+}
+.card:hover h3 {
+  color: var(--accent);
+}
+
+.menu-index {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-family: var(--display);
+  font-size: 1.15rem;
+  font-style: italic;
+  opacity: .7;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+.card:hover .menu-index { opacity: 1; }
+
+.price {
+  margin-top: 1rem !important;
+  color: var(--primary) !important;
+  font-weight: 800;
+}
+
+/* ── Hours & location panels ────────────────────────────────── */
+.hours-panel, .location-panel {
+  max-width: 55rem;
+  margin-inline: auto;
+  padding: clamp(3rem, 7vw, 5.2rem);
+  text-align: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 50% 50% var(--radius-lg) var(--radius-lg) / 10% 10% var(--radius-lg) var(--radius-lg);
+  box-shadow: var(--glass-shadow);
+}
+.hours-panel h2, .location-panel h2 { margin-inline: auto; }
+
+.hours-value {
+  margin-bottom: .25rem;
+  color: var(--accent);
+  font-family: var(--display);
+  font-size: clamp(1.35rem, 2vw, 1.75rem);
+}
+
+.demo-note {
+  color: var(--muted);
+  font-size: .83rem;
+}
+
+/* ── Contact ────────────────────────────────────────────────── */
+.contact-panel {
+  padding-bottom: clamp(4.5rem, 10vw, 8.5rem);
+  text-align: center;
+}
+.contact-panel h2 { margin-inline: auto; }
+.contact-panel .actions { justify-content: center; }
+.contact-panel p:last-child {
+  max-width: 36rem;
+  margin-inline: auto;
+  color: var(--muted);
+}
+
+/* ── Gallery ────────────────────────────────────────────────── */
+.gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+  gap: var(--space);
+}
+.gallery img {
+  width: 100%;
+  aspect-ratio: 4/3;
+  border-radius: var(--radius);
+  object-fit: cover;
+  transition: transform var(--duration-slow) var(--ease-out), box-shadow var(--duration-slow) var(--ease-out);
+}
+.gallery img:hover {
+  transform: scale(1.03);
+  box-shadow: 0 12px 40px rgba(var(--primary-rgb), .1);
+}
+
+/* ── Footer ─────────────────────────────────────────────────── */
+footer {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-block: 2.5rem;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: .8rem;
+}
+.footer-brand { color: var(--primary); }
+.fictional-disclosure, .draft-disclosure {
+  max-width: 33rem;
+  margin: 0;
+  text-align: right;
+  line-height: 1.45;
+}
+
+/* ── Focus ──────────────────────────────────────────────────── */
+a:focus-visible {
+  outline: 3px solid var(--gold);
+  outline-offset: 4px;
+  border-radius: 3px;
+}
+
+/* ── Motion preferences ─────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { transition-duration: 0s !important; animation-duration: 0s !important; }
+}
+
+/* ── Responsive: tablet ─────────────────────────────────────── */
+@media (max-width: 64rem) {
+  .hero-restaurant { grid-template-columns: minmax(0, 1fr) minmax(15rem, .7fr); }
+  .card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .card:nth-child(3) { border-left: 0; padding-left: 0; }
+}
+
+/* ── Responsive: mobile ─────────────────────────────────────── */
+@media (max-width: 48rem) {
+  .site-header {
+    min-height: unset;
+    padding-block: 1.1rem;
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  nav { justify-content: flex-start; gap: .7rem 1rem; }
+  .hero-restaurant { grid-template-columns: 1fr; gap: 1rem; }
+  .hero-art { width: min(82vw, 28rem); }
+  .story-section { grid-template-columns: 1fr; gap: 1rem; }
+  .section-heading { align-items: start; flex-direction: column; gap: .6rem; }
+  .card-grid { grid-template-columns: 1fr; }
+  .card, .card:not(:first-child), .card:nth-child(3) {
+    min-height: auto;
+    padding: 1.5rem 0;
+    border-left: 0;
+  }
+  footer { align-items: flex-start; flex-direction: column; }
+  .fictional-disclosure, .draft-disclosure { text-align: left; }
+}
+
+/* ── Responsive: small phones ───────────────────────────────── */
+@media (max-width: 24rem) {
+  .site-header, main, footer { width: min(calc(100% - 1.5rem), var(--content)); }
+  nav { gap: .55rem .8rem; }
+  nav a { font-size: .69rem; }
+  .hero { margin-top: .75rem; padding: 2rem 1.35rem; }
+  h1 { font-size: clamp(2.75rem, 15vw, 3.7rem); }
+  .button { width: 100%; }
+}
+:root{--primary:#0d47a1;--secondary:#f0f4f8;--accent:#00acc1;--radius:0.75rem}</style></head><body><header class="site-header"><a class="brand" href="#top"><span>Demo Apex Health Clinic</span></a><nav aria-label="Main navigation"><a href="#about">About</a><a href="#services">Services</a><a href="#practitioners">Practitioners</a><a href="#location">Location</a><a href="#hours">Hours</a><a href="#contact">Contact</a></nav></header><main><section class="hero" id="top"><p class="eyebrow">Lagos</p><h1>Comprehensive Healthcare in Lagos</h1><p>Fictional clinic demo content; replace only with approved healthcare facts.</p><div class="actions"><a class="button button-primary" href="#services">Explore services</a><a class="button button-secondary" href="#location">Visit the test location</a></div></section><section id="about"><h2>About us</h2><p>A fictional healthcare clinic used only to demonstrate the reusable clinic template system. Comprehensive primary care and specialist consultations for the whole family.</p></section><section id="services" class=""><div class="section-heading"><div><p class="section-kicker">What we offer</p><h2>Clinical Specialties &amp; Care</h2></div></div><div class="card-grid"><article class="card"><span class="menu-index" aria-hidden="true">01</span><div><h3>General Consultation</h3><p>Fictional clinical consultation and wellness checks.</p></div></article><article class="card"><span class="menu-index" aria-hidden="true">02</span><div><h3>Preventative Health</h3><p>Fictional screening and diagnostic assessment.</p></div></article><article class="card"><span class="menu-index" aria-hidden="true">03</span><div><h3>Paediatric Care</h3><p>Fictional child health monitoring, vaccinations, and developmental assessments.</p></div></article><article class="card"><span class="menu-index" aria-hidden="true">04</span><div><h3>Women&#x27;s Health</h3><p>Fictional gynaecological consultations, prenatal care, and family planning.</p></div></article></div></section><section id="practitioners" class=""><h2>Specialist Practitioners</h2><div class="card-grid"><article class="card"><div><h3>Dr. Fictional Consultant</h3><p>General practice specialist.</p></div></article><article class="card"><div><h3>Dr. Fictional Paediatrician</h3><p>Child health and developmental care.</p></div></article></div></section><section id="location" class="location-panel"><p class="section-kicker">A fictional setting</p><h2>Find the test kitchen</h2><p>Fictional clinic avenue, Victoria Island, Lagos</p><p class="demo-note">This address is fictional. No map or directions link is provided.</p></section><section id="hours" class="hours-panel"><p class="section-kicker">When to gather</p><h2>Opening hours</h2><p class="hours-value">Mon–Fri, 08:00–18:00; Sat, 09:00–14:00</p><p class="demo-note">Fictional test schedule — not a real operating promise.</p></section><section id="contact" class="contact-panel"><p class="section-kicker">Demonstration only</p><h2>A considered journey, safely contained.</h2><p>This fictional concept intentionally has no live phone, WhatsApp, social, booking, or message destination.</p></section></main><footer><a class="brand footer-brand" href="#top">Demo Apex Health Clinic</a><p class="fictional-disclosure">Fictional demonstration website · Created for AI Website Agent testing.</p></footer></body></html>
