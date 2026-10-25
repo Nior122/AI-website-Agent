@@ -56,6 +56,22 @@ def _sections(data: dict, template: TemplateDefinition) -> dict:
             parts.append(("services", components.card_list("services", "Workshop & Repair Services", data.get("services", []))))
         if data.get("guarantee"):
             parts.append(("guarantee", components.card_list("guarantee", "Service Guarantee", data.get("guarantee", []))))
+    elif tid == "retail-ecommerce-v1":
+        products = data.get("products") or data.get("services", [])
+        if products:
+            parts.append(("products", components.card_list("products", "Featured Products", products, price=True, fictional=components.is_fictional(data))))
+        if data.get("services") and data.get("products"):
+            parts.append(("services", components.card_list("services", "Our Services", data.get("services", []))))
+    elif tid == "personal-portfolio-v1":
+        projects = data.get("projects", [])
+        if projects:
+            parts.append(("projects", components.card_list("projects", "Selected Projects", projects, price=False, fictional=components.is_fictional(data))))
+        skills = data.get("skills", [])
+        if skills:
+            parts.append(("skills", components.card_list("skills", "Core Capabilities & Stack", skills, price=False, fictional=components.is_fictional(data))))
+        services = data.get("services", [])
+        if services:
+            parts.append(("services", components.card_list("services", "Services & Specializations", services, price=False, fictional=components.is_fictional(data))))
     else:
         if data.get("services"):
             parts.append(("services", components.card_list("services", "Services", data.get("services", []))))

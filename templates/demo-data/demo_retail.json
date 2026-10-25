@@ -1,0 +1,25 @@
+{
+  "demo": true,
+  "business_name": "Demo Urban Threads Boutique",
+  "category": "boutique",
+  "city": "Lagos",
+  "address": "Fictional fashion avenue, Lekki, Lagos",
+  "description": "A fictional fashion boutique used only to demonstrate the reusable retail template system. Curated collections of contemporary fashion and accessories for the modern professional.",
+  "phone": "+234 800 000 0006",
+  "whatsapp": "+234 800 000 0006",
+  "email": "threads.demo@example.invalid",
+  "opening_hours": "Mon–Sat, 10:00–20:00; Sun, 12:00–18:00",
+  "products": [
+    { "name": "Ankara Print Blazer", "description": "Fictional tailored blazer with vibrant Ankara print accents.", "price": "₦0 demo price" },
+    { "name": "Handwoven Leather Tote", "description": "Fictional artisan leather tote bag with brass hardware.", "price": "₦0 demo price" },
+    { "name": "Silk Statement Scarf", "description": "Fictional hand-dyed silk scarf in seasonal colour palette.", "price": "₦0 demo price" },
+    { "name": "Minimalist Silver Cuff", "description": "Fictional sterling silver cuff bracelet with geometric motif.", "price": "₦0 demo price" }
+  ],
+  "services": [
+    { "name": "Personal Styling Consultation", "description": "Fictional one-on-one wardrobe assessment and styling advice." },
+    { "name": "Gift Wrapping & Packaging", "description": "Fictional premium gift presentation and packaging service." }
+  ],
+  "images": [],
+  "brand": { "primary_color": "#2d1b4e", "secondary_color": "#faf7f0", "accent_color": "#d4a76a", "border_radius": "0.8rem" },
+  "content": { "hero_title": "Demo Urban Threads Boutique", "hero_subtitle": "Fictional boutique demo content; replace only with approved retail facts." }
+}

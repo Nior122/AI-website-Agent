@@ -802,7 +802,7 @@ class GmailSendAdapterTests(unittest.TestCase):
         self.assertTrue(answer["sent"])
         self.assertEqual(answer["provider_message_id"], "msg-fake-1")
         self.assertEqual(transport.methods, {"POST"}, "the send interface must not issue a read request")
-        self.assertTrue(all("/messages" in call[1] and call[1].endswith("/messages") for call in transport.send_calls))
+        self.assertTrue(all("/messages/send" in call[1] and call[1].endswith("/messages/send") for call in transport.send_calls))
         self.assertEqual(len(transport.send_calls), 1)
 
     def test_a_dry_run_composes_without_calling(self) -> None:

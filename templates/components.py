@@ -38,6 +38,12 @@ def action_links(data: dict) -> str:
         if cat in {"restaurant", "food_business"} and (data.get("menu_items") or not data.get("services")):
             primary_target = "#menu"
             primary_label = "Explore the menu"
+        elif data.get("products"):
+            primary_target = "#products"
+            primary_label = "Browse products"
+        elif cat in {"portfolio", "personal_portfolio", "developer", "software_engineer", "web_developer", "designer", "creative_technologist", "digital_builder", "creator", "freelancer"}:
+            primary_target = "#projects" if data.get("projects") else ("#services" if data.get("services") else "#about")
+            primary_label = "View projects" if data.get("projects") else "Explore work"
         elif data.get("practice_areas") and not data.get("services"):
             primary_target = "#practice_areas"
             primary_label = "Practice areas"
@@ -57,7 +63,7 @@ def action_links(data: dict) -> str:
             secondary_label = "Visit the test location"
         elif has_about and primary_target != "#about":
             secondary_target = "#about"
-            secondary_label = "Read the test story"
+            secondary_label = "Read profile" if cat in {"portfolio", "personal_portfolio", "developer", "software_engineer", "web_developer", "designer", "creative_technologist", "digital_builder", "creator", "freelancer"} else "Read the test story"
         else:
             secondary_target = "#contact"
             secondary_label = "View test notice"
@@ -76,6 +82,21 @@ def action_links(data: dict) -> str:
     facebook = safe_url(data.get("facebook_url"))
     if facebook:
         links.append(f'<a class="text-link" href="{text(facebook)}">Facebook</a>')
+    github = safe_url(data.get("github_url"))
+    if github:
+        links.append(f'<a class="text-link" href="{text(github)}">GitHub</a>')
+    linkedin = safe_url(data.get("linkedin_url"))
+    if linkedin:
+        links.append(f'<a class="text-link" href="{text(linkedin)}">LinkedIn</a>')
+    twitter = safe_url(data.get("twitter_url") or data.get("x_url"))
+    if twitter:
+        links.append(f'<a class="text-link" href="{text(twitter)}">X / Twitter</a>')
+    for social_url in (data.get("other_social_urls") or []):
+        s_url = safe_url(social_url)
+        if s_url:
+            label = "LinkedIn" if "linkedin.com" in s_url else ("X / Twitter" if "x.com" in s_url or "twitter.com" in s_url else ("GitHub" if "github.com" in s_url else "Social Profile"))
+            if not any(label in link for link in links):
+                links.append(f'<a class="text-link" href="{text(s_url)}">{label}</a>')
     return "".join(links)
 
 
@@ -113,6 +134,12 @@ def hero(data: dict) -> str:
         hero_art = _restaurant_illustration() if is_fictional(data) else ""
         art_class = " has-art" if hero_art else " no-art"
         return f'<section class="hero hero-restaurant{art_class}" id="top"><div class="hero-copy"><p class="eyebrow">{eyebrow}</p><h1>{text(title)}</h1><p class="hero-intro">{text(subtitle)}</p><div class="actions">{action_links(data)}</div></div>{hero_art}</section>'
+    if data.get("category") in {"retail", "shop", "store", "boutique", "fashion", "clothing"}:
+        eyebrow = f"{text(data.get('city', ''))} · shop" if not is_fictional(data) else f"{text(data.get('city', ''))} · fictional test store"
+        return f'<section class="hero" id="top"><p class="eyebrow">{eyebrow}</p><h1>{text(title)}</h1><p>{text(subtitle)}</p><div class="actions">{action_links(data)}</div></section>'
+    if data.get("category") in {"portfolio", "personal_portfolio", "developer", "software_engineer", "web_developer", "designer", "creative_technologist", "digital_builder", "creator", "freelancer"}:
+        eyebrow = f"{text(data.get('city', ''))} · portfolio" if not is_fictional(data) else f"{text(data.get('city', ''))} · fictional test portfolio"
+        return f'<section class="hero hero-portfolio" id="top"><p class="eyebrow">{eyebrow}</p><h1>{text(title)}</h1><p class="hero-intro">{text(subtitle)}</p><div class="actions">{action_links(data)}</div></section>'
     return f'<section class="hero" id="top"><p class="eyebrow">{text(data["city"])}</p><h1>{text(title)}</h1><p>{text(subtitle)}</p><div class="actions">{action_links(data)}</div></section>'
 
 
@@ -123,6 +150,9 @@ def about(data: dict) -> str:
         return ""
     if data.get("category") in {"restaurant", "food_business"}:
         return f'<section id="about" class="story-section"><div><p class="section-kicker">The idea</p><h2>{text(title)}</h2></div><p class="story-copy">{text(description)}</p></section>'
+    if data.get("category") in {"portfolio", "personal_portfolio", "developer", "software_engineer", "web_developer", "designer", "creative_technologist", "digital_builder", "creator", "freelancer"}:
+        heading_text = "About Me" if title in {"About us", "About"} else title
+        return f'<section id="about" class="story-section"><div><p class="section-kicker">Profile</p><h2>{text(heading_text)}</h2></div><p class="story-copy">{text(description)}</p></section>'
     return f'<section id="about"><h2>{text(title)}</h2><p>{text(description)}</p></section>'
 
 
@@ -134,16 +164,22 @@ def card_list(section_id: str, title: str, entries: list[dict], price: bool = Fa
         heading = text(entry.get("name"))
         detail = text(entry.get("description"))
         amount = f'<p class="price">{text(entry.get("price"))}</p>' if price and entry.get("price") and not fictional else ""
-        number = f'<span class="menu-index" aria-hidden="true">{index:02d}</span>' if section_id in {"menu", "offerings", "services"} else ""
+        number = f'<span class="menu-index" aria-hidden="true">{index:02d}</span>' if section_id in {"menu", "offerings", "services", "products", "projects", "skills"} else ""
         cards.append(f'<article class="card">{number}<div><h3>{heading}</h3><p>{detail}</p>{amount}</div></article>')
     if section_id == "menu" and fictional:
         heading = f'<div class="section-heading"><div><p class="section-kicker">From the test kitchen</p><h2>{text(title)}</h2></div><p class="section-note">Fictional dishes for layout testing. Availability and prices are not represented.</p></div>'
-    elif section_id in {"menu", "offerings", "services"}:
-        kicker = "Signature dishes" if section_id == "menu" else "What we offer"
+    elif section_id == "products" and fictional:
+        heading = f'<div class="section-heading"><div><p class="section-kicker">Featured collection</p><h2>{text(title)}</h2></div><p class="section-note">Fictional products for layout testing. Availability and prices are not represented.</p></div>'
+    elif section_id == "projects" and fictional:
+        heading = f'<div class="section-heading"><div><p class="section-kicker">Showcase</p><h2>{text(title)}</h2></div><p class="section-note">Fictional demonstration projects for portfolio layout testing.</p></div>'
+    elif section_id == "skills" and fictional:
+        heading = f'<div class="section-heading"><div><p class="section-kicker">Technical Stack</p><h2>{text(title)}</h2></div><p class="section-note">Fictional capabilities for portfolio layout testing.</p></div>'
+    elif section_id in {"menu", "offerings", "services", "products", "projects", "skills"}:
+        kicker = {"menu": "Signature dishes", "products": "Our collection", "offerings": "What we offer", "projects": "Featured Work", "skills": "Core Capabilities"}.get(section_id, "What we offer")
         heading = f'<div class="section-heading"><div><p class="section-kicker">{kicker}</p><h2>{text(title)}</h2></div></div>'
     else:
         heading = f'<h2>{text(title)}</h2>'
-    class_name = "menu-section" if section_id in {"menu", "offerings"} else ""
+    class_name = "menu-section" if section_id in {"menu", "offerings", "products", "projects"} else ""
     return f'<section id="{text(section_id)}" class="{class_name}">{heading}<div class="card-grid">{"".join(cards)}</div></section>'
 
 
@@ -167,7 +203,8 @@ def location(data: dict) -> str:
     if not address:
         return ""
     if is_fictional(data):
-        return f'<section id="location" class="location-panel"><p class="section-kicker">A fictional setting</p><h2>Find the test kitchen</h2><p>{text(address)}</p><p class="demo-note">This address is fictional. No map or directions link is provided.</p></section>'
+        heading = "Find the test kitchen" if data.get("category") == "restaurant" else "Find the test location"
+        return f'<section id="location" class="location-panel"><p class="section-kicker">A fictional setting</p><h2>{heading}</h2><p>{text(address)}</p><p class="demo-note">This address is fictional. No map or directions link is provided.</p></section>'
     map_url = f"https://www.google.com/maps/search/?api=1&query={quote(str(address))}"
     return f'<section id="location" class="location-panel"><p class="section-kicker">Location</p><h2>Find us</h2><p>{text(address)}</p><a class="text-link" href="{text(map_url)}">Open map</a></section>'
 

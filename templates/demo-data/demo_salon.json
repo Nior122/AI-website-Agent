@@ -4,14 +4,17 @@
   "category": "beauty_salon",
   "city": "Port Harcourt",
   "address": "Fictional address, Port Harcourt",
-  "description": "A fictional salon used only to demonstrate the reusable template system.",
+  "description": "A fictional salon used only to demonstrate the reusable template system. Premium beauty and wellness care tailored to every client.",
   "phone": "+234 800 000 0001",
   "whatsapp": "+234 800 000 0001",
   "instagram_url": "https://instagram.example.invalid/demoglowstudio",
   "opening_hours": "Mon–Sat, 09:00–18:00",
   "services": [
-    { "name": "Natural Hair Care", "description": "Fictional service description." },
-    { "name": "Makeup", "description": "Fictional service description." }
+    { "name": "Natural Hair Care", "description": "Fictional deep conditioning, protective styling, and scalp treatments." },
+    { "name": "Makeup", "description": "Fictional bridal, editorial, and everyday makeup artistry." },
+    { "name": "Nail Artistry", "description": "Fictional gel extensions, nail art, and luxury manicure sessions." },
+    { "name": "Skin Rejuvenation", "description": "Fictional facial treatments including exfoliation and hydration therapy." },
+    { "name": "Lash & Brow Studio", "description": "Fictional lash extensions, brow shaping, and tinting services." }
   ],
   "images": [],
   "brand": { "primary_color": "#8b2454", "secondary_color": "#fff7fb", "accent_color": "#e3a018", "border_radius": "1rem" },

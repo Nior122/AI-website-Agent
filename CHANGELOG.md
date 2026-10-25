@@ -4,7 +4,58 @@ All notable project changes are recorded here. Dates use ISO 8601 (`YYYY-MM-DD`)
 
 ## [Unreleased]
 
-### Added — 2026-10-21 (Stage 5: Multi-Channel Expansion, Professional Services Templates, and Daily Business Briefing Engine)
+### Added — 2026-10-23 (Live Gmail API Outreach Delivery & Endpoint Bugfix)
+
+- **Gmail API Send Endpoint Correction (`integrations/gmail_send.py`)**:
+  - Fixed Google Gmail API v1 send endpoint from `POST /messages` to `POST /messages/send`.
+  - Root cause resolved: `POST /messages` targets `users.messages.insert` (which requires `gmail.insert` or full mailbox scopes), causing HTTP 403 "insufficient authentication scopes" when authorized with send-only scope `https://www.googleapis.com/auth/gmail.send`. `POST /messages/send` accurately calls `users.messages.send` which matches the minted scope.
+  - Updated `tests/test_phase49_approved_sending.py` test assertion to verify `call[1].endswith("/messages/send")`. All 95 tests pass.
+- **Outbound Send State Durability (`orchestration/outbound.py`)**:
+  - Ensured failed provider attempts immediately persist `send_state: "FAILED"` to prevent drafts from getting locked in dangling `SENDING` state.
+  - Added attempt counter to failure idempotency key (`idempotency_key=f"{dedupe_key}:failed:{attempts + 1}"`) to ensure repeated deliberate retry decisions on failed drafts are treated as distinct ledger events rather than duplicate bailouts.
+- **Delivered Live Authorized Email via Gmail API**:
+  - Successfully dispatched live approved email for `outreach-0005` to operator's approved address `chinecheremjoseph26@gmail.com`.
+  - Confirmed provider acceptance from Google Gmail API response: `provider_message_id`: `1a166c014e5e045a`, `send_state`: `SENT`, `outreach_status`: `SENT_REPORTED`.
+  - Durable engagement event recorded in tracking ledger: `engagement-0007` (`counts_as_contact: True`).
+
+### Added — 2026-10-23 (Personal Portfolio Template & End-to-End Execution Correction)
+
+- **Personal Portfolio Template (`personal-portfolio-v1`)**:
+  - `templates/registry.py`: Added 7th registered template `personal-portfolio-v1` tailored for developers, designers, creative technologists, digital builders, and freelancers.
+  - `templates/renderer.py`: Added custom portfolio renderer generating structured Profile/About, Selected Projects showcase with direct links, Core Capabilities & Stack chips, and Services & Specializations cards.
+  - `templates/components.py`: Added portfolio section support, category-aware location headings, and action links for GitHub, LinkedIn, Twitter/X, and custom portfolio links.
+  - `templates/demo-data/demo_portfolio.json`: Added fictional demonstration fixture with projects, skills, and verified non-infringing demo metadata.
+  - `builder/website_builder.py`: Added category aliases (`portfolio`, `personal_portfolio`, `developer`, `software_engineer`, `web_developer`, `designer`, `creative_technologist`, `digital_builder`, `creator`, `freelancer`) and verified field extraction for projects, skills, and developer social handles.
+  - `tests/test_final_template.py`: Expanded test coverage to 44 tests covering all 7 registered templates, fixtures, design tokens, and static QA gates (100% score PASS).
+- **Authorized Portfolio End-to-End Run (`scratch/execute_e2e_portfolio_run.py`)**:
+  - Executed complete pipeline: Scout -> Research -> Qualify -> Build (`build-2026-10-23T021337z`) -> Validate (14/14 PASS) -> Approval (`rev-e2e-run-portfolio-20261023`) -> Deployment Preflight (PASS) -> Outreach Draft (`outreach-0003`, fingerprinted `e998c5c1771cf50b`).
+  - Target website `https://josephportifolio.vercel.app` verified HTTP 200 and preserved 100% untouched.
+
+### Added — 2026-10-22 (Final Stage: Reusable Website Template & Production Presentation)
+
+- **Comprehensive CSS & Design System Overhaul (`templates/styles.css`)**:
+  - Upgraded typography with Google Fonts `DM Serif Display` for headings and `Inter` for interface/body text.
+  - Implemented tailored HSL-tuned color palette with sleek dark modes, vibrant accents, smooth gradients, and glassmorphism cards (`backdrop-filter: blur(12px)`).
+  - Added micro-interactions: card hover lifts, badge glow, smooth transitions, mobile navigation collapse, and responsive CSS grid layouts (`@media (max-width: 48rem)`).
+- **Expanded Template Registry (`templates/`)**:
+  - `templates/registry.py`: Added `retail-ecommerce-v1` template for boutiques, stores, artisans, and specialty retail with product catalog, features, service guarantees, and promotional banners.
+  - Total registered templates increased to 6: `salon-service-v1`, `restaurant-menu-v1`, `clinic-healthcare-v1`, `legal-practice-v1`, `automotive-service-v1`, `retail-ecommerce-v1`.
+  - Added demonstration fixture `templates/demo-data/demo_retail.json` with realistic, non-infringing placeholder business data.
+  - Updated all 6 demo fixtures (`demo_salon.json`, `demo_restaurant.json`, `demo_clinic.json`, `demo_legal.json`, `demo_automotive.json`, `demo_retail.json`) with enriched content, guarantees, and hours.
+- **Visual Verification & QA Gate**:
+  - Verified 100% PASS on the 14-point static QA validation suite across all 6 templates.
+  - Generated live HTML previews and verified UI quality and mobile responsiveness via browser automation.
+- **Final Test Suite Verification**:
+  - Added `tests/test_final_template.py` with 7 comprehensive regression tests.
+  - Total test suite expanded to **766 passed, 1 skipped, 0 failures across 767 tests**.
+
+### Added — 2026-10-22 (Stage 10: Integration Validation, Controlled Automation & System Hardening)
+
+- **Integration Acceptance & Workflow Auditing**:
+  - Verified and documented 5 dedicated n8n workflows on production instance (`https://ai-website-agent-n8n.onrender.com`).
+  - Added `docs/STAGE_10_INTEGRATION_ACCEPTANCE.md` documenting end-to-end webhook routes, execution logs, payload contracts, and error handling.
+  - Hardened local adapters and webhook validation in `tests/test_stage10_integration_acceptance.py`.
+
 
 - **Professional Services Template Registry Expansion (`templates/`)**:
   - `templates/registry.py`: Added three dedicated professional services templates:

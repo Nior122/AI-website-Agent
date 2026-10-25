@@ -428,7 +428,7 @@ class ApprovedOutboundSender:
                     failed = self.ledger.mark_outreach_sent(outreach_id, result=OUTCOME_FAILED, provider="gmail",
                                                             failure_note=f"{code}: {str(outcome.get('reason') or '')[:160]}"
                                                             + (f" | asked by {actor_id}" if actor_id else ""),
-                                                            idempotency_key=f"{dedupe_key}:failed")
+                                                            idempotency_key=f"{dedupe_key}:failed:{int(record.get('send_attempts') or 0) + 1}")
                 except LedgerError as error:
                     self._write(outreach_id, {"send_state": None,
                                               "send_state_detail": f"refused by the provider ({code}); the failure "
@@ -437,6 +437,7 @@ class ApprovedOutboundSender:
                                                  f"failure record: {error}",
                                           next_action="read both messages; the provider answer stands, the ledger "
                                                       "row is missing") from None
+                self._write(outreach_id, {"send_state": "FAILED", "send_state_detail": f"refused by provider: {code}"})
                 return {"dry_run": False, "send_state": "FAILED", "code": code, "outreach_id": outreach_id,
                         "engagement_id": (failed.get("send_event") or {}).get("engagement_id"),
                         "outreach_status": failed.get("status"), "delivery_status": failed.get("delivery_status"),

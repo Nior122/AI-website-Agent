@@ -6,13 +6,15 @@ This document records the baseline test suite audit, the defect root causes, the
 
 ## 1. Test Suite Verification Summary
 
-- **Total Test Cases**: 709
-- **Passing**: 708
+- **Total Test Cases**: 723
+- **Passing**: 722
 - **Skipped**: 1 (`test_render_blueprint_matches_documented_topology` - requires Docker/Render environment)
 - **Failures**: **0**
 - **Errors**: **0**
 - **Platform**: Windows 11 (Python 3.11.13)
 - **Status**: **100% GREEN (PASS)**
+- **New Test Suite (Stage 10)**: `tests/test_stage10_integration_acceptance.py` (14 tests covering workflow contracts, credentials, input validation, and hold gates)
+- **Resolved Timing Sensitivity**: Standardized `tests/test_briefing.py` with deterministic Lagos timezone mock to eliminate real-world calendar progression flakiness.
 
 ---
 

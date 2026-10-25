@@ -96,7 +96,42 @@ graph LR
 - **Objectives**:
   - [x] **Credential Rotation (Priority 0)**: Rotated exposed API bearer token (`AI_WEBSITE_AGENT_API_TOKEN`) on Render to a cryptographically secure 43-character token; verified old token refusal (`HTTP 401`) and new token acceptance (`HTTP 200`); verified zero leaked credentials in git repository.
   - [x] **Independent Render & Supabase Live Verification (Priority 1)**: Verified `GET /healthz` (`HTTP 200 {"status": "ok"}`) unauthenticated; verified `GET /readiness` (`HTTP 200 {"status": "READY", "storage_backend": "postgres", "production_mode": true}`); verified auth refusals on missing/invalid headers and unsupported HTTP verbs (`HTTP 401` / `405`); verified transactional persistence, idempotency, and restart survival via live test job (`stage8-verify-1792557783`); verified Supabase PostgreSQL Row Level Security (RLS) active across all 11 tables.
-  - [x] **Dedicated n8n Workflow Verification (Priority 2)**: Verified all 5 dedicated workflows (`YaH7bhvuxxnnH7yt`, `eRAS3vC1wq19zaYu`, `hgLCDChiBiJhooUE`, `gWXFx91CdFmvH45R`, `UbKxQXbz5Q7PSxQs`) preserved in `active: false` state; credential mapping documented for n8n UI update.
+  - [x] **Dedicated n8n Workflow Verification (Priority 2)**: Verified all 5 dedicated workflows preserved in `active: false` state.
   - [x] **Controlled Pipeline Smoke Tests (Priority 3)**: Executed Test A Website Pipeline (36 passed), Test B Social Pipeline (21 passed), Test C Inbound Intake (32 passed), Test D Approved Outbound Gate (97 passed). Total: 186 passed.
   - [x] **Operator Console Readiness (Priority 4)**: Verified Telegram bot command parser, allowlists, and notification gates (86 passed).
   - [x] **Operational & Security Runbook Documentation (Priority 5 & 6)**: Documented credential rotation, Supabase backup/restore procedures, and operator command cheat sheet in `docs/OPERATIONS_RUNBOOK.md` and `docs/ENVIRONMENT_AND_SECRETS.md`.
+
+### Stage 9: Dedicated n8n Instance Provisioning & Workflow Import
+- **Status**: **COMPLETE (Verified Live & Green)**
+- **Objectives**:
+  - [x] Deploy fresh dedicated n8n web service on Render at `https://ai-website-agent-n8n.onrender.com` (isolated from legacy 20-workflow instance).
+  - [x] Configure production credentials on dedicated instance: `AI Website Agent API` (Header Auth) and `Telegram Operator Bot` (telegramApi).
+  - [x] Import canonical workflows 01 to 05 with node credentials attached:
+    - 01: `2If2517dlZ6VgMRG`
+    - 02: `VMZ7hjZvUySNXI5r`
+    - 03: `JX8JOIsKsTzCeZ71`
+    - 04: `xKAaIpgsj09HH8nK`
+    - 05: `kGNApQItCjQ5CNeu`
+  - [x] Verify all workflows maintain `active: false` state.
+
+### Stage 10: Integration Validation, Controlled Automation & System Hardening
+- **Status**: **COMPLETE (Verified Green)**
+- **Objectives**:
+  - [x] Audit remote n8n workflow definitions and node connections against canonical exports in `n8n/workflows/project/`.
+  - [x] Establish integration acceptance matrix and automated test suite (`tests/test_stage10_integration_acceptance.py`, 14 tests).
+  - [x] Verify API contracts: authentication, input validation, idempotency, failure boundaries, and hold gates.
+  - [x] Resolve calendar timing sensitivity in `tests/test_briefing.py` via deterministic Lagos timezone mocking.
+  - [x] Verify full test suite regression-free: **722 passed, 1 skipped, 0 failures across 723 tests**.
+  - [x] Enforce controlled execution policy: all 5 workflows preserved inactive (`active: false`) until operator activation.
+  - [x] Prepare comprehensive Stage 10 report and transition criteria for the final website-template stage.
+
+### Final Stage: Reusable Website Template & Production Presentation
+- **Status**: **COMPLETE (Verified Green)**
+- **Objectives**:
+  - [x] Complete CSS overhaul: premium typography (DM Serif Display + Inter), HSL-tuned color palette, glassmorphism accents, micro-animations, gradient hero sections, polished card hover effects, enhanced responsive breakpoints.
+  - [x] Add 6th template: `retail-ecommerce-v1` for retail stores, boutiques, fashion, and e-commerce businesses with product showcase and dual products+services sections.
+  - [x] Enrich all 6 demo fixtures with 4-5 services/items each and richer fictional descriptions.
+  - [x] Maintain clean data separation: business data, brand CSS custom properties, and layout components remain independent.
+  - [x] All 6 templates pass 14-point static QA validator at 100/100 PASS.
+  - [x] Comprehensive test suite: `tests/test_final_template.py` (44 tests) covering registry, fixtures, rendering, QA compliance, data separation, CSS foundation, and edge cases.
+  - [x] Full test suite regression-free.

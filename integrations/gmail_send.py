@@ -287,14 +287,14 @@ class GmailSendAdapter(GmailTransport):
 
         if dry_run:
             return {"sent": False, "dry_run": True, "code": None, "next_action": None, "provider": "gmail",
-                    "endpoint": f"{self.api_root}/{self.account}/messages", "method": SEND_ONLY_METHOD,
+                    "endpoint": f"{self.api_root}/{self.account}/messages/send", "method": SEND_ONLY_METHOD,
                     "recipient": recipient, "size_bytes": prepared.get("size_bytes"),
                     "message_ref": f"gmail:send:{prepared.get('fingerprint', '')[:16]}",
                     "would_send": True, "headers": ["To", "Subject", "Message-ID"],
                     "capability_note": ("a dry run proves the shape of the request, not that Google will accept "
                                         "it; no network call was made")}
 
-        payload = self.request_json("/messages", method=SEND_ONLY_METHOD, body=body)
+        payload = self.request_json("/messages/send", method=SEND_ONLY_METHOD, body=body)
         provider_id = str(payload.get("id") or "").strip()
         if not provider_id:
             # Google answered without an id. That is not a failure to send and not a success; it is unknown, and
@@ -343,7 +343,7 @@ class GmailSendAdapter(GmailTransport):
         return {"provider": "gmail", "scope": self.SCOPE, "account": self.account,
                 "methods": ["send"], "methods_refused_by_design": ["list", "get", "search", "delete", "modify",
                                                                     "labels", "threads"],
-                "enabled": self.enabled, "endpoint": f"{self.api_root}/{self.account}/messages",
+                "enabled": self.enabled, "endpoint": f"{self.api_root}/{self.account}/messages/send",
                 "method_allowed": SEND_ONLY_METHOD, "max_recipients": MAX_RECIPIENTS,
                 "token_present": bool(self._access_token), "token_minted_at": self.token_minted_at,
                 "calls": self.calls, "errors": self.errors,
