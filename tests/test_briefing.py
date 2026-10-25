@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timezone, timedelta
 import re
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from orchestration.briefing import (
     compute_authoritative_briefing_data,
@@ -194,15 +194,18 @@ class BriefingEngineTests(unittest.TestCase):
             allowed_chat_ids=[67890],
         )
 
-        # Test /briefing
-        res1 = bot.dispatch("/briefing", user_id=12345, chat_id=67890, deliver=False)
+        # Pin the service clock so this fixture keeps one overdue task as dates advance.
+        with patch("orchestration.briefing.get_lagos_now",
+                   return_value=datetime(2026, 10, 21, 8, 30, tzinfo=LAGOS_TZ)):
+            # Test /briefing
+            res1 = bot.dispatch("/briefing", user_id=12345, chat_id=67890, deliver=False)
         self.assertEqual(res1.get("code"), "DAILY_BRIEFING")
         self.assertIn("📊 DAILY BUSINESS BRIEFING", res1.get("reply", ""))
         self.assertEqual(res1.get("active_leads"), 3)
         self.assertEqual(res1.get("overdue_tasks"), 1)
 
-        # Test /daily alias
-        res2 = bot.dispatch("/daily", user_id=12345, chat_id=67890, deliver=False)
+            # Test /daily alias
+            res2 = bot.dispatch("/daily", user_id=12345, chat_id=67890, deliver=False)
         self.assertEqual(res2.get("code"), "DAILY_BRIEFING")
         self.assertIn("📊 DAILY BUSINESS BRIEFING", res2.get("reply", ""))
 
