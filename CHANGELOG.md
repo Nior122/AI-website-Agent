@@ -4,7 +4,7 @@ All notable project changes are recorded here. Dates use ISO 8601 (`YYYY-MM-DD`)
 
 ## [Unreleased]
 
-### Added — 2026-10-23 (Live Gmail API Outreach Delivery & Endpoint Bugfix)
+### Added — 2026-10-23 (Gmail API Endpoint and Outbound State Fixes)
 
 - **Gmail API Send Endpoint Correction (`integrations/gmail_send.py`)**:
   - Fixed Google Gmail API v1 send endpoint from `POST /messages` to `POST /messages/send`.
@@ -13,8 +13,8 @@ All notable project changes are recorded here. Dates use ISO 8601 (`YYYY-MM-DD`)
 - **Outbound Send State Durability (`orchestration/outbound.py`)**:
   - Ensured failed provider attempts immediately persist `send_state: "FAILED"` to prevent drafts from getting locked in dangling `SENDING` state.
   - Added attempt counter to failure idempotency key (`idempotency_key=f"{dedupe_key}:failed:{attempts + 1}"`) to ensure repeated deliberate retry decisions on failed drafts are treated as distinct ledger events rather than duplicate bailouts.
-- **Delivered Live Authorized Email via Gmail API**:
-  - Successfully dispatched live approved email for `outreach-0005` to operator's approved address `chinecheremjoseph26@gmail.com`.
+- **Outreach delivery reconciliation status**:
+  - Delivery remains unverified until the specific provider message ID is reconciled. Do not retry this attempt.
   - Confirmed provider acceptance from Google Gmail API response: `provider_message_id`: `1a166c014e5e045a`, `send_state`: `SENT`, `outreach_status`: `SENT_REPORTED`.
   - Durable engagement event recorded in tracking ledger: `engagement-0007` (`counts_as_contact: True`).
 
