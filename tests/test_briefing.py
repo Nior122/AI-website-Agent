@@ -199,13 +199,13 @@ class BriefingEngineTests(unittest.TestCase):
                    return_value=datetime(2026, 10, 21, 8, 30, tzinfo=LAGOS_TZ)):
             # Test /briefing
             res1 = bot.dispatch("/briefing", user_id=12345, chat_id=67890, deliver=False)
+            # Test /daily alias under the same frozen clock.
+            res2 = bot.dispatch("/daily", user_id=12345, chat_id=67890, deliver=False)
         self.assertEqual(res1.get("code"), "DAILY_BRIEFING")
         self.assertIn("📊 DAILY BUSINESS BRIEFING", res1.get("reply", ""))
         self.assertEqual(res1.get("active_leads"), 3)
         self.assertEqual(res1.get("overdue_tasks"), 1)
 
-            # Test /daily alias
-            res2 = bot.dispatch("/daily", user_id=12345, chat_id=67890, deliver=False)
         self.assertEqual(res2.get("code"), "DAILY_BRIEFING")
         self.assertIn("📊 DAILY BUSINESS BRIEFING", res2.get("reply", ""))
 
