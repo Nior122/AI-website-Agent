@@ -190,6 +190,25 @@ class DeploymentTests(unittest.TestCase):
         self.assertIn("prj_fixture", called[-1])
         self.assertNotIn("--prod", called[-1])
 
+    def test_real_business_publish_without_verified_project_id_is_refused(self):
+        self._link_project("fictional-studio-preview")
+        self.approve_build()
+        manifest_path = self.build / "build.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["data_classification"] = "REAL_PUBLIC_DATA"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        called = []
+        def runner(*args, **kwargs):
+            called.append(args[0])
+            return subprocess.CompletedProcess(args[0], 0, "https://fictional-studio-preview.vercel.app", "")
+        result = VercelDeploymentProvider(self.root, runner).deploy(
+            self.build, dry_run=False, project_name="fictional-studio-preview",
+            approve_real_preview=True,
+        )
+        self.assertEqual(result.deployment_status, "NEEDS_REVIEW")
+        self.assertIn("verified Vercel project ID", result.error or "")
+        self.assertEqual(called, [])
+
     def test_real_publish_without_human_approval_is_refused_before_any_cli_call(self):
         self._link_project()
         called = []
@@ -224,6 +243,102 @@ class DeploymentTests(unittest.TestCase):
         self.assertIn("DEPLOYMENT_ALREADY_RECORDED", second.error or "")
         self.assertEqual(len(calls), 1)
 
+
+    def test_api_bound_project_deploys_without_workspace_link_and_passes_exact_team(self):
+        self.approve_build()
+        client = type("FakeVercelClient", (), {
+            "token": "fixture-token",
+            "team_id": "team_fixture",
+            "get_project": lambda self, project_id: {
+                "id": project_id, "name": "fictional-studio-preview",
+            },
+            "get_deployment_by_url": lambda self, url: {
+                "id": "dpl_fixture123",
+                "url": "fictional-studio-preview-abc.vercel.app",
+                "project_id": "prj_managed123",
+                "ready_state": "READY",
+            },
+        })()
+        calls = []
+        def runner(*args, **kwargs):
+            calls.append((args[0], kwargs))
+            return subprocess.CompletedProcess(args[0], 0, "https://fictional-studio-preview-abc.vercel.app\n", "")
+        from unittest.mock import patch
+        with patch("deployment.site_management.VercelProjectsClient", return_value=client):
+            result = VercelDeploymentProvider(self.root, runner).deploy(
+                self.build, dry_run=False, project_name="fictional-studio-preview",
+                vercel_project_id="prj_managed123",
+            )
+        self.assertEqual(result.deployment_status, "DEPLOYED")
+        self.assertEqual(result.vercel_project_id, "prj_managed123")
+        self.assertEqual(result.vercel_deployment_id, "dpl_fixture123")
+        self.assertEqual(result.metadata["provider_verification"]["status"], "VERIFIED")
+        self.assertEqual(result.metadata["project_name"], "fictional-studio-preview")
+        command, kwargs = calls[0]
+        self.assertIn("--project", command)
+        self.assertEqual(command[command.index("--project") + 1], "prj_managed123")
+        self.assertEqual(kwargs["env"]["VERCEL_TOKEN"], "fixture-token")
+        self.assertEqual(kwargs["env"]["VERCEL_ORG_ID"], "team_fixture")
+        self.assertEqual(kwargs["env"]["VERCEL_PROJECT_ID"], "prj_managed123")
+        self.assertNotIn("fixture-token", " ".join(command))
+        self.assertFalse((self.root / ".vercel" / "project.json").exists())
+
+    def test_api_bound_publish_is_not_marked_deployed_when_readback_targets_another_project(self):
+        self.approve_build()
+        target_url = "https://fictional-studio-preview-abc.vercel.app"
+        client = type("FakeVercelClient", (), {
+            "token": "fixture-token",
+            "team_id": "team_fixture",
+            "get_project": lambda self, project_id: {
+                "id": project_id, "name": "fictional-studio-preview",
+            },
+            "get_deployment_by_url": lambda self, url: {
+                "id": "dpl_wrongtarget123",
+                "url": "fictional-studio-preview-abc.vercel.app",
+                "project_id": "prj_someoneelse",
+                "ready_state": "READY",
+            },
+        })()
+        calls = []
+        def runner(*args, **kwargs):
+            calls.append((args[0], kwargs))
+            return subprocess.CompletedProcess(args[0], 0, target_url + "\n", "")
+        from unittest.mock import patch
+        with patch("deployment.site_management.VercelProjectsClient", return_value=client):
+            result = VercelDeploymentProvider(self.root, runner).deploy(
+                self.build, dry_run=False, project_name="fictional-studio-preview",
+                vercel_project_id="prj_managed123",
+            )
+        self.assertEqual(result.deployment_status, "PUBLISH_UNCERTAIN")
+        self.assertEqual(result.deployment_url, target_url)
+        self.assertIsNone(result.vercel_deployment_id)
+        self.assertEqual(result.metadata["provider_verification"]["status"], "UNVERIFIED")
+        attempts = json.loads((self.build / "deployment-attempts.json").read_text(encoding="utf-8"))
+        self.assertEqual(attempts[-1]["deployment_status"], "PUBLISH_UNCERTAIN")
+        self.assertEqual(len(calls), 1, "an unverified provider result must not be auto-published again")
+
+    def test_api_bound_project_name_mismatch_is_refused_before_cli_call(self):
+        self.approve_build()
+        client = type("FakeVercelClient", (), {
+            "token": "fixture-token",
+            "team_id": "team_fixture",
+            "get_project": lambda self, project_id: {
+                "id": project_id, "name": "someone-elses-preview",
+            },
+        })()
+        calls = []
+        def runner(*args, **kwargs):
+            calls.append(args[0])
+            return subprocess.CompletedProcess(args[0], 0, "https://fixture.vercel.app", "")
+        from unittest.mock import patch
+        with patch("deployment.site_management.VercelProjectsClient", return_value=client):
+            result = VercelDeploymentProvider(self.root, runner).deploy(
+                self.build, dry_run=False, project_name="fictional-studio-preview",
+                vercel_project_id="prj_managed123",
+            )
+        self.assertEqual(result.deployment_status, "FAILED")
+        self.assertEqual(result.metadata.get("denial_code"), "VERCEL_PROJECT_BINDING_MISMATCH")
+        self.assertEqual(calls, [])
 
 if __name__ == "__main__":
     unittest.main()
