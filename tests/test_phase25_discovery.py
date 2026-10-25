@@ -228,9 +228,9 @@ class Phase25DiscoveryAndQualificationTests(unittest.TestCase):
             self.assertEqual(d25["result"]["selected_candidate_id"], "phase25-search-pitstop-lagos")
         else:
             ws_check = store.check_local_state()
-            self.assertIn(str(p19), ws_check["irrecoverable_gitignored_audit_files"])
-            self.assertIn(str(p20), ws_check["irrecoverable_gitignored_audit_files"])
-            self.assertIn(str(p25), ws_check["irrecoverable_gitignored_audit_files"])
+            self.assertIn(p19.as_posix(), ws_check["irrecoverable_gitignored_audit_files"])
+            self.assertIn(p20.as_posix(), ws_check["irrecoverable_gitignored_audit_files"])
+            self.assertIn(p25.as_posix(), ws_check["irrecoverable_gitignored_audit_files"])
 
     def test_fictional_preview_deployment_and_project0001_remain_unaffected(self):
         """Lead-0001 and project-0001 maintain their deployed preview / review status."""
