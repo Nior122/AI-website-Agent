@@ -110,6 +110,7 @@ class VercelDeploymentProvider:
         approve_needs_review: bool = False,
         approve_real_preview: bool = False,
         project_name: str | None = None,
+        vercel_project_id: str | None = None,
         resolve_uncertain_publish: bool = False,
         resolution_note: str | None = None,
         resolved_by: str | None = None,
@@ -150,7 +151,12 @@ class VercelDeploymentProvider:
                 if not approved:
                     return self._refuse(build_path, result, code, reason, approval=approval,
                         status="NEEDS_REVIEW" if code.startswith("APPROVAL_") else "FAILED")
-                project = _assert_project_linked(self.repository_root, target_project_name)
+                if is_real and not vercel_project_id:
+                    raise NeedsReview(
+                        "A real-business publish requires a verified Vercel project ID persisted on its tracking project. "
+                        "Use the approved per-business provisioning path; a project name or local .vercel link is not sufficient."
+                    )
+                project = self._verified_project_target(target_project_name, vercel_project_id)
                 proceed, code, reason, prior = classify_prior_attempt(
                     build_path,
                     artifact_sha=artifact_sha256(build_path),
@@ -177,9 +183,11 @@ class VercelDeploymentProvider:
                     )
                     result.metadata["publish_resolution"] = resolution
             else:
-                project = _assert_project_linked(self.repository_root, target_project_name)
+                project = self._verified_project_target(target_project_name, vercel_project_id)
             result.vercel_project_id = project["projectId"]
             result.metadata.update({"target": "preview", "dry_run": dry_run, "project_name": project["projectName"]})
+            if vercel_project_id:
+                result.metadata["vercel_team_id"] = str(project.get("orgId") or "")
             with TemporaryDirectory(prefix="ai-website-agent-preview-") as temporary:
                 payload = stage_public_payload(build_path, Path(temporary))
                 result.metadata["payload_files"] = list(payload.files)
@@ -196,8 +204,22 @@ class VercelDeploymentProvider:
                 # the assumption that nothing happened.
                 _append_attempt(build_path, result, "DEPLOYING", approval_review_id=(approval or {}).get("review_id"))
                 cmd = [_vercel_command(), "deploy", str(payload.directory), "--yes", "--project", project["projectId"]]
+                run_kwargs = {
+                    "cwd": str(self.repository_root), "capture_output": True, "text": True,
+                    "check": False, "timeout": self.deploy_timeout_seconds,
+                }
+                if vercel_project_id:
+                    # API-created projects are unlinked intentionally. Vercel CLI supports headless
+                    # targeting through ORG_ID/PROJECT_ID, avoiding a workspace link or interactive prompt.
+                    # Credentials are passed only in the child environment, never as command-line arguments.
+                    client = self._vercel_client()
+                    run_env = os.environ.copy()
+                    run_env["VERCEL_TOKEN"] = client.token
+                    run_env["VERCEL_ORG_ID"] = client.team_id
+                    run_env["VERCEL_PROJECT_ID"] = project["projectId"]
+                    run_kwargs["env"] = run_env
                 try:
-                    completed = self.runner(cmd, cwd=str(self.repository_root), capture_output=True, text=True, check=False, timeout=self.deploy_timeout_seconds)
+                    completed = self.runner(cmd, **run_kwargs)
                 except subprocess.TimeoutExpired as error:
                     result.deployment_status = "PUBLISH_UNCERTAIN"
                     result.error = (
@@ -222,7 +244,52 @@ class VercelDeploymentProvider:
                 if completed.returncode != 0: raise RuntimeError(_safe_error(output) or f"Vercel CLI exited with code {completed.returncode}.")
                 url = _preview_url(output)
                 if not url: raise RuntimeError("Vercel CLI completed but did not return an HTTPS preview URL.")
-                result.deployment_url, result.vercel_deployment_id, result.deployment_status = url, _deployment_id_from_url(url), "DEPLOYED"
+                result.deployment_url = url
+                if vercel_project_id:
+                    try:
+                        verified_deployment = self._vercel_client().get_deployment_by_url(url)
+                        expected_host = (urlsplit(url).hostname or "").rstrip(".").casefold()
+                        if verified_deployment.get("project_id") != project["projectId"]:
+                            raise ValueError("Vercel reports that this deployment belongs to a different project ID.")
+                        if verified_deployment.get("url") != expected_host:
+                            raise ValueError("Vercel's deployment record does not match the returned preview hostname.")
+                        if verified_deployment.get("ready_state") != "READY":
+                            raise ValueError(
+                                "Vercel's deployment is not READY "
+                                f"(provider state: {verified_deployment.get('ready_state') or 'unknown'})."
+                            )
+                    except Exception as error:
+                        # The CLI may have uploaded a deployment, so this is not an ordinary retryable failure.
+                        # Preserve the exact URL and require operator reconciliation instead of publishing again.
+                        result.deployment_status = "PUBLISH_UNCERTAIN"
+                        result.vercel_deployment_id = None
+                        result.error = (
+                            "Vercel returned a preview URL, but authoritative read-back verification did not "
+                            "prove that the deployment is READY and belongs to the approved project. "
+                            f"Provider detail: {_safe_error(str(error)) or 'verification unavailable'}. "
+                            "The URL is preserved for reconciliation; do not retry the publish automatically."
+                        )
+                        result.metadata["provider_verification"] = {
+                            "status": "UNVERIFIED",
+                            "error_code": str(getattr(error, "code", "") or "VERCEL_DEPLOYMENT_VERIFICATION_FAILED"),
+                        }
+                        result.completed_at = _now()
+                        _write_manifest(build_path, result)
+                        _append_attempt(
+                            build_path, result, "PUBLISH_UNCERTAIN",
+                            provider_verification="UNVERIFIED",
+                        )
+                        return result
+                    result.vercel_deployment_id = verified_deployment["id"]
+                    result.metadata["provider_verification"] = {
+                        "status": "VERIFIED",
+                        "project_id": verified_deployment["project_id"],
+                        "ready_state": verified_deployment["ready_state"],
+                    }
+                else:
+                    # A URL slug is not a Vercel deployment ID; leave the ID unset unless Vercel confirms it.
+                    result.vercel_deployment_id = None
+                result.deployment_status = "DEPLOYED"
         except NeedsReview as error:
             result.deployment_status, result.error = "NEEDS_REVIEW", str(error)
         except ProviderConfigurationError as error:
@@ -236,6 +303,38 @@ class VercelDeploymentProvider:
         if not dry_run:
             _append_attempt(build_path, result, result.deployment_status, validation_id=result.validation_id, deployment_url=result.deployment_url)
         return result
+
+    @staticmethod
+    def _vercel_client():
+        from deployment.site_management import VercelProjectsClient
+        return VercelProjectsClient()
+
+    def _verified_project_target(self, target_project_name: str, vercel_project_id: str | None) -> dict:
+        """Verify the exact API-managed project or retain the legacy explicit linked-project gate."""
+        if not vercel_project_id:
+            return _assert_project_linked(self.repository_root, target_project_name)
+        from deployment.site_management import PROTECTED_PROJECT_NAMES, _is_protected
+
+        client = self._vercel_client()
+        try:
+            live = client.get_project(vercel_project_id)
+        except Exception as error:
+            raise ProviderConfigurationError(
+                f"Could not verify the dedicated Vercel project ID; deployment refused: {error}",
+                error_code="VERCEL_PROJECT_BINDING_UNVERIFIABLE",
+            ) from None
+        if live["id"] != vercel_project_id or live["name"] != target_project_name:
+            raise ProviderConfigurationError(
+                "The API-managed Vercel project ID/name did not match the approved target; deployment refused.",
+                error_code="VERCEL_PROJECT_BINDING_MISMATCH",
+            )
+        if _is_protected(live["id"], live["name"]) or live["name"].casefold() in PROTECTED_PROJECT_NAMES:
+            raise ProviderConfigurationError(
+                "The API-managed Vercel project is protected and cannot receive a business deployment.",
+                error_code="VERCEL_PROJECT_PROTECTED",
+            )
+        _assert_valid_preview_target(live["name"])
+        return {"projectId": live["id"], "projectName": live["name"], "orgId": client.team_id}
 
     @staticmethod
     def _refuse(build_path: Path, result: DeploymentResult, code: str, reason: str, *, status: str, approval: dict | None = None, prior: dict | None = None) -> DeploymentResult:

@@ -34,7 +34,7 @@ from typing import Any, Iterable
 from .controls import hold_view, release_hold, set_hold
 from .jobs import JobService
 from .observability import log_event, sanitize_diagnostic
-from .telegram_limits import attention_identity, clip_list, mask_address, safe_outbound_text
+from .telegram_limits import attention_identity, clip_list, mask_address, safe_outbound_text, safe_preview_text
 from integrations.telegram import ProviderError, describe_error as describe_provider_error, inline_keyboard
 from tracking.engagement import (RELATIONSHIP_STAGES, EngagementLedger, LedgerError, redact_contact_details)
 
@@ -118,6 +118,10 @@ COMMANDS: dict[str, tuple[str, str, bool]] = {
     "post": ("Social media draft operations: list, new, view, approve, reject", "[list | new <channel> <topic> | view <id> | approve <id> | reject <id>]", True),
     "briefing": ("Daily business briefing: pipeline, opportunities, overdue tasks, and recommendations", "[--trigger | --status]", False),
     "daily": ("Alias for /briefing", "[--trigger | --status]", False),
+    "sites": ("List deployed business websites and stable site IDs", "[--all]", False),
+    "site": ("Show one deployed website and its Vercel project identity", "<site_id>", False),
+    "deletesite": ("Request deletion review for one exact Vercel project; does not delete", "<site_id>", True),
+    "confirmdelete": ("Confirm a pending Vercel project deletion by its one-time fingerprint", "<site_id> <fingerprint>", True),
 }
 
 
@@ -279,8 +283,9 @@ class TelegramOperatorBot:
             answer = {"text": f"Something went wrong running /{name}, so nothing was changed by it. "
                               f"The fault was recorded as COMMAND_FAULT.", "code": "COMMAND_FAULT"}
         answer.setdefault("command", name)
+        preview_sensitive = bool(answer.pop("preview_sensitive", False))
         return self._reply(chat_id, answer.pop("text", ""), reply_markup=answer.pop("reply_markup", None),
-                           deliver=deliver, **answer)
+                           deliver=deliver, preview_sensitive=preview_sensitive, **answer)
 
     def handle_callback(self, data: str, *, user_id: int | None, chat_id: int | None,
                         message_id: int | None = None, callback_query_id: str = "") -> dict[str, Any]:
@@ -357,7 +362,8 @@ class TelegramOperatorBot:
 
     def _reply(self, chat_id: int | None, text: str, *, reply_markup: dict[str, Any] | None = None,
                deliver: bool = True, **extra: Any) -> dict[str, Any]:
-        body = safe_outbound_text(text)
+        preview_sensitive = bool(extra.pop("preview_sensitive", False))
+        body = safe_preview_text(text) if preview_sensitive else safe_outbound_text(text)
         report = {"reply": body, "delivered": False, **extra}
         if reply_markup is not None:
             # `buttons` rather than the raw markup: an answer that says which actions it offered is what a test,
@@ -881,6 +887,68 @@ class TelegramOperatorBot:
                         "an explicit retry. Every other gate still applies exactly as before.",
                 "code": "AUTOMATION_RESUMED", "held": False, "blocked_jobs": blocked}
 
+    def _managed_sites(self):
+        from deployment.site_management import ManagedSiteService
+        if getattr(self, "_managed_site_service", None) is None:
+            self._managed_site_service = ManagedSiteService(self.store)
+        return self._managed_site_service
+
+    def _command_sites(self, argument: str, **_: Any) -> dict[str, Any]:
+        include_deleted = "--all" in argument.split()
+        rows = self._managed_sites().list_sites(include_deleted=include_deleted, limit=self.row_limit)
+        if not rows:
+            return {"text": "No successful Vercel deployments are recorded yet. A local draft or pending review is not a deployed website.", "code": "SITES_EMPTY", "count": 0}
+        lines = [f"{len(rows)} website(s) shown. Older deployments remain in the tracking history."]
+        for row in rows:
+            lines.append(f"• {row.get('site_id')} | {row.get('business_name')} | {row.get('site_status')}\n  {row.get('deployment_url')}\n  Vercel project: {row.get('vercel_project_name') or 'unrecorded'} | history: {row.get('deployment_history_count', 0)}")
+        lines.append("Use /site <site_id> for details. /deletesite <site_id> only prepares a deletion request; it does not delete anything.")
+        return {"text": "\n".join(lines), "code": "SITES_LIST", "count": len(rows)}
+
+    def _command_site(self, argument: str, **_: Any) -> dict[str, Any]:
+        tokens = argument.split()
+        if not tokens:
+            raise TelegramBotError("Use /site <site_id> from /sites.", code="SITE_ID_REQUIRED")
+        row = self._managed_sites().get_site(tokens[0], include_deleted=True)
+        lines = [f"{row.get('site_id')} — {row.get('business_name')}", f"Status: {row.get('site_status')}",
+                 f"URL: {row.get('deployment_url') or 'not recorded'}",
+                 f"Vercel project: {row.get('vercel_project_name') or 'unrecorded'}",
+                 f"Vercel project ID: {row.get('vercel_project_id') or 'unrecorded'}",
+                 f"Lead: {row.get('lead_id') or 'unrecorded'}",
+                 f"Deployment history count: {row.get('deployment_history_count', 0)}",
+                 f"Last deployed: {row.get('last_deployed_at') or 'unrecorded'}"]
+        pending = row.get("pending_deletion") or {}
+        if pending: lines.append(f"Deletion state: {pending.get('status')}")
+        if row.get("site_status") != "DELETED": lines.append("To review deletion, use /deletesite " + str(row.get("site_id")) + ".")
+        return {"text": "\n".join(lines), "code": "SITE_DETAIL", "site_id": row.get("site_id")}
+
+    def _command_deletesite(self, argument: str, *, user_id: int | None, **_: Any) -> dict[str, Any]:
+        tokens = argument.split()
+        if not tokens: raise TelegramBotError("Use /deletesite <site_id>. This only prepares a request.", code="SITE_ID_REQUIRED")
+        result = self._managed_sites().request_delete(tokens[0], actor=f"telegram:{user_id}")
+        site, request = result["site"], result["request"]
+        lines = ["DELETION REVIEW — NOTHING HAS BEEN DELETED",
+                 f"Business: {site.get('business_name')}", f"Site ID: {site.get('site_id')}",
+                 f"Vercel project: {request.get('vercel_project_name')}",
+                 f"Exact Vercel project ID: {request.get('vercel_project_id')}",
+                 f"Current URL: {request.get('deployment_url')}", f"Request ID: {request.get('request_id')}",
+                 f"One-time confirmation fingerprint: {request.get('fingerprint')}",
+                 "This removes the Vercel project itself, not just one deployment. Attached deployments/domains may be affected.",
+                 "To proceed, send /confirmdelete " + str(site.get("site_id")) + " " + str(request.get("fingerprint")),
+                 "If unsure, do nothing. No resource is removed until the exact fingerprint is confirmed."]
+        return {"text": "\n".join(lines), "code": "SITE_DELETE_AWAITING_CONFIRMATION",
+                "site_id": site.get("site_id"), "request_id": request.get("request_id"),
+                "fingerprint": request.get("fingerprint"), "deletion_performed": False}
+
+    def _command_confirmdelete(self, argument: str, *, user_id: int | None, **_: Any) -> dict[str, Any]:
+        tokens = argument.split()
+        if len(tokens) != 2:
+            raise TelegramBotError("Use /confirmdelete <site_id> <one-time-fingerprint> exactly as shown. Nothing is deleted without both.", code="SITE_DELETE_CONFIRMATION_REQUIRED")
+        result = self._managed_sites().confirm_delete(tokens[0], tokens[1], actor=f"telegram:{user_id}")
+        return {"text": f"Vercel project deletion confirmed by provider for {result.get('business_name')}."
+                f"\nSite ID: {result.get('site_id')}\nProject: {result.get('vercel_project_name')}"
+                f"\nFormer URL: {result.get('deployment_url')}\nStatus: DELETED"
+                "\nHistoric deployment and deletion audit records are retained.",
+                "code": "SITE_DELETED", "site_id": result.get("site_id"), "deletion_performed": True}
     def _command_review(self, argument: str, **_: Any) -> dict[str, Any]:
         rows = [row for row in (self.store.state.get("outreach") or {}).values() if isinstance(row, dict)]
         rows.sort(key=lambda row: str(row.get("generated_at") or ""), reverse=True)
@@ -915,13 +983,15 @@ class TelegramOperatorBot:
             readiness = f"unreadable ({sanitize_diagnostic(error)})"
         lines = [
             f"{outreach_id} - {_name(lead)} ({record.get('channel')})",
-            f"To: {mask_address(record.get('recipient'))} · lead {record.get('lead_id')} · "
-            f"project {record.get('project_id')}",
-            f"Demo: {record.get('preview_url') or 'unrecorded'}",
+            f"Lead: {record.get('lead_id')} · project {record.get('project_id')}",
             f"Status: {record.get('status')} · generated {record.get('generated_at')} · readiness: {readiness}",
-            "Message body is not reproduced here: a Telegram thread is not where a prospect's contact details "
-            "belong. Read the draft in the review package or with "
-            f"`python3 -m tracking.cli outreach {record.get('project_id')} --outreach-id {outreach_id}`.",
+            f"Content fingerprint: {fingerprint}",
+            "FULL EMAIL PREVIEW — review this exact recipient, subject, and body before approving:",
+            f"To: {record.get('recipient') or '(recipient missing)'}",
+            f"Subject: {record.get('subject') or '(none)'}",
+            f"Preview URL: {record.get('preview_url') or '(preview URL missing)'}",
+            "Body:",
+            str(record.get('draft_message') or '(body missing)'),
         ]
         if record.get("review_notes"):
             lines.append(f"Last note: {mask_address(str(record['review_notes'])[:200])}")
@@ -933,7 +1003,7 @@ class TelegramOperatorBot:
         lines.append("Pressing a button records the decision against exactly this draft and this version of it. "
                      "If anything changed since this screen appeared, the press is refused as stale.")
         return {"text": "\n".join(lines), "reply_markup": buttons, "code": "REVIEW_PROMPT",
-                "outreach_id": outreach_id, "fingerprint": fingerprint}
+                "outreach_id": outreach_id, "fingerprint": fingerprint, "preview_sensitive": True}
 
     def _command_approve(self, argument: str, **kwargs: Any) -> dict[str, Any]:
         return self._typed_decision("APPROVED", argument, **kwargs)
@@ -1145,10 +1215,14 @@ class TelegramOperatorBot:
                  f"Publish gate now says: {fresh.get('code') or 'UNKNOWN'}.",
                  "Nothing has been published yet. The publish step re-verifies this approval itself, so a queue "
                  "that runs later still needs the artifact to be unchanged."]
-        buttons = inline_keyboard([[(ACTION_BUTTONS["pq"][1],
+        buttons = inline_keyboard([[( "Create isolated Vercel project + publish preview",
                                     f"pq:{project_id}:{demo_fingerprint(self.store.state['projects'][project_id])}")]])
-        lines.append("Queueing the publish job is a separate press; the job will not run while automated dispatch "
-                     "is held, and a held attempt is recorded as blocked rather than dropped.")
+        lines.append(
+            "The next button explicitly authorizes creating a separate Vercel project for this business if one "
+            "does not already exist, then publishing this approved build to that project. It does not attach or "
+            "purchase a custom domain, send outreach, or delete any project. Queueing is a separate act; the job "
+            "will not run while automated dispatch is held, and a held attempt is recorded as blocked."
+        )
         return {"text": "\n".join(lines), "reply_markup": buttons, "code": "DEMO_APPROVAL_RECORDED",
                 "project_id": project_id, "review_id": (entry or {}).get("review_id"),
                 "edit_text": f"Demo approved for {project_id} (build {assigned}) by telegram:{user_id}. "
@@ -1157,7 +1231,14 @@ class TelegramOperatorBot:
 
     def _queue_publish(self, project_id: str, *, user_id: int | None, chat_id: int | None) -> dict[str, Any]:
         """Enqueue the existing DEPLOY job for the approved build. Enqueue only - the worker publishes."""
-        gate = self._demo_gate(project_id)
+        # This handler is reached only by the separately labeled, fingerprint-bound operator action
+        # that explicitly authorizes isolated project creation + preview publishing. Permit the gate to defer
+        # a missing target to the provisioner; every other approval/build/production check remains enforced.
+        try:
+            gate = self.store.authorize_preview_deployment(project_id, allow_provisioning=True)
+        except Exception as error:  # a gate that cannot be read is a hard stop
+            gate = {"authorized": False, "code": "GATE_UNREADABLE",
+                    "reason": sanitize_diagnostic(error).get("detail") or "approval gate could not be read"}
         if not gate.get("authorized") and gate.get("code") != "ALREADY_DEPLOYED":
             return {"text": (f"Refused: the durable gate says {gate.get('code') or 'UNKNOWN'}, so a publish job "
                              "would only fail. /demo shows what the gate needs."),
@@ -1171,7 +1252,8 @@ class TelegramOperatorBot:
                                    idempotency_key=f"telegram-demo-publish:{project_id}:{assigned}",
                                    input={"requested_by": f"telegram:{user_id}",
                                            "approval_source": "telegram_preview_approval",
-                                           "note": "queued from Telegram after an explicit preview approval"})
+                                           "approve_real_preview": True,
+                                           "note": "operator explicitly authorized isolated Vercel project creation if needed and preview publishing"})
         except ValueError as error:
             return {"text": f"The queue refused: {safe_outbound_text(str(error))}", "code": "PUBLISH_JOB_REFUSED",
                     "alert": True}
@@ -1262,6 +1344,12 @@ class TelegramOperatorBot:
             f"Approved: {view.get('reviewed_at') or 'unrecorded'} by {view.get('reviewed_by') or 'unattributed'} "
             f"({view.get('reviewer_identity_source') or 'identity source unrecorded'})",
             f"Content fingerprint: {view.get('content_fingerprint')}",
+            "FULL EMAIL PREVIEW — read this exact content before sending:",
+            f"To: {view.get('recipient') or '(recipient missing)'}",
+            f"Subject: {view.get('subject') or '(none)'}",
+            "Body:",
+            str(view.get('draft_message') or '(body missing)'),
+            f"Preview URL: {view.get('preview_url') or '(preview URL missing)'}",
         ]
         if view.get("status") == "SEND_FAILED":
             lines.append("This draft's last attempt failed; sending again reuses the same approval and counts as "
@@ -1275,13 +1363,10 @@ class TelegramOperatorBot:
                          f"{composition.get('endpoint')} ({composition.get('size_bytes')} bytes, "
                          f"threading: {(composition.get('threading') or {}).get('basis')}, "
                          f"List-Unsubscribe: {'set' if composition.get('list_unsubscribe_present') else 'not set'})")
-            if not dry_run:
-                lines.append("The body is not reproduced here: this bot does not put a prospect's message in a "
-                             "chat thread. Read it in the review package or with `python3 -m tracking.cli "
-                             f"outreach {view.get('project_id')} --outreach-id {outreach_id}`.")
         if dry_run:
             answer = self._perform_send(outreach_id, user_id=user_id, dry_run=True)
             answer["text"] = "\n".join(lines) + "\n\n" + answer["text"]
+            answer["preview_sensitive"] = True
             return answer
         if blockers:
             return {"text": "\n".join(lines), "code": "SEND_BLOCKED", "outreach_id": outreach_id,
@@ -1293,7 +1378,7 @@ class TelegramOperatorBot:
         lines.append("Pressing confirm sends one email to that address. There is no undo, and no retry: an "
                      "unanswered provider response is reconciled, never resent.")
         return {"text": "\n".join(lines), "reply_markup": buttons, "code": "SEND_ARMED",
-                "outreach_id": outreach_id, "fingerprint": view.get("content_fingerprint")}
+                "outreach_id": outreach_id, "fingerprint": view.get("content_fingerprint"), "preview_sensitive": True}
 
     def _perform_send(self, outreach_id: str, *, user_id: int | None, chat_id: int | None = None,
                       dry_run: bool = False, note: str | None = None) -> dict[str, Any]:
@@ -1630,9 +1715,10 @@ class TelegramOperatorBot:
                                "text": text + "\nNothing was sent and nothing will be from this keyboard."})
             if action == "send_arm":
                 armed = self._arm_send(identifier, user_id=user_id)
+                preview_text = safe_preview_text(armed.get("text") or "")
                 return {"handled": True, "code": str(armed.get("code") or "SEND_ARMED"),
-                        "notice": armed.get("text"), "reply_markup": armed.get("reply_markup"),
-                        "edit_text": armed.get("text"), "edit_markup": armed.get("reply_markup"),
+                        "notice": preview_text, "reply_markup": armed.get("reply_markup"),
+                        "edit_text": preview_text, "edit_markup": armed.get("reply_markup"),
                         "action": action, "identifier": identifier}
             buttons = inline_keyboard([[("Send this (shows the full check first)",
                                         f"se:{identifier}:{view.get('content_fingerprint')}")]])

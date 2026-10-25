@@ -250,8 +250,8 @@ class Phase26RealDraftTests(unittest.TestCase):
             self.assertTrue(p26_audit.is_file())
         else:
             ws_check = store.check_local_state()
-            self.assertIn(str(p25_audit), ws_check["irrecoverable_gitignored_audit_files"])
-            self.assertIn(str(p26_audit), ws_check["irrecoverable_gitignored_audit_files"])
+            self.assertIn(p25_audit.as_posix(), ws_check["irrecoverable_gitignored_audit_files"])
+            self.assertIn(p26_audit.as_posix(), ws_check["irrecoverable_gitignored_audit_files"])
 
     def test_missing_business_fact_cannot_silently_fallback_to_unverified_or_fictional_data(self):
         builder = WebsiteBuilder(output_root=self.root / "output")

@@ -758,10 +758,35 @@ class EntryPathParityTests(ApprovalTestCase):
         self.assertEqual(refused.deployment_status, "NEEDS_REVIEW")
         self.assertIn("--approve-real-preview", refused.error or "")
 
-        (self.root / ".vercel" / "project.json").write_text(
-            json.dumps({"projectId": "prj_fixture", "orgId": "team_fixture", "projectName": "fictional-salon-preview"}), encoding="utf-8"
+        # Bind the approved real-business tracking project to a verified Vercel project ID. A local
+        # .vercel link alone must no longer be enough to publish REAL_PUBLIC_DATA builds.
+        self.store.begin_vercel_project_provisioning(
+            project["project_id"], "fictional-salon-preview", base_name="fictional-salon-preview",
         )
-        deployed = provider.deploy(build_dir, dry_run=False, approve_real_preview=True, project_name="fictional-salon-preview")
+        self.store.bind_vercel_project(
+            project["project_id"], vercel_project_id="prj_fixture", project_name="fictional-salon-preview",
+            provider_created_at="2026-10-23T00:00:00Z", binding_source="api-created",
+        )
+        api_client = type("FakeVercelClient", (), {
+            "token": "fixture-token",
+            "team_id": "team_fixture",
+            "get_project": lambda self, project_id: {
+                "id": project_id, "name": "fictional-salon-preview",
+            },
+            # The managed publish path must prove project ownership and READY state via provider read-back.
+            "get_deployment_by_url": lambda self, url: {
+                "id": "dpl_fixture",
+                "url": "fictional-studio-git-preview.vercel.app",
+                "project_id": "prj_fixture",
+                "ready_state": "READY",
+            },
+        })()
+        from unittest.mock import patch
+        with patch("deployment.site_management.VercelProjectsClient", return_value=api_client):
+            deployed = provider.deploy(
+                build_dir, dry_run=False, approve_real_preview=True,
+                project_name="fictional-salon-preview", vercel_project_id="prj_fixture",
+            )
         self.assertEqual(deployed.deployment_status, "DEPLOYED", deployed.error)
 
 
