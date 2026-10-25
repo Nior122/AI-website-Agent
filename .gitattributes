@@ -1,0 +1,2 @@
+# Hash-verified preview fixture must keep the exact committed bytes on every OS.
+preview-export/lead-0002-pitstop-lagos/index.html -text

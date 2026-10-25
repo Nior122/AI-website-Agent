@@ -19,8 +19,10 @@ from .deployer import VercelDeploymentProvider
 DEFAULT_STATE_PATH = Path("data/tracking/state.json")
 
 
-def _authorization(store_path: Path | None, project_id: str | None, build_id: str | None,
-                   *, resolve_uncertain_publish: bool = False) -> dict:
+def _authorization(
+    store_path: Path | None, project_id: str | None, build_id: str | None,
+    *, resolve_uncertain_publish: bool = False, allow_provisioning: bool = False,
+) -> dict:
     """Consult the durable tracking record; a missing store or project is itself a refusal."""
     if not project_id:
         return {
@@ -41,8 +43,11 @@ def _authorization(store_path: Path | None, project_id: str | None, build_id: st
     from tracking.store import TrackingStore
 
     store = TrackingStore(Path(store_path))
-    gate = store.authorize_preview_deployment(project_id, build_id=build_id,
-                                             resolve_uncertain_publish=resolve_uncertain_publish)
+    gate = store.authorize_preview_deployment(
+        project_id, build_id=build_id,
+        resolve_uncertain_publish=resolve_uncertain_publish,
+        allow_provisioning=allow_provisioning,
+    )
     gate.pop("approval", None)
     return gate
 
@@ -80,8 +85,11 @@ def main(argv: list[str] | None = None) -> int:
     authorization: dict | None = None
     if args.execute:
         try:
-            authorization = _authorization(args.state_path, args.project_id, str(args.build_id) if args.build_id else None,
-                                          resolve_uncertain_publish=args.resolve_uncertain_publish)
+            authorization = _authorization(
+                args.state_path, args.project_id, str(args.build_id) if args.build_id else None,
+                resolve_uncertain_publish=args.resolve_uncertain_publish,
+                allow_provisioning=args.approve_real_preview,
+            )
         except (ValueError, OSError) as error:
             print(json.dumps({"authorized": False, "code": "AUTHORIZATION_UNVERIFIABLE", "reason": str(error)}, indent=2))
             return 1
@@ -93,6 +101,47 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(payload, indent=2))
             return 0 if authorization.get("skip_publish") else 1
 
+    vercel_project_id = None
+    if args.execute:
+        # The CLI is a separate deployment entry point from the worker. Apply the same per-business
+        # provisioning rule here so a local .vercel link cannot bypass project-ID isolation.
+        from tracking.store import TrackingStore
+        store = TrackingStore(Path(args.state_path))
+        tracked = (store.state.get("projects") or {}).get(args.project_id) or {}
+        lead = (store.state.get("leads") or {}).get(tracked.get("lead_id")) or {}
+        is_real_business = (
+            (lead.get("data_classification") or tracked.get("data_classification")) == "REAL_PUBLIC_DATA"
+        )
+        if is_real_business:
+            current_name = str(tracked.get("isolated_preview_project") or "").strip()
+            if args.project_name and args.project_name != current_name:
+                print(json.dumps({
+                    "authorized": False, "code": "REAL_TARGET_OVERRIDE_REFUSED",
+                    "reason": "The operator CLI cannot override a real-business project's Vercel name. "
+                              "Use the verified binding stored on the tracking project.",
+                    "deployment_status": "NEEDS_REVIEW", "provider_cli_invoked": False,
+                }, indent=2))
+                return 1
+            if not args.approve_real_preview:
+                print(json.dumps({
+                    "authorized": False, "code": "REAL_PREVIEW_APPROVAL_FLAG_REQUIRED",
+                    "reason": "Provisioning a per-business Vercel project requires --approve-real-preview "
+                              "in addition to the current tracking approval. No Vercel project was created.",
+                    "deployment_status": "NEEDS_REVIEW", "provider_cli_invoked": False,
+                }, indent=2))
+                return 1
+            try:
+                from deployment.provisioning import VercelProjectProvisioner, VercelProjectProvisioningError
+                binding = VercelProjectProvisioner(store).ensure_project(args.project_id)
+            except VercelProjectProvisioningError as error:
+                print(json.dumps({
+                    "authorized": False, "code": error.code, "reason": str(error),
+                    "deployment_status": "NEEDS_REVIEW", "provider_cli_invoked": False,
+                }, indent=2))
+                return 1
+            vercel_project_id = binding["id"]
+            args.project_name = binding["name"]
+
     provider = VercelDeploymentProvider(Path.cwd())
     result = provider.deploy(
         args.build,
@@ -100,6 +149,7 @@ def main(argv: list[str] | None = None) -> int:
         approve_needs_review=args.approve_needs_review,
         approve_real_preview=args.approve_real_preview,
         project_name=args.project_name,
+        vercel_project_id=vercel_project_id,
         resolve_uncertain_publish=args.resolve_uncertain_publish,
         resolution_note=args.resolve_note,
         resolved_by=args.resolved_by or os.environ.get("AI_WEBSITE_AGENT_OPERATOR_ID"),
