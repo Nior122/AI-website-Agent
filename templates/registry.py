@@ -62,6 +62,24 @@ TEMPLATES = (
         "Single-column content with touch-accessible breakdown call action, service cards, and workshop location guidance.",
         ("semantic landmarks", "visible focus", "sufficient contrast", "meaningful image alt text"),
     ),
+    TemplateDefinition(
+        "retail-ecommerce-v1", "Retail & E-commerce", ("retail", "shop", "store", "boutique", "fashion", "clothing", "electronics", "supermarket", "grocery", "market"),
+        "Product showcase and shopping-focused layout for retail stores, boutiques, and e-commerce businesses.",
+        ("business_name", "category", "city"),
+        ("services", "products", "description", "opening_hours", "phone", "whatsapp", "email", "address", "images"),
+        ("navigation", "hero", "about", "products", "services", "gallery", "hours", "location", "contact", "footer"),
+        "Single-column content with product showcase cards, call-to-action emphasis, and responsive grid layout.",
+        ("semantic landmarks", "visible focus", "sufficient contrast", "meaningful image alt text"),
+    ),
+    TemplateDefinition(
+        "personal-portfolio-v1", "Personal Portfolio", ("portfolio", "personal_portfolio", "developer", "software_engineer", "web_developer", "designer", "creative_technologist", "digital_builder", "creator", "freelancer"),
+        "Showcase-led personal portfolio layout with profile introduction, projects, skills, services, and verified contact links.",
+        ("business_name", "category", "city"),
+        ("services", "projects", "skills", "description", "opening_hours", "phone", "email", "whatsapp", "github_url", "linkedin_url", "twitter_url", "images"),
+        ("navigation", "hero", "about", "projects", "skills", "services", "contact", "footer"),
+        "Single-column content with responsive project showcase cards, skill chips, and contact actions.",
+        ("semantic landmarks", "visible focus", "sufficient contrast", "meaningful image alt text"),
+    ),
 )
 
 

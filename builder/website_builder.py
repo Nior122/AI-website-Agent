@@ -355,6 +355,29 @@ def _verified_template_data(lead: dict[str, Any]) -> dict[str, Any]:
     whatsapp = None if "whatsapp" in disputed_facts else (facts.get("whatsapp") or contact.get("whatsapp"))
     instagram = None if "instagram_url" in disputed_facts else (facts.get("instagram_url") or social.get("instagramUrl"))
     facebook = None if "facebook_url" in disputed_facts else (facts.get("facebook_url") or social.get("facebookUrl"))
+    github = facts.get("github_url") or social.get("githubUrl") or social.get("github_url")
+    linkedin = facts.get("linkedin_url") or social.get("linkedinUrl") or social.get("linkedin_url")
+    twitter = facts.get("twitter_url") or facts.get("x_url") or social.get("twitterUrl")
+    other_social_urls = list(social.get("otherSocialUrls") or facts.get("other_social_urls") or [])
+    projects_val = (facts.get("projects") or info.get("projects") or []) if is_fixture else (facts.get("projects") if isinstance(facts.get("projects"), list) else [])
+    projects = [
+        {
+            "name": p.get("name") if isinstance(p, dict) else str(p),
+            "description": p.get("description", "") if isinstance(p, dict) else "",
+            **({"link": p["link"]} if isinstance(p, dict) and p.get("link") else {}),
+        }
+        for p in projects_val
+        if (p.get("name") if isinstance(p, dict) else p)
+    ]
+    skills_val = (facts.get("skills") or info.get("skills") or []) if is_fixture else (facts.get("skills") if isinstance(facts.get("skills"), list) else [])
+    skills = [
+        {
+            "name": s.get("name") if isinstance(s, dict) else str(s),
+            "description": s.get("description", "") if isinstance(s, dict) else "",
+        }
+        for s in skills_val
+        if (s.get("name") if isinstance(s, dict) else s)
+    ]
     address = None if "address" in disputed_facts else (facts.get("address") or location.get("address"))
     opening_hours = None if "openingHours" in disputed_facts else ((facts.get("openingHours") or info.get("openingHours")) if is_fixture else facts.get("openingHours"))
     description = None if "description" in disputed_facts else ((facts.get("description") or info.get("description")) if is_fixture else facts.get("description"))
@@ -369,8 +392,14 @@ def _verified_template_data(lead: dict[str, Any]) -> dict[str, Any]:
         "whatsapp": whatsapp,
         "instagram_url": instagram,
         "facebook_url": facebook,
+        "github_url": github,
+        "linkedin_url": linkedin,
+        "twitter_url": twitter,
+        "other_social_urls": other_social_urls,
         "opening_hours": opening_hours,
         "services": services,
+        "projects": projects,
+        "skills": skills,
         "menu_items": menu_items,
         "images": images,
         "brand": _approved_brand(lead),
@@ -441,6 +470,27 @@ def _category(value: Any) -> str | None:
         "tire_service": "tire_service",
         "auto_body": "auto_body",
         "vehicle_service": "vehicle_service",
+        "retail": "retail",
+        "shop": "shop",
+        "store": "store",
+        "boutique": "boutique",
+        "fashion": "fashion",
+        "clothing": "clothing",
+        "electronics": "electronics",
+        "supermarket": "supermarket",
+        "grocery": "grocery",
+        "market": "market",
+        "portfolio": "portfolio",
+        "personal_portfolio": "personal_portfolio",
+        "personal_portfolio_website": "personal_portfolio",
+        "developer": "developer",
+        "software_engineer": "software_engineer",
+        "web_developer": "web_developer",
+        "designer": "designer",
+        "creative_technologist": "creative_technologist",
+        "digital_builder": "digital_builder",
+        "creator": "creator",
+        "freelancer": "freelancer",
     }
     return aliases.get(normalized, normalized)
 

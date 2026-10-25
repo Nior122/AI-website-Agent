@@ -100,8 +100,8 @@ class TemplateTests(unittest.TestCase):
 
     def test_output_includes_mobile_layout_rules(self):
         html = render_site(load_demo("demo_salon.json"))
-        self.assertIn('@media (max-width:48rem)', html)
-        self.assertIn('grid-template-columns:repeat(3,minmax(0,1fr))', html)
+        self.assertIn('@media (max-width: 48rem)', html)
+        self.assertIn('grid-template-columns: repeat(3, minmax(0, 1fr))', html)
 
 
 if __name__ == "__main__":

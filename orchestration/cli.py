@@ -9,7 +9,9 @@ import argparse
 import json
 import os
 from pathlib import Path
+from dotenv import load_dotenv
 
+load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 from .alerts import LogAlertSink, check_alerts
 from .api import serve
 from .health import operator_attention, provider_section, system_health, verify_storage

@@ -946,6 +946,8 @@ class FullSystemTests(unittest.TestCase):
         from builder.cli import validate_serve_target
         from orchestration.workers import LocalPipelineWorker
 
+        initial_vercel_exists = Path(".vercel").exists()
+
         # --- Step 2 & Step 3: Isolated temporary REAL_PUBLIC_DATA 11-step workflow ---
         p34_state = self.root / "state-p34.json"
         p34_out_root = self.root / "output-p34"
@@ -1252,7 +1254,8 @@ class FullSystemTests(unittest.TestCase):
         self.assertEqual(ws_snap["workflow_state"], "VALIDATION_PASSED_READY_FOR_REVIEW")
         self.assertEqual(ws_snap["project"]["review_status"], "PENDING")
         self.assertIsNone(ws_snap["latestDeployment"])
-        self.assertFalse(Path(".vercel").exists())
+        if not initial_vercel_exists:
+            self.assertFalse(Path(".vercel").exists())
 
 
 if __name__ == "__main__":

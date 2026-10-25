@@ -8,13 +8,13 @@ This document records the five dedicated n8n workflows built, deployed, and veri
 
 All five workflows are deployed in personal project `gF2ObH2mvjWtE5pb` and kept **INACTIVE (`active: false`)** until explicit operator activation.
 
-| # | Workflow Name | Workflow ID | Trigger Type | Primary Endpoint / Action | Credentials Referenced | n8n Execution Test | Status |
-|---|---|---|---|---|---|---|---|
-| **01** | `01 - Nior Website Agent: Job Lifecycle & Pipeline Runner` | `YaH7bhvuxxnnH7yt` | Manual Trigger | `POST /jobs` (with `run: true`) | `AI Website Agent Local Test API`, `Telegram account` | Execution `16614` (341ms, SUCCESS) | **VERIFIED (INACTIVE)** |
-| **02** | `02 - Nior Operations: Daily Business Briefing & Alerts` | `eRAS3vC1wq19zaYu` | Schedule (08:00 Africa/Lagos) & Manual | `GET /health`, `GET /engagement/pipeline`, `GET /engagement/outstanding` | `AI Website Agent Local Test API`, `Telegram account` | Execution `16617` (225ms, SUCCESS) | **VERIFIED (INACTIVE)** |
-| **03** | `03 - Nior Social Engine: Buffer Multi-Channel Publisher` | `hgLCDChiBiJhooUE` | Manual Trigger | Buffer Dispatch Gate (`saveToDraft: true`, dry-run simulated) | `Telegram account`, `Nior - Buffer API - TEST` | Execution `16621` (66ms, SUCCESS) | **VERIFIED (INACTIVE)** |
-| **04** | `04 - Nior Communications: Inbound Ingestion & Intake Router` | `gWXFx91CdFmvH45R` | Schedule (1 hr) & Manual | `POST /integrations/email/poll` (read-only intake) | `AI Website Agent Local Test API`, `Telegram account` | Execution `16623` (41ms, SUCCESS) | **VERIFIED (INACTIVE)** |
-| **05** | `05 - Nior Outbound: Approved Send with Fingerprint Gate` | `UbKxQXbz5Q7PSxQs` | Manual Trigger | `GET /integrations/outbox`, `POST /integrations/email/send` | `AI Website Agent Local Test API`, `Telegram account` | Execution `16626` (48ms, SUCCESS) | **VERIFIED (INACTIVE)** |
+| # | Workflow Name | Dedicated n8n ID | Trigger Type | Primary Endpoint / Action | Credentials Attached | Activation Readiness Classification |
+|---|---|---|---|---|---|---|
+| **01** | `01 - Nior Website Agent: Job Lifecycle & Pipeline Runner` | `2If2517dlZ6VgMRG` | Manual Trigger | `POST /jobs` (with `run: true`) | `gn5FF1e03qKVm7LD` (Header Auth), `5mKgKVwN5y4LNjq3` (Telegram) | **`REQUIRES_OPERATOR_AUTHORIZATION`** |
+| **02** | `02 - Nior Operations: Daily Business Briefing & Alerts` | `VMZ7hjZvUySNXI5r` | Schedule (08:00 Africa/Lagos) & Manual | `GET /health`, `GET /engagement/pipeline`, `GET /engagement/outstanding` | `gn5FF1e03qKVm7LD`, `5mKgKVwN5y4LNjq3` | **`REQUIRES_OPERATOR_AUTHORIZATION`** |
+| **03** | `03 - Nior Social Engine: Buffer Multi-Channel Publisher` | `JX8JOIsKsTzCeZ71` | Manual Trigger | Buffer Dispatch Gate (`saveToDraft: true`, dry-run simulated) | `5mKgKVwN5y4LNjq3` (Telegram) | **`BLOCKED_BY_CONFIGURATION`** (Missing live Buffer credential) |
+| **04** | `04 - Nior Communications: Inbound Ingestion & Intake Router` | `xKAaIpgsj09HH8nK` | Schedule (1 hr) & Manual | `POST /integrations/email/poll` (read-only intake) | `gn5FF1e03qKVm7LD`, `5mKgKVwN5y4LNjq3` | **`REQUIRES_OPERATOR_AUTHORIZATION`** |
+| **05** | `05 - Nior Outbound: Approved Send with Fingerprint Gate` | `kGNApQItCjQ5CNeu` | Manual Trigger | `GET /integrations/outbox`, `POST /integrations/email/send` | `gn5FF1e03qKVm7LD`, `5mKgKVwN5y4LNjq3` | **`BLOCKED_BY_CONFIGURATION`** (Missing `gmail.send` scope) |
 
 ---
 

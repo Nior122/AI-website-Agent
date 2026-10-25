@@ -24,6 +24,18 @@ from orchestration.telegram_bot import TelegramOperatorBot
 
 class BriefingEngineTests(unittest.TestCase):
     def setUp(self):
+        def fake_lagos_now(ref_utc=None):
+            if ref_utc is not None:
+                if ref_utc.tzinfo is None:
+                    ref_utc = ref_utc.replace(tzinfo=timezone.utc)
+                return ref_utc.astimezone(LAGOS_TZ)
+            return datetime(2026, 10, 21, 8, 30, 0, tzinfo=LAGOS_TZ)
+
+        from unittest.mock import patch
+        self.patcher = patch("orchestration.briefing.get_lagos_now", side_effect=fake_lagos_now)
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+
         self.mock_store = MagicMock()
         self.mock_store.state = {
             "leads": {

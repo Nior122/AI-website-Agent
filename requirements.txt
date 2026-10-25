@@ -1,3 +1,7 @@
 # Production PostgreSQL driver for Supabase PostgreSQL persistence on Render.
 # Local development and unit tests remain runnable with the Python 3.11+ standard library alone.
 psycopg[binary]>=3.1.18,<4.0.0
+# Loads .env at the project root before the CLI runs; override=False keeps Render's own
+# environment variables (and any other host config) ahead of the local file.
+python-dotenv>=1.0.0,<2.0.0
+python-dotenv>=1.0,<2.0

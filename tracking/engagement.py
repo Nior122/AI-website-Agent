@@ -624,6 +624,7 @@ class EngagementLedger:
         cleaned_channel = self._channel(channel)
         checks: list[dict[str, Any]] = []
         blockers: list[str] = []
+        outreach: dict[str, Any] | None = None
 
         block = self.is_blocked(lead["lead_id"], cleaned_channel)
         checks.append({
@@ -699,7 +700,7 @@ class EngagementLedger:
             if for_action == "SEND":
                 blockers.append("APPROVAL_REFERENCE_REQUIRED")
 
-        project_id = lead.get("project_id") or self._resolved_project(None, lead)
+        project_id = (outreach.get("project_id") if outreach else None) or lead.get("project_id") or self._resolved_project(None, lead)
         project = (self.store.state.get("projects") or {}).get(str(project_id)) if project_id else None
         if isinstance(project, dict) and str(project.get("current_stage")) in {"DISQUALIFIED", "ARCHIVED"}:
             blockers.append("PROJECT_CLOSED")

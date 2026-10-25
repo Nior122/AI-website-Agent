@@ -45,7 +45,7 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL || \"http://127.0.0.1:8787\" }}/integrations/email/poll",
+        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL || \"https://ai-website-agent-api.onrender.com\" }}/integrations/email/poll",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,

@@ -4,16 +4,19 @@
   "category": "clinic",
   "city": "Lagos",
   "address": "Fictional clinic avenue, Victoria Island, Lagos",
-  "description": "A fictional healthcare clinic used only to demonstrate the reusable clinic template system.",
+  "description": "A fictional healthcare clinic used only to demonstrate the reusable clinic template system. Comprehensive primary care and specialist consultations for the whole family.",
   "phone": "+234 800 000 0003",
   "whatsapp": "+234 800 000 0003",
   "opening_hours": "Mon–Fri, 08:00–18:00; Sat, 09:00–14:00",
   "services": [
     { "name": "General Consultation", "description": "Fictional clinical consultation and wellness checks." },
-    { "name": "Preventative Health", "description": "Fictional screening and diagnostic assessment." }
+    { "name": "Preventative Health", "description": "Fictional screening and diagnostic assessment." },
+    { "name": "Paediatric Care", "description": "Fictional child health monitoring, vaccinations, and developmental assessments." },
+    { "name": "Women's Health", "description": "Fictional gynaecological consultations, prenatal care, and family planning." }
   ],
   "practitioners": [
-    { "name": "Dr. Fictional Consultant", "description": "General practice specialist." }
+    { "name": "Dr. Fictional Consultant", "description": "General practice specialist." },
+    { "name": "Dr. Fictional Paediatrician", "description": "Child health and developmental care." }
   ],
   "images": [],
   "brand": { "primary_color": "#0d47a1", "secondary_color": "#f0f4f8", "accent_color": "#00acc1", "border_radius": "0.75rem" },

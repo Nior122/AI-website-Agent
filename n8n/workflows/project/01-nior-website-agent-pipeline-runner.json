@@ -36,7 +36,7 @@
       ],
       "parameters": {
         "method": "GET",
-        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL || \"http://127.0.0.1:8787\" }}/health",
+        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL || \"https://ai-website-agent-api.onrender.com\" }}/health",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "options": {
@@ -72,7 +72,7 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL || \"http://127.0.0.1:8787\" }}/jobs",
+        "url": "={{ $env.AI_WEBSITE_AGENT_API_URL || \"https://ai-website-agent-api.onrender.com\" }}/jobs",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
