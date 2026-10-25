@@ -385,6 +385,7 @@ def _empty_state() -> dict:
         "inbound_events": {},
         "automation_controls": {},
         "provider_sync": {},
+        "managed_sites": {},
     }
 
 
@@ -630,6 +631,138 @@ class TrackingStore:
         validated = validate_preview_project_name(project_name, real_business=is_real)
         p["isolated_preview_project"] = validated
         p["updated_at"] = now()
+        self._save()
+        return p
+
+    def begin_vercel_project_provisioning(self, project_id: str, project_name: str, *, base_name: str) -> dict:
+        """Persist project-creation intent before contacting Vercel; do not silently repoint a manual target."""
+        if self.db_backend is not None:
+            self.refresh()
+        p = self.state["projects"].get(project_id)
+        if not p:
+            raise ValueError(f"Unknown project: {project_id}")
+        lead = self.state["leads"].get(p["lead_id"]) or {}
+        is_real = (lead.get("data_classification") or p.get("data_classification")) == "REAL_PUBLIC_DATA"
+        if not is_real:
+            raise ValueError("Only REAL_PUBLIC_DATA projects may use automatic per-business Vercel provisioning.")
+        validated = validate_preview_project_name(project_name, real_business=True)
+        if p.get("vercel_project_id"):
+            if p.get("isolated_preview_project") != validated:
+                raise ValueError("The tracked project already has a different Vercel project binding.")
+            return p
+        current_name = str(p.get("isolated_preview_project") or "").strip()
+        current_status = str(p.get("vercel_project_status") or "")
+        if current_name and current_name != validated and current_status != "NAME_CONFLICT":
+            raise ValueError(
+                "This project already has a configured preview target but no verified Vercel project ID. "
+                "Resolve or explicitly bind that target before deploying; it will not be replaced automatically."
+            )
+        if current_name == validated and current_status in {"CREATE_INTENT", "CREATE_UNCERTAIN"}:
+            # Another execution already owns this create attempt. A second POST could race with the first
+            # and leave two workers disagreeing about the same durable target; reconcile the existing intent.
+            raise ValueError(
+                "A Vercel project-creation intent already exists for this name. Reconcile its provider outcome "
+                "before issuing another create request."
+            )
+        stamp = now()
+        # Keep millisecond precision here: recovery may adopt a same-named project only when the provider's
+        # creation timestamp proves it was created after this exact intent, never merely in the same second.
+        intent_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        p["isolated_preview_project"] = validated
+        p["vercel_project_base_name"] = str(base_name or validated)
+        p["vercel_project_status"] = "CREATE_INTENT"
+        p["vercel_project_intent_at"] = intent_at
+        p["vercel_project_intent_id"] = f"provision-{hashlib.sha256(f'{project_id}:{validated}:{intent_at}'.encode()).hexdigest()[:16]}"
+        p["updated_at"] = stamp
+        self._save()
+        return p
+
+    def mark_vercel_project_create_uncertain(self, project_id: str, *, error_code: str) -> dict:
+        if self.db_backend is not None:
+            self.refresh()
+        p = self.state["projects"].get(project_id)
+        if not p:
+            raise ValueError(f"Unknown project: {project_id}")
+        if p.get("vercel_project_id"):
+            raise ValueError("A project with a verified Vercel ID cannot be marked creation-uncertain.")
+        if p.get("vercel_project_status") != "CREATE_INTENT":
+            raise ValueError("Only a recorded project-creation intent can become uncertain.")
+        p["vercel_project_status"] = "CREATE_UNCERTAIN"
+        p["vercel_project_error_code"] = str(error_code or "VERCEL_PROJECT_CREATE_UNCERTAIN")[:100]
+        p["updated_at"] = now()
+        self._save()
+        return p
+
+    def mark_vercel_project_name_conflict(self, project_id: str, *, project_name: str) -> dict:
+        if self.db_backend is not None:
+            self.refresh()
+        p = self.state["projects"].get(project_id)
+        if not p:
+            raise ValueError(f"Unknown project: {project_id}")
+        if p.get("vercel_project_id") or p.get("isolated_preview_project") != project_name:
+            raise ValueError("Project-name conflict does not match the current unbound creation intent.")
+        if p.get("vercel_project_status") != "CREATE_INTENT":
+            raise ValueError("Only a known rejected creation intent may be changed after a name conflict.")
+        history = p.setdefault("vercel_project_name_conflicts", [])
+        history.append({"name": project_name, "at": now(), "reason": "Vercel explicitly rejected a duplicate name"})
+        p["vercel_project_status"] = "NAME_CONFLICT"
+        p["updated_at"] = now()
+        self._save()
+        return p
+
+    def bind_vercel_project(
+        self, project_id: str, *, vercel_project_id: str, project_name: str,
+        provider_created_at: object = None, binding_source: str = "api-created",
+    ) -> dict:
+        """Persist a verified one-to-one mapping between a tracked business and its Vercel project."""
+        if self.db_backend is not None:
+            self.refresh()
+        p = self.state["projects"].get(project_id)
+        if not p:
+            raise ValueError(f"Unknown project: {project_id}")
+        lead = self.state["leads"].get(p["lead_id"]) or {}
+        is_real = (lead.get("data_classification") or p.get("data_classification")) == "REAL_PUBLIC_DATA"
+        name = validate_preview_project_name(project_name, real_business=is_real)
+        vercel_id = str(vercel_project_id or "").strip()
+        if not re.fullmatch(r"prj_[A-Za-z0-9]+", vercel_id):
+            raise ValueError("A verified Vercel project ID is required.")
+        for other_id, other in (self.state.get("projects") or {}).items():
+            if other_id != project_id and str(other.get("vercel_project_id") or "") == vercel_id:
+                raise ValueError(
+                    f"Vercel project {vercel_id} is already bound to tracked project {other_id}; refusing shared-site deployment."
+                )
+        current_id = str(p.get("vercel_project_id") or "")
+        current_name = str(p.get("isolated_preview_project") or "")
+        if current_id:
+            if current_id != vercel_id or current_name != name:
+                raise ValueError("This business is already bound to a different Vercel project; explicit migration review is required.")
+            return p
+        if current_name and current_name != name and p.get("vercel_project_status") != "NAME_CONFLICT":
+            raise ValueError("Vercel project name does not match the tracked project's configured target.")
+        if (
+            p.get("vercel_project_status") not in {"CREATE_INTENT", "CREATE_UNCERTAIN", "NAME_CONFLICT", "READY"}
+            and not current_name
+            and binding_source != "historical-ledger"
+        ):
+            raise ValueError("Vercel project binding requires a persisted project-creation intent or matching historical deployment ledger.")
+        stamp = now()
+        history = p.setdefault("vercel_project_binding_history", [])
+        history.append({
+            "vercel_project_id": vercel_id,
+            "project_name": name,
+            "provider_created_at": provider_created_at,
+            "bound_at": stamp,
+            "source": str(binding_source or "unspecified")[:80],
+        })
+        p.update({
+            "vercel_project_id": vercel_id,
+            "isolated_preview_project": name,
+            "vercel_project_status": "READY",
+            "vercel_project_created_at": provider_created_at,
+            "vercel_project_bound_at": stamp,
+            "vercel_project_error_code": None,
+            "updated_at": stamp,
+        })
         self._save()
         return p
 
@@ -1283,6 +1416,15 @@ class TrackingStore:
             raise ValueError(
                 "Real-business deployment requires explicit pre-deployment human review approval (APPROVED_FOR_PREVIEW for action PREVIEW_DEPLOYMENT) bound to the current assigned build."
             )
+        # Enforce project isolation only after the specific target and approval checks above, so an
+        # attempted shared/production/unapproved deployment continues to report its original refusal.
+        if is_real:
+            bound_vercel_id = str(p.get("vercel_project_id") or "").strip()
+            deployed_vercel_id = str(deployment.get("vercel_project_id") or "").strip()
+            if not bound_vercel_id or deployed_vercel_id != bound_vercel_id:
+                raise ValueError(
+                    "Real-business deployment must use the exact verified Vercel project ID persisted on its tracking project."
+                )
         stored_dep = {**deployment, "project_id": project_id, "lead_id": p["lead_id"]}
         self.state["deployments"][dep_id] = stored_dep
         # One approval authorizes one publish: the build-local capability is consumed when the
@@ -1352,8 +1494,10 @@ class TrackingStore:
         result.update(extra)
         return result
 
-    def authorize_preview_deployment(self, project_id: str, *, build_id: str | None = None, action: str = PREVIEW_DEPLOYMENT_ACTION,
-                                     resolve_uncertain_publish: bool = False) -> dict:
+    def authorize_preview_deployment(
+        self, project_id: str, *, build_id: str | None = None, action: str = PREVIEW_DEPLOYMENT_ACTION,
+        resolve_uncertain_publish: bool = False, allow_provisioning: bool = False,
+    ) -> dict:
         """Answer 'may this exact build be published right now?' for every server-side entry point.
 
         This is the durable audit-side half of the deployment gate: it reads project ownership,
@@ -1503,11 +1647,22 @@ class TrackingStore:
             )
         if data_class == "REAL_PUBLIC_DATA":
             effective_target = str(p.get("isolated_preview_project") or "").strip()
-            if not effective_target or effective_target == SHARED_FICTIONAL_PREVIEW_PROJECT:
+            # Public authorization/read endpoints retain the strict existing rule. Only the two real
+            # deploy entry points may defer a *missing* target to the provisioner, and only when the caller
+            # separately requested the real-preview workflow. A shared/production/custom target is never
+            # made acceptable by this option. The exact build approval capability is checked immediately
+            # below before the gate can return authorized=True.
+            may_provision_target = (
+                bool(allow_provisioning)
+                and not effective_target
+                and not str(p.get("vercel_project_id") or "").strip()
+            )
+            if (not effective_target and not may_provision_target) or effective_target == SHARED_FICTIONAL_PREVIEW_PROJECT:
                 return self._authorization_result(
                     False, "REAL_ISOLATED_TARGET_REQUIRED",
                     f"Real-business project {project_id} must configure an isolated preview project "
-                    f"(never the shared fictional '{SHARED_FICTIONAL_PREVIEW_PROJECT}') before it can be deployed.",
+                    f"(never the shared fictional '{SHARED_FICTIONAL_PREVIEW_PROJECT}') before it can be deployed, "
+                    "unless the approved deploy workflow is explicitly provisioning a new isolated project.",
                     build_id=assigned, validation_id=validation_id, review_id=review_id, **common,
                 )
         build_dir = self._build_directory(build, self.state.get("build_artifacts"))
