@@ -1135,7 +1135,7 @@ class FullSystemTests(unittest.TestCase):
         vercel_dir = self.root / ".vercel"
         vercel_dir.mkdir(exist_ok=True)
         (vercel_dir / "project.json").write_text(
-            json.dumps({"projectId": "prj_temp_isolated", "orgId": "team_temp", "projectName": "temp-pitstop-preview"}),
+            json.dumps({"projectId": "prj_tempisolated", "orgId": "team_temp", "projectName": "temp-pitstop-preview"}),
             encoding="utf-8",
         )
         rc_prep_ok, prep_ok_out, _ = _cli([
@@ -1157,8 +1157,17 @@ class FullSystemTests(unittest.TestCase):
         j_out_blocked = p34_jobs.create("PREPARE_OUTREACH", job_id="j-out-blocked-1", lead_id=lead_id, project_id=proj_id, build_id=build_3)
         self.assertEqual(p34_jobs.run("j-out-blocked-1", LocalPipelineWorker(repository_root=self.root, output_root=p34_out_root))["status"], "BLOCKED")
 
-        # Even after recording isolated preview deployment, outreach remains blocked until post-deployment APPROVED review
+        # Even after recording isolated preview deployment, outreach remains blocked until post-deployment APPROVED review.
+        # This fixture simulates a successful provider result without a live API call and therefore needs
+        # a durable one-to-one Vercel ID binding just like the production path.
         s_dep = TrackingStore(p34_state)
+        s_dep.begin_vercel_project_provisioning(
+            proj_id, "temp-pitstop-preview", base_name="temp-pitstop-preview",
+        )
+        s_dep.bind_vercel_project(
+            proj_id, vercel_project_id="prj_tempisolated", project_name="temp-pitstop-preview",
+            provider_created_at="2026-10-23T00:00:00Z", binding_source="test-fixture",
+        )
         s_dep.record_deployment(proj_id, {
             "deployment_id": "dep-b3-001",
             "build_id": build_3,
@@ -1166,6 +1175,7 @@ class FullSystemTests(unittest.TestCase):
             "validation_status": "PASS",
             "deployment_status": "DEPLOYED",
             "deployment_url": "https://temp-pitstop-preview.vercel.app",
+            "vercel_project_id": "prj_tempisolated",
             "metadata": {"project_name": "temp-pitstop-preview"},
         })
         self.assertEqual(s_dep.snapshot(proj_id)["workflow_state"], "ISOLATED_PREVIEW_DEPLOYED")
