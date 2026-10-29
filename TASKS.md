@@ -8,10 +8,10 @@ Keep this file concise. It is the shared handoff record, not a replacement for G
 | --- | --- |
 | Current phase | Reusable Website Template Design Upgrade (isolated feature branch) |
 | Current task | Give all seven registered website templates distinctive art direction while preserving grounded content, semantic components, accessibility and fictional fixture safety. |
-| Status | **IN PROGRESS**: Template theme and renderer changes are prepared on `feature/wow-reusable-website-templates`; CI and responsive preview verification are pending. `main` remains unchanged and this work is not deployed. |
-| Next task | Run the complete test suite and `git diff --check`; inspect all seven HTML previews on desktop and mobile before considering a merge. |
+| Status | **CI VERIFIED**: All 823 unit tests pass on Ubuntu and Windows. New theme-selection and brand-scoping tests pass. Browser-based visual review remains for the operator; `main` unchanged and this draft PR is not merged. |
+| Next task | Review the preview catalogue and seven template pages at desktop/mobile sizes; make any visual refinements needed, then request separate authorization before merging or any deployment. |
 | Files currently being modified | `templates/themes.css`, renderer/registry/tests, template previews/catalogue, and related docs. |
-| Tests/checks performed | Regression tests prepared; the full suite and browser-based responsive checks have not yet run. Do not report success until recorded. |
+| Tests/checks performed | GitHub Actions run `40818492124`: `python -m unittest discover -s tests -v` passed 823 tests on Ubuntu and 823 on Windows. The two new theme tests passed on both platforms. No separate browser visual check has been completed. |
 | Deployment status | No Render API push/deployment. No Pitstop Lagos project created or customer preview deployed. |
 | Known issues | New theme code requires CI/local validation. Commercial Vercel hosting policy remains a separate launch gate. |
 | Approval required | No Render API deployment, new Vercel project, or Pitstop Lagos live smoke test without separate explicit approval. |
