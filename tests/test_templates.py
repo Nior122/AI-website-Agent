@@ -125,8 +125,8 @@ class TemplateTests(unittest.TestCase):
 
     def test_brand_overrides_are_scoped_to_the_selected_template(self):
         html = render_site(load_demo("demo_portfolio.json"))
-        self.assertIn('body[data-template="personal-portfolio-v1"]{--primary:#0f172a', html)
-        self.assertNotIn(':root{--primary:#0f172a', html)
+        self.assertIn('body[data-template="personal-portfolio-v1"]{--primary:#F5F7F0', html)
+        self.assertNotIn(':root{--primary:#F5F7F0', html)
 
 
 if __name__ == "__main__":
