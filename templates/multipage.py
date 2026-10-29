@@ -188,6 +188,12 @@ def _service_title(template_id: str) -> str:
     }[template_id]
 
 
+def _service_display_title(data: dict, template_id: str) -> str:
+    if template_id == "restaurant-menu-v1" and not data.get("menu_items"):
+        return "Offerings"
+    return _service_title(template_id)
+
+
 def _image(item: dict, class_name: str, loading: str = "lazy") -> str:
     fetch = ' fetchpriority="high"' if loading == "eager" else ""
     return f'<img class="{_e(class_name)}" src="{_e(item["url"])}" alt="{_e(item["alt"])}" loading="{loading}"{fetch} decoding="async">'
@@ -208,10 +214,10 @@ def _home(data: dict, template_id: str, photos: list[dict]) -> str:
     entries = _entries(data, template_id)
     cards = _entry_cards(entries, photos, template_id, data, limit=6, home=True)
     intro = f'<section id="about" class="section story-preview"><div><p class="eyebrow">A considered approach</p><h2>Meet {name}</h2></div><div class="story-copy"><p>{_e(data.get("description") or description)}</p><a class="text-link" href="about.html">Discover our story <span aria-hidden="true">↗</span></a><a class="text-link" href="#about">Read this introduction</a></div><figure class="story-image">{_image(photos[1], "cover-image")}<figcaption>{_e(photos[1]["alt"])}</figcaption></figure></section>'
-    offering_id = "menu" if template_id == "restaurant-menu-v1" else "services"
-    offering_anchor = f'<a class="text-link" href="#{offering_id}">Jump to {_e(_service_title(template_id).lower())} <span aria-hidden="true">↗</span></a>'
+    offering_id = "menu" if template_id == "restaurant-menu-v1" and data.get("menu_items") else "services"
+    offering_anchor = f'<a class="text-link" href="#{offering_id}">Jump to {_e(_service_display_title(data, template_id).lower())} <span aria-hidden="true">↗</span></a>'
     if cards:
-        offerings = f'<section id="{offering_id}" class="section"><div class="section-heading"><div><p class="eyebrow">{_e(_category_label(template_id))}</p><h2>{_e(_service_title(template_id))}</h2></div><div><a class="text-link" href="services.html">Explore all pages <span aria-hidden="true">↗</span></a>{offering_anchor}</div></div><div class="card-grid">{cards}</div></section>'
+        offerings = f'<section id="{offering_id}" class="section"><div class="section-heading"><div><p class="eyebrow">{_e(_category_label(template_id))}</p><h2>{_e(_service_display_title(data, template_id))}</h2></div><div><a class="text-link" href="services.html">Explore all pages <span aria-hidden="true">↗</span></a>{offering_anchor}</div></div><div class="card-grid">{cards}</div></section>'
     else:
         offerings = f'<section id="{offering_id}" class="section"><div class="section-heading"><div><p class="eyebrow">What to expect</p><h2>Information, clearly presented.</h2></div></div><p>Verified details can be added to this section before publication.</p></section>'
     image_strip = f'<section class="photo-band"><div class="photo-band-image">{_image(photos[2], "cover-image")}</div><div class="photo-band-copy"><p class="eyebrow">The details matter</p><h2>Thoughtful design. Clear information.</h2><p>Explore the pages to learn more, review the available details, and find the right next step.</p><a class="button button-light" href="contact.html">Contact {name}</a></div></section>'
@@ -285,7 +291,7 @@ def _about(data: dict, template_id: str, photos: list[dict]) -> str:
 
 
 def _services(data: dict, template_id: str, photos: list[dict]) -> str:
-    title = _service_title(template_id)
+    title = _service_display_title(data, template_id)
     entries = _entries(data, template_id)
     if not entries:
         cards = '<p class="empty-state">Verified offering details have not been provided for this section yet.</p>'
