@@ -6,15 +6,15 @@ Keep this file concise. It is the shared handoff record, not a replacement for G
 
 | Field | Current value |
 | --- | --- |
-| Current phase | Main Branch Integration & Operational Readiness: COMPLETE |
-| Current task | Reconciled branch divergence with `origin/main` (`8399e5c`); resolved merge conflicts in `tests/test_full_system.py` and `tests/test_phase49_approved_sending.py` while preserving exact Vercel binding and email preview assertions; completed merge commit `8d7787b`. |
-| Status | **CLEAN & VERIFIED**: Working tree clean; all 821 unit tests passing; zero merge markers; `git diff --check` clean. Ahead of origin/main by 30 commits pending operator push authorization. |
-| Next task | Operator review and authorization to push local commits (`git push origin main`). |
-| Files currently being modified | None (working tree clean). |
-| Tests/checks performed | Full test suite: 821 passed (0 failed, 1 skipped); `git diff --check` clean; full test discovery clean. |
-| Deployment status | ai-website-agent-preview: DEPLOYED at `https://ai-website-agent-preview.vercel.app`. josephportifolio.vercel.app: HTTP 200, untouched. Render API: live. n8n: 5 dedicated workflows active. |
-| Known issues | None. |
-| Approval required | git push: requires explicit operator authorization. |
+| Current phase | Reusable Website Template Design Upgrade (isolated feature branch) |
+| Current task | Give all seven registered website templates distinctive art direction while preserving grounded content, semantic components, accessibility and fictional fixture safety. |
+| Status | **IN PROGRESS**: Template theme and renderer changes are prepared on `feature/wow-reusable-website-templates`; CI and responsive preview verification are pending. `main` remains unchanged and this work is not deployed. |
+| Next task | Run the complete test suite and `git diff --check`; inspect all seven HTML previews on desktop and mobile before considering a merge. |
+| Files currently being modified | `templates/themes.css`, renderer/registry/tests, template previews/catalogue, and related docs. |
+| Tests/checks performed | Regression tests prepared; the full suite and browser-based responsive checks have not yet run. Do not report success until recorded. |
+| Deployment status | No Render API push/deployment. No Pitstop Lagos project created or customer preview deployed. |
+| Known issues | New theme code requires CI/local validation. Commercial Vercel hosting policy remains a separate launch gate. |
+| Approval required | No Render API deployment, new Vercel project, or Pitstop Lagos live smoke test without separate explicit approval. |
 
 ## Completed
 

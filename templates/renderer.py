@@ -10,6 +10,7 @@ from .registry import TemplateDefinition, get_template, select_template
 
 
 STYLE = (Path(__file__).parent / "styles.css").read_text(encoding="utf-8")
+THEME_STYLE = (Path(__file__).parent / "themes.css").read_text(encoding="utf-8")
 
 
 def validate_business_data(data: dict, template: TemplateDefinition) -> list[str]:
@@ -22,11 +23,11 @@ def render_site(data: dict, template_id: str | None = None) -> str:
     if errors:
         raise ValueError("; ".join(errors))
     sections = _sections(data, template)
-    brand = _brand_css(data.get("brand", {}))
+    brand = _brand_css(data.get("brand", {}), template.template_id)
     description = escape(data.get("description") or f"{data['business_name']} in {data['city']}.")
     title = escape(data["business_name"])
     restaurant = template.template_id == "restaurant-menu-v1"
-    return f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{title}</title><meta name="description" content="{description}"><meta property="og:title" content="{title}"><meta property="og:description" content="{description}"><style>{STYLE}{brand}</style></head><body>{components.navigation(data["business_name"], sections["nav"], restaurant=restaurant, fictional=components.is_fictional(data))}<main>{sections["html"]}</main>{components.footer(data["business_name"], fictional=components.is_fictional(data))}</body></html>'
+    return f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{title}</title><meta name="description" content="{description}"><meta property="og:title" content="{title}"><meta property="og:description" content="{description}"><style>{STYLE}{THEME_STYLE}{brand}</style></head><body data-template="{escape(template.template_id, quote=True)}">{components.navigation(data["business_name"], sections["nav"], restaurant=restaurant, fictional=components.is_fictional(data))}<main>{sections["html"]}</main>{components.footer(data["business_name"], fictional=components.is_fictional(data))}</body></html>'
 
 
 def _sections(data: dict, template: TemplateDefinition) -> dict:
@@ -86,11 +87,11 @@ def _sections(data: dict, template: TemplateDefinition) -> dict:
     return {"nav": [section_id for section_id, _ in rendered], "html": components.hero(data) + "".join(html for _, html in rendered)}
 
 
-def _brand_css(brand: dict) -> str:
+def _brand_css(brand: dict, template_id: str) -> str:
     allowed = {"primary_color": "--primary", "secondary_color": "--secondary", "accent_color": "--accent", "background_color": "--background", "text_color": "--text", "border_radius": "--radius", "spacing": "--space"}
     values = []
     for key, variable in allowed.items():
         value = brand.get(key)
         if isinstance(value, str) and all(character not in value for character in "{};<>"):
             values.append(f"{variable}:{value}")
-    return f':root{{{";".join(values)}}}' if values else ""
+    return f'body[data-template="{template_id}"]{{{";".join(values)}}}' if values else ""

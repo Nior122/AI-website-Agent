@@ -1,50 +1,65 @@
-# Reusable Website Templates
+# Reusable Website Template System
 
-This is a provider-neutral, dependency-free static template system. A template renders ordinary structured data; future AI may propose content or brand values but is not required to render a website.
+The AI Website Agent uses seven reusable static website templates. Each template shares safe semantic components but has its own visual direction, palette, typography, hero treatment, card styling, and responsive behavior. This helps the agent produce sites that suit their industry instead of reusing one look for every customer.
 
-## Initial templates
+## The seven templates
 
-- `salon-service-v1` supports beauty salons, barbershops, fitness, and creative services.
-- `restaurant-menu-v1` supports restaurants, food businesses, and short stays.
-
-Two templates are intentional: they validate both service-led and menu/location-led layouts without prematurely creating fifteen near-duplicates. Add a category only when its information architecture genuinely differs.
+| Template ID | Best fit | Visual direction |
+| --- | --- | --- |
+| `salon-service-v1` | Salons, barbershops, beauty, wellness, fitness, creative services | Editorial luxury: plum, rose, warm parchment and sculptural details |
+| `restaurant-menu-v1` | Restaurants, cafes, food businesses, short stays | Botanical hospitality: forest green, ivory and menu-led hierarchy |
+| `clinic-healthcare-v1` | Clinics, dental practices, healthcare, pharmacy, wellness | Calm and reassuring: teal, mist and clear care pathways |
+| `legal-practice-v1` | Law, accounting, tax, advisory and consulting | Restrained authority: navy, parchment and antique brass |
+| `automotive-service-v1` | Garages, mechanics, auto repair, tyres and vehicle care | High-contrast workshop style: charcoal, white and safety orange |
+| `retail-ecommerce-v1` | Boutiques, fashion, stores, electronics, grocery and retail | Curated merchandising: warm neutrals, tactile cards and terracotta |
+| `personal-portfolio-v1` | Developers, designers, creators, freelancers and digital builders | Dark editorial showcase: ink, soft white and electric lime |
 
 ## Architecture
 
 ```text
-Business data + content data + brand config
-                 ↓
-          template registry selection
-                 ↓
-      semantic shared components + static CSS
-                 ↓
-             local static HTML
+Verified business facts + generated copy + optional brand tokens
+                         ↓
+                 templates/registry.py
+                         ↓
+            templates/renderer.py + components.py
+                         ↓
+ styles.css (shared primitives) + themes.css (art direction)
+                         ↓
+                  standalone HTML
 ```
 
-- `registry.py` is the metadata catalogue and deterministic category selector.
-- `renderer.py` validates required fields and assembles a self-contained HTML document.
-- `components.py` holds reusable semantic sections and optional CTA logic.
-- `styles.css` is lightweight shared CSS embedded into output, with brand CSS variables.
-- `demo-data/` holds clearly fictional, non-production examples.
+- `registry.py` maps supported categories to a registered template; unsupported categories fail explicitly.
+- `renderer.py` checks required fields, scopes brand variables to the selected theme, and renders a standalone HTML document tagged with `body[data-template]`.
+- `components.py` provides semantic navigation, hero, about, cards, hours, location, contact and footer sections.
+- `styles.css` owns common layout rules. `themes.css` owns the seven visual systems.
+- Generated sites embed their CSS. They do not require a JavaScript runtime, CSS CDN, remote font, image service or tracking code.
+- Optional approved brand values are scoped to the selected template; one customer's colors cannot leak into another template.
+- `demo-data/` contains fictional sample records. `previews/index.html` is the catalogue for local template demonstrations.
 
-## Data boundaries
+## Data and safety boundaries
 
-Business data (`business_name`, city, contacts, services/menu, address) is separate from template structure. Optional `content` provides business-specific wording; optional `brand` supplies presentation variables. Image entries require a provided URL and meaningful alt text; absent images omit the gallery.
+Business facts, content, optional images, brand tokens and template structure stay separate. Calls to action render only when corresponding contact information is present. Phone uses `tel:`, WhatsApp uses a sanitized `wa.me` link, and social links require valid HTTP(S) URLs. A gallery needs supplied image URLs and meaningful alt text; missing images are omitted, not invented.
 
-CTA links only render when their corresponding data exists. WhatsApp uses a sanitized `wa.me` link, phone uses `tel:`, and social links require HTTP(S) URLs. For clearly labeled `TEST_FIXTURE`/`demo` data, the renderer deliberately replaces all externally actionable contact/map/social targets with in-page navigation and a visible fictional disclosure. No contact form, tracking code, image download, or deployment behavior exists.
+For `TEST_FIXTURE` and `demo` records, external actions are replaced by in-page navigation and a visible fictional disclosure. Rendering does not publish sites, deploy to hosting, activate integrations, submit contact forms, or contact businesses.
 
-## Add a template
+## Add or refine a template
 
-1. Add one `TemplateDefinition` to `registry.py`, including data requirements, sections, mobile behavior, and accessibility expectations.
-2. Add a deliberate rendering branch in `renderer._sections` only if existing shared sections cannot express the layout.
-3. Reuse/add semantic components in `components.py`; do not put business data in them.
-4. Add fictional demo data and tests for required fields, absent optional values, long content, and the intended category mapping.
-5. Update this document, `ARCHITECTURE.md`, `TASKS.md`, and `CHANGELOG.md`.
+1. Add a `TemplateDefinition` in `registry.py` with category aliases, required data, sections and accessibility expectations.
+2. Reuse the semantic components in `components.py`; only create a component when existing sections cannot express the layout.
+3. Add the theme rules in `themes.css` under a `body[data-template="..."]` selector.
+4. Add fictional demo data and regression tests for selection, missing optional values, escaped content, disclosures and responsive rules.
+5. Regenerate that template's HTML preview with `templates.cli`, refresh `previews/index.html`, and update `CHANGELOG.md` and `TASKS.md`.
 
-## Local demo
+## Render a demo locally (PowerShell)
 
 ```powershell
-python -m templates.cli --data templates/demo-data/demo_salon.json --output data/leads/demo-salon.html
+py -3 -m templates.cli --data templates/demo-data/demo_salon.json --output templates/previews/salon-service-v1.html --template-id salon-service-v1
+py -3 -m templates.cli --data templates/demo-data/demo_restaurant.json --output templates/previews/restaurant-menu-v1.html --template-id restaurant-menu-v1
+py -3 -m templates.cli --data templates/demo-data/demo_clinic.json --output templates/previews/clinic-healthcare-v1.html --template-id clinic-healthcare-v1
+py -3 -m templates.cli --data templates/demo-data/demo_legal.json --output templates/previews/legal-practice-v1.html --template-id legal-practice-v1
+py -3 -m templates.cli --data templates/demo-data/demo_automotive.json --output templates/previews/automotive-service-v1.html --template-id automotive-service-v1
+py -3 -m templates.cli --data templates/demo-data/demo_retail.json --output templates/previews/retail-ecommerce-v1.html --template-id retail-ecommerce-v1
+py -3 -m templates.cli --data templates/demo-data/demo_portfolio.json --output templates/previews/personal-portfolio-v1.html --template-id personal-portfolio-v1
 ```
 
-The output is local and ignored by Git. It is not a deployment.
+Open `templates/previews/index.html` in a browser to browse the saved examples. These are local design demonstrations, not deployments.

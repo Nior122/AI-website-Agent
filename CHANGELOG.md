@@ -4,6 +4,15 @@ All notable project changes are recorded here. Dates use ISO 8601 (`YYYY-MM-DD`)
 
 ## [Unreleased]
 
+### Added — 2026-10-29 (Distinct Industry Website Design System)
+
+- Added `templates/themes.css`, a dependency-free layer of seven distinct art directions for salon, restaurant, healthcare, legal, automotive, retail and portfolio websites.
+- Updated `templates/renderer.py` to mark generated documents with their selected template ID and embed the industry theme. Brand-variable overrides are scoped to that template instead of the global root.
+- Added responsive art direction, clearer calls to action, refined cards and panels, focus treatment and reduced-motion handling while retaining shared semantic components and fictional-contact safety.
+- Added theme-selection and brand-scoping regression tests. Updated the template handoff documentation and a local preview catalogue.
+- No Render API push/deployment, customer project creation or client-site deployment is part of this change.
+
+
 ### Added — 2026-10-23 (Gmail API Endpoint and Outbound State Fixes)
 
 - **Gmail API Send Endpoint Correction (`integrations/gmail_send.py`)**:

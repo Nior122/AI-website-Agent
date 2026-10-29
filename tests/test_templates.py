@@ -104,5 +104,30 @@ class TemplateTests(unittest.TestCase):
         self.assertIn('grid-template-columns: repeat(3, minmax(0, 1fr))', html)
 
 
+
+    def test_every_demo_renders_with_its_dedicated_visual_theme(self):
+        cases = (
+            ("demo_salon.json", "salon-service-v1"),
+            ("demo_restaurant.json", "restaurant-menu-v1"),
+            ("demo_clinic.json", "clinic-healthcare-v1"),
+            ("demo_legal.json", "legal-practice-v1"),
+            ("demo_automotive.json", "automotive-service-v1"),
+            ("demo_retail.json", "retail-ecommerce-v1"),
+            ("demo_portfolio.json", "personal-portfolio-v1"),
+        )
+        for fixture, template_id in cases:
+            with self.subTest(template_id=template_id):
+                html = render_site(load_demo(fixture))
+                self.assertIn(f'<body data-template="{template_id}">', html)
+                self.assertIn(f'body[data-template="{template_id}"]', html)
+                self.assertIn("prefers-reduced-motion", html)
+                self.assertIn("Fictional demonstration website", html)
+
+    def test_brand_overrides_are_scoped_to_the_selected_template(self):
+        html = render_site(load_demo("demo_portfolio.json"))
+        self.assertIn('body[data-template="personal-portfolio-v1"]{--primary:#0f172a', html)
+        self.assertNotIn(':root{--primary:#0f172a', html)
+
+
 if __name__ == "__main__":
     unittest.main()

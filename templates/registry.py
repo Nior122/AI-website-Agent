@@ -19,7 +19,7 @@ class TemplateDefinition:
 TEMPLATES = (
     TemplateDefinition(
         "salon-service-v1", "Service Business", ("beauty_salon", "barbershop", "fitness", "creative_services", "professional_service", "professional_services"),
-        "Service-led local-business layout with booking/contact emphasis.",
+        "Editorial beauty and wellness experience with a warm luxury palette, service storytelling, and booking/contact emphasis.",
         ("business_name", "category", "city"),
         ("services", "description", "opening_hours", "phone", "whatsapp", "instagram_url", "images"),
         ("navigation", "hero", "about", "services", "gallery", "hours", "contact", "footer"),
@@ -28,7 +28,7 @@ TEMPLATES = (
     ),
     TemplateDefinition(
         "restaurant-menu-v1", "Restaurant Menu", ("restaurant", "food_business", "hotel_short_stay"),
-        "Menu and location-led layout for food-focused local businesses.",
+        "Chef-led hospitality experience with a deep botanical palette, signature-menu hierarchy, and clear visit information.",
         ("business_name", "category", "city"),
         ("menu_items", "services", "description", "opening_hours", "phone", "email", "whatsapp", "instagram_url", "address", "images"),
         ("navigation", "hero", "about", "menu", "offerings", "gallery", "location", "hours", "contact", "footer"),
@@ -37,7 +37,7 @@ TEMPLATES = (
     ),
     TemplateDefinition(
         "clinic-healthcare-v1", "Clinic & Healthcare", ("clinic", "healthcare", "medical_practice", "dental_clinic", "optometry", "wellness_center", "pharmacy"),
-        "Consultation and care-focused layout for clinics, healthcare practices, and wellness centres.",
+        "Calm, accessible healthcare experience with reassuring color, clear care pathways, and prominent consultation actions.",
         ("business_name", "category", "city"),
         ("services", "description", "opening_hours", "phone", "whatsapp", "address", "practitioners", "images"),
         ("navigation", "hero", "about", "services", "practitioners", "hours", "location", "contact", "footer"),
@@ -46,7 +46,7 @@ TEMPLATES = (
     ),
     TemplateDefinition(
         "legal-practice-v1", "Legal & Advisory Practice", ("legal", "law_firm", "solicitor", "barrister", "advocate", "accounting", "tax_advisory", "consulting_firm"),
-        "Authority and trust-led layout for law firms, legal practitioners, and corporate advisory services.",
+        "Refined legal and advisory experience with restrained editorial typography, formal spacing, and trust-led service hierarchy.",
         ("business_name", "category", "city"),
         ("services", "practice_areas", "description", "opening_hours", "phone", "email", "address", "attorneys", "images"),
         ("navigation", "hero", "about", "practice_areas", "attorneys", "hours", "location", "contact", "footer"),
@@ -55,7 +55,7 @@ TEMPLATES = (
     ),
     TemplateDefinition(
         "automotive-service-v1", "Automotive & Mobility Service", ("automotive", "auto_repair", "mechanic", "car_care", "tire_service", "auto_body", "vehicle_service"),
-        "Fast-action and reliability-focused layout for auto repair workshops, mechanic garages, and vehicle care centers.",
+        "High-contrast automotive experience with bold workshop typography, unmistakable service calls to action, and repair/service cards.",
         ("business_name", "category", "city"),
         ("services", "description", "opening_hours", "phone", "whatsapp", "address", "emergency_assistance", "images"),
         ("navigation", "hero", "about", "services", "guarantee", "hours", "location", "contact", "footer"),
@@ -64,7 +64,7 @@ TEMPLATES = (
     ),
     TemplateDefinition(
         "retail-ecommerce-v1", "Retail & E-commerce", ("retail", "shop", "store", "boutique", "fashion", "clothing", "electronics", "supermarket", "grocery", "market"),
-        "Product showcase and shopping-focused layout for retail stores, boutiques, and e-commerce businesses.",
+        "Curated retail experience with tactile product cards, warm merchandising surfaces, and collection-led presentation.",
         ("business_name", "category", "city"),
         ("services", "products", "description", "opening_hours", "phone", "whatsapp", "email", "address", "images"),
         ("navigation", "hero", "about", "products", "services", "gallery", "hours", "location", "contact", "footer"),
@@ -73,7 +73,7 @@ TEMPLATES = (
     ),
     TemplateDefinition(
         "personal-portfolio-v1", "Personal Portfolio", ("portfolio", "personal_portfolio", "developer", "software_engineer", "web_developer", "designer", "creative_technologist", "digital_builder", "creator", "freelancer"),
-        "Showcase-led personal portfolio layout with profile introduction, projects, skills, services, and verified contact links.",
+        "Dark editorial portfolio experience with electric-lime accents, featured project cards, skills, services, and verified contact links.",
         ("business_name", "category", "city"),
         ("services", "projects", "skills", "description", "opening_hours", "phone", "email", "whatsapp", "github_url", "linkedin_url", "twitter_url", "images"),
         ("navigation", "hero", "about", "projects", "skills", "services", "contact", "footer"),
