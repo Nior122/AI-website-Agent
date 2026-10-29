@@ -155,9 +155,6 @@ def _links(tags, ids, findings, checks) -> None:
             checks["links"] = False; findings.append(_finding("ERROR", "links", "INVALID_PHONE_LINK", "Phone link is malformed."))
         elif href.startswith(("http://", "https://")) and not urlparse(href).netloc:
             checks["links"] = False; findings.append(_finding("ERROR", "links", "INVALID_EXTERNAL_LINK", "External link is malformed."))
-        elif re.fullmatch(r"[A-Za-z0-9_-]+\.html(?:#[A-Za-z0-9_-]+)?", href):
-            # A local multi-page bundle is validated as a whole by WebsiteBuilder.
-            continue
         elif not href.startswith(("#", "http://", "https://", "tel:")):
             checks["links"] = False; findings.append(_finding("ERROR", "links", "UNSUPPORTED_LINK_SCHEME", f"Unsupported link scheme: {href}."))
 

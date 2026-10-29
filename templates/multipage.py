@@ -74,7 +74,7 @@ STOCK_IMAGES = {
     ],
 }
 PHOTO_NOTE = {
-    "demo": "Stock photography shown for this fictional design demonstration.",
+    "demo": "Illustrative stock photography is shown for this fictional design demonstration.",
     "business": "Illustrative stock photography. Replace with approved business photography before publication.",
 }
 PAGE_LABELS = {

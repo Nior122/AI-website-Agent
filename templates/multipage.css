@@ -27,8 +27,8 @@ nav{display:flex;flex-wrap:wrap;align-items:center;gap:clamp(.75rem,2.1vw,1.9rem
 .site-header nav a,.footer-nav a{text-decoration:none;font-size:.74rem;font-weight:700;letter-spacing:.045em;color:var(--muted);transition:color .18s ease}
 .site-header nav a:hover,.site-header nav a[aria-current=page],.footer-nav a:hover{color:var(--accent)}
 .site-header nav a[aria-current=page]{text-decoration:underline;text-underline-offset:.45rem}
-.skip-link{position:absolute;left:-10000px;top:1rem;padding:.8rem;background:var(--surface);z-index:100}
-.skip-link:focus{left:1rem}
+.skip-link{display:inline-flex;align-items:center;padding:.5rem .8rem;margin:.5rem 28px 0;text-decoration:none;border:1px solid var(--line);background:var(--surface);color:var(--primary);font-size:.75rem;font-weight:700}
+.skip-link:focus-visible{outline:3px solid var(--accent);outline-offset:3px}
 .eyebrow{margin:0 0 1rem;color:var(--accent);font-size:.69rem;font-weight:800;letter-spacing:.17em;text-transform:uppercase}
 .hero-lede{max-width:38rem;font-size:clamp(1.05rem,1.55vw,1.24rem);color:var(--muted);line-height:1.7}
 .page-summary{max-width:40rem;color:var(--muted);font-size:.98rem}
