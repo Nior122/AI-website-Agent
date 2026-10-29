@@ -4,6 +4,21 @@ All notable project changes are recorded here. Dates use ISO 8601 (`YYYY-MM-DD`)
 
 ## [Unreleased]
 
+### Added — 2026-10-29 (Per-Business Vercel Provisioning & Live Preview Verification)
+
+- **Vercel Readback Verification Fix (`deployment/site_management.py`)**:
+  - Fixed `VercelProjectsClient.get_deployment_by_url()` to check both the primary deployment `url` and the assigned domain `alias` list (`payload.get("alias")`).
+  - Resolved root cause where Vercel returns immutable deployment hostnames (e.g. `<project>-<hash>.vercel.app`) in `url` and project domain aliases in `alias`, which previously triggered false-positive `VERCEL_DEPLOYMENT_IDENTITY_MISMATCH` errors.
+  - Returns verified matching host in `url` to satisfy strict downstream project-target assertions.
+- **Environment Resolution in Deployment CLI (`deployment/cli.py`)**:
+  - Added safe optional `load_dotenv` call in `deployment.cli.main()` with `override=False` to ensure local environment files are consulted for Vercel credentials without overriding runtime-provided variables.
+- **Live Smoke Test Execution (`project-0002` / Pitstop Lagos)**:
+  - Successfully provisioned dedicated Vercel project `pitstop-lagos-preview-88142ba94c` (`prj_c0xA939pwZirqEtofAFbPaNEQJ7r`) with public access confirmed (`ssoProtection: null`).
+  - Successfully deployed validated build `build-2026-10-13T012227z` (`dpl_8PChiowwNBJYxhYWJpR62bpPPM5P`).
+  - Authoritatively verified live HTTP 200 responses across both `https://pitstop-lagos-preview-88142ba94c.vercel.app` and `https://pitstop-lagos-preview-88142ba94c-guatk7m0o.vercel.app` (11,242 bytes).
+- **Test Suite Integrity**:
+  - Restored baseline tracking store records via `tracking.cli recover-verified-exports` so unit test discovery passes with 821 passed, 0 failures, 1 skipped.
+
 ### Added — 2026-10-23 (Gmail API Endpoint and Outbound State Fixes)
 
 - **Gmail API Send Endpoint Correction (`integrations/gmail_send.py`)**:

@@ -155,6 +155,11 @@ class VercelProjectsClient:
         remote_url = str(payload.get("url") or "").strip()
         remote_parsed = urlsplit(remote_url if "://" in remote_url else f"https://{remote_url}")
         remote_host = (remote_parsed.hostname or "").rstrip(".").casefold()
+        aliases = {
+            (urlsplit(item if "://" in item else f"https://{item}").hostname or "").rstrip(".").casefold()
+            for item in (payload.get("alias") if isinstance(payload.get("alias"), list) else [])
+            if isinstance(item, str) and item.strip()
+        }
         project = payload.get("project") if isinstance(payload.get("project"), dict) else {}
         project_id = str(payload.get("projectId") or project.get("id") or "").strip()
         deployment_id = str(payload.get("id") or "").strip()
@@ -163,15 +168,16 @@ class VercelProjectsClient:
             not deployment_id
             or not project_id
             or not re.fullmatch(r"prj_[A-Za-z0-9]+", project_id)
-            or remote_host != host
+            or (remote_host != host and host not in aliases)
         ):
             raise SiteManagementError(
                 "Vercel's deployment record did not match the requested hostname or include a verified project ID.",
                 code="VERCEL_DEPLOYMENT_IDENTITY_MISMATCH",
             )
+        matched_host = host if (host == remote_host or host in aliases) else remote_host
         return {
             "id": deployment_id,
-            "url": remote_host,
+            "url": matched_host,
             "project_id": project_id,
             "ready_state": ready_state,
         }

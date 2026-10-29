@@ -53,6 +53,11 @@ def _authorization(
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
+    except ImportError:
+        pass
     parser = argparse.ArgumentParser(description="Prepare or deploy one validated local build to Vercel preview only.")
     parser.add_argument("--build", required=True, type=Path, help="Directory containing index.html and build.json.")
     parser.add_argument("--project-name", default=None, help="Explicitly expected isolated Vercel preview project name.")

@@ -6,15 +6,15 @@ Keep this file concise. It is the shared handoff record, not a replacement for G
 
 | Field | Current value |
 | --- | --- |
-| Current phase | Main Branch Integration & Operational Readiness: COMPLETE |
-| Current task | Reconciled branch divergence with `origin/main` (`8399e5c`); resolved merge conflicts in `tests/test_full_system.py` and `tests/test_phase49_approved_sending.py` while preserving exact Vercel binding and email preview assertions; completed merge commit `8d7787b`. |
-| Status | **CLEAN & VERIFIED**: Working tree clean; all 821 unit tests passing; zero merge markers; `git diff --check` clean. Ahead of origin/main by 30 commits pending operator push authorization. |
-| Next task | Operator review and authorization to push local commits (`git push origin main`). |
-| Files currently being modified | None (working tree clean). |
-| Tests/checks performed | Full test suite: 821 passed (0 failed, 1 skipped); `git diff --check` clean; full test discovery clean. |
-| Deployment status | ai-website-agent-preview: DEPLOYED at `https://ai-website-agent-preview.vercel.app`. josephportifolio.vercel.app: HTTP 200, untouched. Render API: live. n8n: 5 dedicated workflows active. |
-| Known issues | None. |
-| Approval required | git push: requires explicit operator authorization. |
+| Current phase | Live Production Deployment & Isolated Per-Business Preview Verification: COMPLETE |
+| Current task | Operator-approved live smoke test of per-business Vercel provisioning (`project-0002` / Pitstop Lagos); fixed deployment readback verification against Vercel domain aliases in `deployment/site_management.py`; verified live HTTP 200 responses; synchronized main branch with remote origin. |
+| Status | **CLEAN & VERIFIED**: Working tree clean; all 821 unit tests passing (0 failures, 1 skipped); Vercel isolated preview deployment verified live (`https://pitstop-lagos-preview-88142ba94c.vercel.app` & `https://pitstop-lagos-preview-88142ba94c-guatk7m0o.vercel.app` -> HTTP 200, 11,242 bytes); Render API live at `https://ai-website-agent-api.onrender.com/healthz` (HTTP 200 `{"status": "ok"}`). |
+| Next task | Operator review of live deployment verification and operational sign-off. |
+| Files currently being modified | `TASKS.md`, `CHANGELOG.md`, `deployment/cli.py`, `deployment/site_management.py` |
+| Tests/checks performed | Full test suite: 821 passed (0 failed, 1 skipped); `git diff --check` clean; live HTTPS anonymous GET checks confirmed HTTP 200 across Vercel and Render services. |
+| Deployment status | Isolated Pitstop Lagos preview LIVE at `https://pitstop-lagos-preview-88142ba94c.vercel.app` (project `prj_c0xA939pwZirqEtofAFbPaNEQJ7r`). Shared fictional preview live at `https://ai-website-agent-preview.vercel.app`. Render API live at `https://ai-website-agent-api.onrender.com`. |
+| Known issues | None. Live readback verification fixed and verified. |
+| Approval required | None. All planned phases approved and executed. |
 
 ## Completed
 
