@@ -276,7 +276,7 @@ def _contact_facts(data: dict) -> str:
     if data.get("phone"):
         rows.append(f'<p><span>Telephone</span><strong>{_e(data["phone"])}</strong></p>')
     if data.get("email"):
-        rows.append(f'<p><span>Email</span><strong>{_e(data["email"])}</strong></p>')
+        rows.append(f'<p class="contact-email">Email: {_e(data["email"])}</p>')
     if data.get("opening_hours"):
         rows.append(f'<p><span>Hours</span><strong>{_e(data["opening_hours"])}</strong></p>')
     return "".join(rows)
