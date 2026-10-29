@@ -88,7 +88,7 @@ class WebsiteBuilder:
             artifact_dir = self.output_root / _safe_segment(lead_id) / build_id
             artifact_html_path = str(artifact_dir / "index.html")
             validation = validate_html(
-                "\n".join(pages.values()),
+                html,
                 facts["business_name"],
                 real_build=not is_fixture,
                 build_id=build_id,
@@ -97,8 +97,41 @@ class WebsiteBuilder:
                 expected_facts=None if is_fixture else facts,
                 synthetic_contact=is_fixture,
             )
+            secondary_page_validations = {}
+            for filename, page_html in pages.items():
+                if filename == "index.html":
+                    continue
+                page_validation = validate_html(
+                    page_html,
+                    facts["business_name"],
+                    real_build=not is_fixture,
+                    build_id=build_id,
+                    lead_id=lead_id,
+                    expected_contact={},
+                    expected_facts=None,
+                    synthetic_contact=is_fixture,
+                )
+                secondary_page_validations[filename] = {
+                    "passed": page_validation["passed"],
+                    "errors": page_validation.get("errors", []),
+                }
+                if not page_validation["passed"]:
+                    validation.setdefault("errors", []).extend(
+                        {
+                            "severity": "ERROR",
+                            "code": "SECONDARY_PAGE_VALIDATION_FAILED",
+                            "message": f"{filename}: {item.get('message', item.get('code', 'Validation failed'))}",
+                        }
+                        for item in page_validation.get("errors", [])
+                    )
+                    validation["passed"] = False
             bundle_errors = _validate_site_bundle(pages)
-            validation["site_pages"] = {"count": len(pages), "files": list(pages), "bundle_errors": bundle_errors}
+            validation["site_pages"] = {
+                "count": len(pages),
+                "files": list(pages),
+                "bundle_errors": bundle_errors,
+                "page_validations": secondary_page_validations,
+            }
             result.metadata["page_files"] = list(pages)
             validation["artifact_path"] = artifact_html_path
             result.validation = validation

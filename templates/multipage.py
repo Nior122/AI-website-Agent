@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 from urllib.parse import quote, urlparse
 
-from .components import action_links, is_fictional, safe_url
+from .components import FICTIONAL_DISCLOSURE, action_links, is_fictional, safe_url
 from .registry import get_template, select_template
 from .renderer import _brand_css
 
@@ -207,19 +207,23 @@ def _home(data: dict, template_id: str, photos: list[dict]) -> str:
     description = _e(data.get("description") or data.get("content", {}).get("hero_subtitle") or f"{data['category'].replace('_', ' ')} in {data['city']}.")
     entries = _entries(data, template_id)
     cards = _entry_cards(entries, photos, template_id, data, limit=6, home=True)
-    intro = f'<section class="section story-preview"><div><p class="eyebrow">A considered approach</p><h2>Meet {name}</h2></div><div class="story-copy"><p>{_e(data.get("description") or description)}</p><a class="text-link" href="about.html">Discover our story <span aria-hidden="true">↗</span></a></div><figure class="story-image">{_image(photos[1], "cover-image")}<figcaption>{_e(photos[1]["alt"])}</figcaption></figure></section>'
-    offerings = ""
+    intro = f'<section id="about" class="section story-preview"><div><p class="eyebrow">A considered approach</p><h2>Meet {name}</h2></div><div class="story-copy"><p>{_e(data.get("description") or description)}</p><a class="text-link" href="about.html">Discover our story <span aria-hidden="true">↗</span></a><a class="text-link" href="#about">Read this introduction</a></div><figure class="story-image">{_image(photos[1], "cover-image")}<figcaption>{_e(photos[1]["alt"])}</figcaption></figure></section>'
+    offering_id = "menu" if template_id == "restaurant-menu-v1" else "services"
+    offering_anchor = f'<a class="text-link" href="#{offering_id}">Jump to {_e(_service_title(template_id).lower())} <span aria-hidden="true">↗</span></a>'
     if cards:
-        offerings = f'<section class="section"><div class="section-heading"><div><p class="eyebrow">{_e(_category_label(template_id))}</p><h2>{_e(_service_title(template_id))}</h2></div><a class="text-link" href="services.html">Explore all <span aria-hidden="true">↗</span></a></div><div class="card-grid">{cards}</div></section>'
+        offerings = f'<section id="{offering_id}" class="section"><div class="section-heading"><div><p class="eyebrow">{_e(_category_label(template_id))}</p><h2>{_e(_service_title(template_id))}</h2></div><div><a class="text-link" href="services.html">Explore all pages <span aria-hidden="true">↗</span></a>{offering_anchor}</div></div><div class="card-grid">{cards}</div></section>'
     else:
-        offerings = '<section class="section"><div class="section-heading"><div><p class="eyebrow">What to expect</p><h2>Information, clearly presented.</h2></div></div><p>Verified details can be added to this section before publication.</p></section>'
+        offerings = f'<section id="{offering_id}" class="section"><div class="section-heading"><div><p class="eyebrow">What to expect</p><h2>Information, clearly presented.</h2></div></div><p>Verified details can be added to this section before publication.</p></section>'
     image_strip = f'<section class="photo-band"><div class="photo-band-image">{_image(photos[2], "cover-image")}</div><div class="photo-band-copy"><p class="eyebrow">The details matter</p><h2>Thoughtful design. Clear information.</h2><p>Explore the pages to learn more, review the available details, and find the right next step.</p><a class="button button-light" href="contact.html">Contact {name}</a></div></section>'
     facts = _facts(data, template_id)
     note = _image_note(photos, data)
     actions = "" if is_fictional(data) else f'<div class="verified-actions">{action_links(data)}</div>'
-    contact_preview = f'<section id="contact" class="section home-contact-preview"><div><p class="eyebrow">Contact & practical details</p><h2>Make the next step clear.</h2><p>Find the available phone, address, email, and social links in one place.</p>{actions}</div><div class="home-contact-facts">{_contact_facts(data)}</div></section>'
-    return f'<section class="home-hero"><div class="hero-copy"><p class="eyebrow">{_e(_category_label(template_id))} <span aria-hidden="true">/</span> {city}</p><h1>{title}</h1><p class="hero-lede">{description}</p><div class="hero-actions"><a class="button button-primary" href="services.html">{_e(_home_cta(template_id))}</a><a class="button button-outline" href="contact.html">Get in touch <span aria-hidden="true">↗</span></a></div><p class="hero-location">{city}{(" · " + _e(data["opening_hours"])) if data.get("opening_hours") else ""}</p></div><figure class="hero-visual">{_image(photos[0], "hero-image", "eager")}<figcaption>{_e(photos[0]["alt"])}</figcaption><span class="hero-stamp" aria-hidden="true">{_e(_stamp(template_id))}</span></figure></section>{facts}{intro}{offerings}{image_strip}<section class="section close-panel"><p class="eyebrow">Next step</p><h2>Find the information you need.</h2><p>Review the details available for {name} and choose the most relevant way to connect.</p><a class="button button-primary" href="contact.html">Contact & location <span aria-hidden="true">↗</span></a></section>{contact_preview}{note}'
-
+    contact_preview = f'<section id="contact" class="section home-contact-preview"><div><p class="eyebrow">Contact & practical details</p><h2>Make the next step clear.</h2><p>Find the available phone, address, email, and social links in one place.</p>{actions}<a class="text-link" href="#contact">View contact details</a></div><div class="home-contact-facts">{_contact_facts(data)}</div></section>'
+    location_link = '<a class="text-link" href="#location">Location</a>' if data.get("city") else ""
+    hours_link = '<a class="text-link" href="#hours">Hours</a>' if data.get("opening_hours") else ""
+    jump_links = f'<nav class="home-jump-links" aria-label="Quick page sections"><a href="#about">About</a><a href="#{offering_id}">{_e(_service_title(template_id))}</a>{location_link}{hours_link}<a href="#contact">Contact</a><a href="#top">Back to top ↑</a></nav>'
+    hero_art = '<div class="hero-art" aria-hidden="true"></div>' if is_fictional(data) else ""
+    return f'<section id="top" class="home-hero"><div class="hero-copy"><p class="eyebrow">{_e(_category_label(template_id))} <span aria-hidden="true">/</span> {city}</p><h1>{title}</h1><p class="hero-lede">{description}</p><div class="hero-actions"><a class="button button-primary" href="services.html">{_e(_home_cta(template_id))}</a><a class="button button-outline" href="contact.html">Get in touch <span aria-hidden="true">↗</span></a></div><p class="hero-location">{city}{(" · " + _e(data["opening_hours"])) if data.get("opening_hours") else ""}</p></div><figure class="hero-visual">{_image(photos[0], "hero-image", "eager")}{hero_art}<figcaption>{_e(photos[0]["alt"])}</figcaption><span class="hero-stamp" aria-hidden="true">{_e(_stamp(template_id))}</span></figure></section>{facts}{jump_links}{intro}{offerings}{image_strip}<section class="section close-panel"><p class="eyebrow">Next step</p><h2>Find the information you need.</h2><p>Review the details available for {name} and choose the most relevant way to connect.</p><a class="button button-primary" href="contact.html">Contact & location ↗</a><a class="text-link" href="#top">Back to top ↑</a></section>{contact_preview}{note}'
 
 def _home_cta(template_id: str) -> str:
     return {
@@ -248,17 +252,15 @@ def _stamp(template_id: str) -> str:
 def _facts(data: dict, template_id: str) -> str:
     items = []
     if data.get("city"):
-        items.append(f'<div><span class="fact-label">Based in</span><strong>{_e(data["city"])}</strong></div>')
+        items.append(f'<div id="location"><span class="fact-label">Based in</span><strong>{_e(data["city"])}</strong></div>')
     if data.get("opening_hours"):
-        items.append(f'<div><span class="fact-label">Hours</span><strong>{_e(data["opening_hours"])}</strong></div>')
+        items.append(f'<div id="hours"><span class="fact-label">Hours</span><strong>{_e(data["opening_hours"])}</strong></div>')
+    if data.get("address"):
+        items.append(f'<div><span class="fact-label">Address</span><strong>{_e(data["address"])}</strong></div>')
     if template_id == "personal-portfolio-v1" and data.get("skills"):
         skills = [str(item.get("name") if isinstance(item, dict) else item) for item in data["skills"][:3]]
         items.append(f'<div><span class="fact-label">Focus</span><strong>{_e(" · ".join(skills))}</strong></div>')
-    if data.get("address"):
-        items.append(f'<div><span class="fact-label">Address</span><strong>{_e(data["address"])}</strong></div>')
     return f'<section class="fact-strip" aria-label="Key details">{"".join(items)}</section>' if items else ""
-
-
 
 
 def _contact_facts(data: dict) -> str:
@@ -380,9 +382,9 @@ def _document(data: dict, template_id: str, filename: str, page_id: str, nav_lab
     description = _e(data.get("description") or f"{data.get('category', 'business').replace('_', ' ')} in {data.get('city', '')}.")
     disclosure = ""
     if is_fictional(data):
-        disclosure = '<p class="site-disclosure">Fictional demonstration website · Created for AI Website Agent testing.</p>'
+        disclosure = f'<p class="site-disclosure">{_e(FICTIONAL_DISCLOSURE)}</p>'
     else:
-        disclosure = f'<p class="site-disclosure">Website draft for internal evaluation · Not an authorized or official website of {name}.</p>'
+        disclosure = f'<p class="site-disclosure">Uncommissioned preview draft prepared for internal evaluation · Not an authorized or official website of {name}.</p>'
     return (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
