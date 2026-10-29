@@ -33,6 +33,9 @@ class WebsiteBuilderTests(unittest.TestCase):
         self.assertEqual(result.template_id, "salon-service-v1")
         self.assertTrue(Path(result.output_location).is_file())
         self.assertTrue(result.validation["passed"])
+        self.assertEqual(result.validation["site_pages"]["count"], 5)
+        for filename in ("about.html", "services.html", "gallery.html", "contact.html"):
+            self.assertTrue((Path(result.output_location).parent / filename).is_file())
 
     def test_restaurant_without_whatsapp_builds_menu_template(self):
         result = self.build(LEADS[1])
@@ -55,7 +58,7 @@ class WebsiteBuilderTests(unittest.TestCase):
         lead["research"]["verifiedFacts"][3]["value"] = [f"Fictional service {index}" for index in range(30)]
         result = self.build(lead)
         self.assertEqual(result.status, "COMPLETED")
-        self.assertIn("Fictional service 29", Path(result.output_location).read_text(encoding="utf-8"))
+        self.assertIn("Fictional service 29", (Path(result.output_location).parent / "services.html").read_text(encoding="utf-8"))
 
     def test_unqualified_record_fails_without_artifact(self):
         lead = copy.deepcopy(LEADS[0])
@@ -70,6 +73,20 @@ class WebsiteBuilderTests(unittest.TestCase):
         self.assertEqual(result.status, "FAILED")
         self.assertIn("not grounded", result.errors[0])
 
+
+
+class MultiPageBuilderContractTests(unittest.TestCase):
+    def test_build_output_has_working_relative_navigation_and_images(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = WebsiteBuilder(Path(tmp)).build(copy.deepcopy(LEADS[0]))
+            self.assertEqual(result.status, "COMPLETED")
+            artifact_dir = Path(result.output_location).parent
+            for page in ("index.html", "about.html", "services.html", "gallery.html", "contact.html"):
+                html = (artifact_dir / page).read_text(encoding="utf-8")
+                self.assertIn('href="index.html"', html)
+                self.assertIn('href="services.html"', html)
+                self.assertIn('src="https://images.unsplash.com/', html)
+                self.assertRegex(html, r'<img[^>]+alt="[^"]+"')
 
 if __name__ == "__main__":
     unittest.main()

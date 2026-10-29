@@ -540,7 +540,106 @@ a:focus-visible {
   h1 { font-size: clamp(2.75rem, 15vw, 3.7rem); }
   .button { width: 100%; }
 }
-:root{--primary:#9a3412;--secondary:#fff7ed;--accent:#0f766e}</style></head><body><header class="site-header"><a class="brand" href="#top"><span class="brand-mark" aria-hidden="true">LF</span><span>Demo Riverside Kitchen</span></a><nav aria-label="Main navigation"><a href="#about">About</a><a href="#menu">Menu</a><a href="#location">Location</a><a href="#hours">Hours</a><a href="#contact">Contact</a></nav></header><main><section class="hero hero-restaurant has-art" id="top"><div class="hero-copy"><p class="eyebrow">Lagos table · fictional test kitchen</p><h1>Made for your table</h1><p class="hero-intro">Fictional restaurant demo content; no real menu or pricing is represented.</p><div class="actions"><a class="button button-primary" href="#menu">Explore the menu</a><a class="button button-secondary" href="#location">Visit the test location</a></div></div><div class="hero-art" aria-label="Decorative illustration of a shared meal" role="img">
+/* Distinct art direction for each reusable industry template. No external dependencies. */
+body[data-template]{--radius:1.15rem;--radius-lg:1.75rem;--space:1.35rem}
+body[data-template] .site-header{padding-inline:.2rem;border-bottom-color:var(--line)}
+body[data-template] .hero{position:relative;isolation:isolate;overflow:hidden;margin-top:1.5rem;padding:clamp(2.5rem,6.5vw,6rem);border:1px solid var(--line);border-radius:var(--radius-lg);box-shadow:0 18px 55px color-mix(in srgb,var(--primary) 8%,transparent)}
+body[data-template] .hero>*{position:relative;z-index:1}
+body[data-template] .hero h1{max-width:12ch;font-size:clamp(3.25rem,7vw,6.8rem);letter-spacing:-.065em;line-height:.91}
+body[data-template] .hero>p:not(.eyebrow){max-width:39rem;font-size:clamp(1.02rem,1.6vw,1.2rem);line-height:1.65}
+body[data-template] .eyebrow,body[data-template] .section-kicker{font-size:.7rem;font-weight:850;letter-spacing:.16em}
+body[data-template] .button{min-height:3.15rem;padding:.88rem 1.25rem;border-radius:999px;transition:transform .2s ease,box-shadow .2s ease}
+body[data-template] .button:hover{transform:translateY(-2px);box-shadow:0 10px 24px color-mix(in srgb,var(--primary) 15%,transparent)}
+body[data-template] .story-section{align-items:start;border-bottom-color:var(--line)}
+body[data-template] .story-copy{font-size:clamp(1.35rem,2.25vw,2rem);line-height:1.42}
+body[data-template] .card-grid{gap:1rem;border-top:0}
+body[data-template] .card,body[data-template] .card:not(:first-child),body[data-template] .card:nth-child(3){min-height:100%;padding:1.45rem;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);box-shadow:0 5px 18px color-mix(in srgb,var(--primary) 4%,transparent);transition:transform .2s ease,border-color .2s ease,box-shadow .2s ease}
+body[data-template] .card:hover{transform:translateY(-4px);border-color:color-mix(in srgb,var(--accent) 48%,var(--line));box-shadow:0 18px 34px color-mix(in srgb,var(--primary) 9%,transparent)}
+body[data-template] .card h3{font-size:clamp(1.3rem,1.8vw,1.65rem);line-height:1.08}
+body[data-template] .menu-index{display:inline-flex;align-items:center;justify-content:center;width:2.2rem;height:2.2rem;border-radius:50%;background:var(--secondary);color:var(--accent);font-family:var(--body);font-size:.72rem;font-style:normal;font-weight:850}
+body[data-template] .hours-panel,body[data-template] .location-panel{max-width:64rem;border-radius:var(--radius-lg);border-color:var(--line);box-shadow:none}
+body[data-template] .contact-panel{margin-bottom:2rem;padding:clamp(3rem,7vw,5.5rem) clamp(1.5rem,5vw,4rem);border:1px solid var(--line);border-radius:var(--radius-lg);background:var(--surface)}
+body[data-template] footer{margin-top:1rem;border-top-color:var(--line)}
+body[data-template] a:focus-visible{outline:3px solid var(--accent);outline-offset:4px}
+
+/* Salon: intimate editorial luxury. */
+body[data-template="salon-service-v1"]{--primary:#382630;--primary-rgb:56,38,48;--secondary:#F7EAE9;--accent:#B65470;--gold:#D4AD83;--background:#FCF8F5;--surface:#FFFDFC;--surface-elevated:#fff;--text:#33252D;--text-secondary:#63515B;--muted:#786872;--line:rgba(56,38,48,.14);--display:"Cormorant Garamond","Iowan Old Style",Georgia,serif}
+body[data-template="salon-service-v1"] .hero{min-height:29rem;justify-content:center;color:#FFF7F2;background:radial-gradient(circle at 91% 18%,rgba(214,173,131,.26) 0 7rem,transparent 7.1rem),linear-gradient(128deg,#30212B,#503542 57%,#35242F);border:0}
+body[data-template="salon-service-v1"] .hero:before,body[data-template="salon-service-v1"] .hero:after{content:"";position:absolute;z-index:0;pointer-events:none;border:1px solid rgba(246,222,213,.26);border-radius:50%}
+body[data-template="salon-service-v1"] .hero:before{width:clamp(15rem,37vw,31rem);aspect-ratio:1;right:-5rem;bottom:-14rem}
+body[data-template="salon-service-v1"] .hero:after{width:clamp(10rem,25vw,21rem);aspect-ratio:1;right:2rem;bottom:-9rem;border-color:rgba(214,173,131,.42)}
+body[data-template="salon-service-v1"] .hero h1{color:#FFF8F5;font-weight:500}body[data-template="salon-service-v1"] .hero .eyebrow{color:#E8C39E}
+body[data-template="salon-service-v1"] .hero>p:not(.eyebrow){color:#F0DFE4}body[data-template="salon-service-v1"] .hero .button-primary{background:#E7B9B8;color:#30212B}
+body[data-template="salon-service-v1"] .hero .button-secondary{border-color:rgba(255,248,245,.64);color:#FFF8F5}
+body[data-template="salon-service-v1"] .hero .button-secondary:hover{background:#FFF8F5;color:#30212B}
+body[data-template="salon-service-v1"] h1,body[data-template="salon-service-v1"] h2,body[data-template="salon-service-v1"] h3{font-weight:500;letter-spacing:-.045em}
+body[data-template="salon-service-v1"] .hours-panel,body[data-template="salon-service-v1"] .location-panel{background:#F7EAE9}
+
+/* Restaurant: botanical hospitality. */
+body[data-template="restaurant-menu-v1"]{--primary:#173B2F;--primary-rgb:23,59,47;--secondary:#F8F4EA;--accent:#C9653B;--gold:#E5B95F;--background:#F8F4EA;--surface:#FFFDF8;--surface-elevated:#fff;--text:#242721;--text-secondary:#515D53;--muted:#6D796F;--line:rgba(23,59,47,.16);--display:"DM Serif Display","Iowan Old Style",Georgia,serif}
+body[data-template="restaurant-menu-v1"] .hero-restaurant{min-height:31rem;border:0;border-radius:1.5rem;background:radial-gradient(circle at 83% 20%,rgba(229,185,95,.12),transparent 13rem),#173B2F}
+body[data-template="restaurant-menu-v1"] .hero-restaurant h1{max-width:10ch;font-size:clamp(3.3rem,7.3vw,7rem)}
+body[data-template="restaurant-menu-v1"] .hero-art{transform:rotate(-2deg)}body[data-template="restaurant-menu-v1"] .hero-art svg{filter:drop-shadow(0 1.3rem 1.5rem rgba(0,0,0,.2))}
+body[data-template="restaurant-menu-v1"] .menu-index{background:#F1E7D4;color:#B95635}body[data-template="restaurant-menu-v1"] .story-section{border-bottom-style:dashed}
+
+/* Healthcare: calm and clear. */
+body[data-template="clinic-healthcare-v1"]{--primary:#16465B;--primary-rgb:22,70,91;--secondary:#E8F6F5;--accent:#12877D;--gold:#D7A95B;--background:#F5FAFB;--surface:#fff;--surface-elevated:#fff;--text:#203841;--text-secondary:#4D656C;--muted:#607A81;--line:rgba(22,70,91,.13);--display:"Aptos Display","Segoe UI",sans-serif}
+body[data-template="clinic-healthcare-v1"] .hero{min-height:27rem;background:linear-gradient(120deg,#EAF7F7,#F7FCFB 67%,#DDF0EE);border-color:#D5EAE8;border-radius:1.5rem}
+body[data-template="clinic-healthcare-v1"] .hero:after{content:"+";position:absolute;z-index:0;right:4%;top:6%;color:rgba(18,135,125,.1);font-family:Arial,sans-serif;font-size:clamp(18rem,33vw,31rem);font-weight:200;line-height:.8;pointer-events:none}
+body[data-template="clinic-healthcare-v1"] .hero h1{max-width:11ch}body[data-template="clinic-healthcare-v1"] .hero .eyebrow{color:#11796F}
+body[data-template="clinic-healthcare-v1"] .hero .button-primary{background:#147F77;color:#fff}body[data-template="clinic-healthcare-v1"] .hero .button-secondary{border-color:#B7DCD8;background:rgba(255,255,255,.66);color:#16465B}
+body[data-template="clinic-healthcare-v1"] .card{border-radius:1rem;box-shadow:0 8px 24px rgba(24,78,91,.045)}
+body[data-template="clinic-healthcare-v1"] .hours-panel,body[data-template="clinic-healthcare-v1"] .location-panel{background:#EAF7F7;border-color:#D3EAE7}
+
+/* Legal: restrained authority. */
+body[data-template="legal-practice-v1"]{--primary:#21344D;--primary-rgb:33,52,77;--secondary:#F0EBDD;--accent:#A67C3C;--gold:#CBA96B;--background:#F7F5EF;--surface:#FFFEFB;--surface-elevated:#fff;--text:#282E36;--text-secondary:#515C69;--muted:#6D7884;--line:rgba(33,52,77,.16);--display:"Iowan Old Style","Palatino Linotype",Georgia,serif}
+body[data-template="legal-practice-v1"] .hero{min-height:28rem;background:linear-gradient(90deg,transparent 0 72%,rgba(166,124,60,.055) 72% 72.2%,transparent 72.2%),#EDEBE4;border-radius:.35rem;border-top:4px solid #A67C3C;box-shadow:none}
+body[data-template="legal-practice-v1"] .hero:after{content:"";position:absolute;right:7%;bottom:-5.5rem;width:clamp(12rem,26vw,23rem);aspect-ratio:.74;border:1px solid rgba(166,124,60,.32);transform:rotate(17deg);pointer-events:none}
+body[data-template="legal-practice-v1"] .hero h1{max-width:10ch;font-weight:500;letter-spacing:-.05em}body[data-template="legal-practice-v1"] .hero .eyebrow{color:#8A652F}
+body[data-template="legal-practice-v1"] .hero .button-primary{background:#21344D;color:#fff}body[data-template="legal-practice-v1"] .hero .button-secondary{border-color:rgba(33,52,77,.35);color:#21344D}
+body[data-template="legal-practice-v1"] .card{border-radius:.35rem;box-shadow:none}
+body[data-template="legal-practice-v1"] .hours-panel,body[data-template="legal-practice-v1"] .location-panel{border-radius:.35rem;border-top:3px solid #A67C3C;background:#EDEBE4;box-shadow:none}
+
+/* Automotive: dark, direct, high-contrast. */
+body[data-template="automotive-service-v1"]{--primary:#F4F6F7;--primary-rgb:244,246,247;--secondary:#202A33;--accent:#FF6C37;--gold:#F4B544;--background:#10161C;--surface:#192129;--surface-elevated:#222D36;--text:#EDF1F3;--text-secondary:#C1CBD0;--muted:#9EADB5;--line:rgba(235,242,245,.13);--display:"Arial Narrow","Aptos Display",Arial,sans-serif;--glass-shadow:0 24px 65px rgba(0,0,0,.22);color-scheme:dark}
+body[data-template="automotive-service-v1"] .site-header{border-bottom-color:rgba(235,242,245,.14)}
+body[data-template="automotive-service-v1"] .hero{min-height:30rem;background:linear-gradient(125deg,rgba(255,108,55,.11) 0 22%,transparent 22% 100%),repeating-linear-gradient(135deg,rgba(255,255,255,.018) 0 1px,transparent 1px 13px),linear-gradient(135deg,#202A33,#11171D 70%);border:1px solid rgba(255,255,255,.08);border-radius:.7rem}
+body[data-template="automotive-service-v1"] .hero:after{content:"";position:absolute;right:-5rem;top:-5rem;width:clamp(15rem,34vw,29rem);aspect-ratio:1;border:clamp(1.3rem,3vw,2.4rem) solid rgba(255,108,55,.11);transform:rotate(22deg);pointer-events:none}
+body[data-template="automotive-service-v1"] .hero h1{max-width:10ch;font-family:var(--body);font-size:clamp(3.3rem,7.6vw,7.2rem);font-weight:950;line-height:.88;letter-spacing:-.075em;text-transform:uppercase}
+body[data-template="automotive-service-v1"] .hero .eyebrow{color:#FF956D}body[data-template="automotive-service-v1"] .hero>p:not(.eyebrow){color:#D2DCE1}
+body[data-template="automotive-service-v1"] .hero .button-primary{background:#FF6C37;color:#171B1F}body[data-template="automotive-service-v1"] .hero .button-secondary{border-color:rgba(244,246,247,.4);color:#F4F6F7}
+body[data-template="automotive-service-v1"] .card{background:#192129;border-radius:.6rem;box-shadow:none}
+body[data-template="automotive-service-v1"] .menu-index{background:#2A3138;color:#FF956D}
+body[data-template="automotive-service-v1"] .hours-panel,body[data-template="automotive-service-v1"] .location-panel,body[data-template="automotive-service-v1"] .contact-panel{background:#192129;border-color:rgba(235,242,245,.14);border-radius:.7rem}
+
+/* Retail: warm, tactile merchandising. */
+body[data-template="retail-ecommerce-v1"]{--primary:#272724;--primary-rgb:39,39,36;--secondary:#EFE5D8;--accent:#B74935;--gold:#C7944B;--background:#F7F4EF;--surface:#FFFEFB;--surface-elevated:#fff;--text:#292B28;--text-secondary:#565B54;--muted:#747A72;--line:rgba(39,39,36,.13);--display:"DM Serif Display","Iowan Old Style",Georgia,serif}
+body[data-template="retail-ecommerce-v1"] .hero{min-height:28rem;justify-content:center;background:radial-gradient(ellipse at 96% 4%,rgba(183,73,53,.12) 0 10rem,transparent 10.1rem),linear-gradient(120deg,#F0E5D7,#FBF7F0 70%);border:0;border-radius:1rem;box-shadow:none}
+body[data-template="retail-ecommerce-v1"] .hero:after{content:"";position:absolute;right:7%;bottom:10%;width:clamp(8rem,17vw,14rem);height:clamp(8rem,17vw,14rem);border:1px solid rgba(183,73,53,.28);border-radius:50%;pointer-events:none}
+body[data-template="retail-ecommerce-v1"] .hero h1{max-width:11ch;font-size:clamp(3.3rem,7.6vw,7.1rem)}body[data-template="retail-ecommerce-v1"] .hero .eyebrow{color:#9C3D2C}
+body[data-template="retail-ecommerce-v1"] .hero .button-primary{background:#272724;color:#fff}
+body[data-template="retail-ecommerce-v1"] .card{padding:1.2rem;border-color:rgba(39,39,36,.1);border-radius:1rem;background:#FFFEFB;box-shadow:0 9px 24px rgba(39,39,36,.035)}
+body[data-template="retail-ecommerce-v1"] .price{color:#B74935!important}body[data-template="retail-ecommerce-v1"] .gallery img{border-radius:.75rem}
+
+/* Portfolio: dark editorial canvas, off-white type and electric lime. */
+body[data-template="personal-portfolio-v1"]{--primary:#F5F7F0;--primary-rgb:245,247,240;--secondary:#1D232B;--accent:#C7F36B;--gold:#C7F36B;--background:#0E1218;--surface:#171D25;--surface-elevated:#202833;--text:#F3F5F0;--text-secondary:#C1C9C4;--muted:#9DA8A6;--line:rgba(243,245,240,.13);--display:"Aptos Display","Segoe UI",sans-serif;--glass-shadow:0 22px 70px rgba(0,0,0,.23);color-scheme:dark}
+body[data-template="personal-portfolio-v1"] .site-header{border-bottom-color:rgba(243,245,240,.13)}
+body[data-template="personal-portfolio-v1"] .hero-portfolio{min-height:31rem;justify-content:center;background:radial-gradient(circle at 82% 22%,rgba(199,243,107,.12),transparent 17rem),linear-gradient(135deg,#1A222A,#10151C 65%,#151D24);border:1px solid rgba(243,245,240,.09);border-radius:1rem}
+body[data-template="personal-portfolio-v1"] .hero-portfolio:after{content:"";position:absolute;right:3%;top:8%;width:clamp(12rem,27vw,23rem);aspect-ratio:1;border:1px solid rgba(199,243,107,.26);border-radius:50%;box-shadow:0 0 0 2.2rem rgba(199,243,107,.025),0 0 0 4.5rem rgba(199,243,107,.02);pointer-events:none}
+body[data-template="personal-portfolio-v1"] .hero h1{max-width:10ch;font-family:var(--body);font-size:clamp(3.25rem,7.5vw,7.2rem);font-weight:800;line-height:.92;letter-spacing:-.075em}
+body[data-template="personal-portfolio-v1"] .hero .eyebrow{color:#C7F36B}body[data-template="personal-portfolio-v1"] .hero>p:not(.eyebrow){color:#C8D0CD}
+body[data-template="personal-portfolio-v1"] .hero .button-primary{background:#C7F36B;color:#152017}body[data-template="personal-portfolio-v1"] .hero .button-secondary{border-color:rgba(243,245,240,.3);color:#F3F5F0}
+body[data-template="personal-portfolio-v1"] .story-section{border-bottom-color:rgba(243,245,240,.13)}body[data-template="personal-portfolio-v1"] .story-copy{color:#D6DCD8}
+body[data-template="personal-portfolio-v1"] .card{background:#171D25;border-radius:.8rem;box-shadow:none}
+body[data-template="personal-portfolio-v1"] .menu-index{background:#29352B;color:#C7F36B}
+body[data-template="personal-portfolio-v1"] .hours-panel,body[data-template="personal-portfolio-v1"] .location-panel,body[data-template="personal-portfolio-v1"] .contact-panel{background:#171D25;border-color:rgba(243,245,240,.13);border-radius:.9rem}
+
+@media(max-width:64rem){body[data-template="salon-service-v1"] .hero:before{right:-8rem}body[data-template="clinic-healthcare-v1"] .hero:after{right:-1rem;opacity:.7}body[data-template="legal-practice-v1"] .hero:after{right:-1rem}body[data-template="personal-portfolio-v1"] .hero-portfolio:after{right:-2rem}}
+@media(max-width:48rem){body[data-template] .hero{min-height:unset;padding:2.25rem 1.5rem}body[data-template] .hero h1{max-width:12ch;font-size:clamp(2.9rem,14vw,4.8rem)}body[data-template="salon-service-v1"] .hero:before{right:-13rem;bottom:-15rem}body[data-template="salon-service-v1"] .hero:after{right:-5rem;bottom:-10rem}body[data-template="clinic-healthcare-v1"] .hero:after{right:-5rem;top:12%;opacity:.32}body[data-template="legal-practice-v1"] .hero:after{opacity:.18}body[data-template="automotive-service-v1"] .hero:after{right:-12rem;opacity:.65}body[data-template="retail-ecommerce-v1"] .hero:after{right:-5rem;bottom:-3rem;opacity:.5}body[data-template="personal-portfolio-v1"] .hero-portfolio:after{right:-11rem;top:0;opacity:.7}body[data-template] .contact-panel{padding:2.75rem 1.25rem}body[data-template] .card,body[data-template] .card:not(:first-child),body[data-template] .card:nth-child(3){padding:1.25rem}}
+@media(max-width:24rem){body[data-template] .hero{padding:1.8rem 1.1rem}body[data-template] .hero h1{font-size:clamp(2.55rem,14vw,3.3rem)}}
+@media(prefers-reduced-motion:reduce){body[data-template] .button,body[data-template] .card,body[data-template] .gallery img{transition:none!important}body[data-template] .button:hover,body[data-template] .card:hover,body[data-template] .gallery img:hover{transform:none}}
+
+body[data-template="restaurant-menu-v1"]{--primary:#9a3412;--secondary:#fff7ed;--accent:#0f766e}</style></head><body data-template="restaurant-menu-v1"><header class="site-header"><a class="brand" href="#top"><span class="brand-mark" aria-hidden="true">LF</span><span>Demo Riverside Kitchen</span></a><nav aria-label="Main navigation"><a href="#about">About</a><a href="#menu">Menu</a><a href="#location">Location</a><a href="#hours">Hours</a><a href="#contact">Contact</a></nav></header><main><section class="hero hero-restaurant has-art" id="top"><div class="hero-copy"><p class="eyebrow">Lagos table · fictional test kitchen</p><h1>Made for your table</h1><p class="hero-intro">Fictional restaurant demo content; no real menu or pricing is represented.</p><div class="actions"><a class="button button-primary" href="#menu">Explore the menu</a><a class="button button-secondary" href="#location">Visit the test location</a></div></div><div class="hero-art" aria-label="Decorative illustration of a shared meal" role="img">
       <svg viewBox="0 0 520 520" aria-hidden="true" focusable="false">
         <circle class="art-sun" cx="382" cy="116" r="78"/>
         <path class="art-leaf" d="M76 102c83 2 119 38 121 107C114 209 78 173 76 102Z"/>

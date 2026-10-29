@@ -104,5 +104,79 @@ class TemplateTests(unittest.TestCase):
         self.assertIn('grid-template-columns: repeat(3, minmax(0, 1fr))', html)
 
 
+
+    def test_every_demo_renders_with_its_dedicated_visual_theme(self):
+        cases = (
+            ("demo_salon.json", "salon-service-v1"),
+            ("demo_restaurant.json", "restaurant-menu-v1"),
+            ("demo_clinic.json", "clinic-healthcare-v1"),
+            ("demo_legal.json", "legal-practice-v1"),
+            ("demo_automotive.json", "automotive-service-v1"),
+            ("demo_retail.json", "retail-ecommerce-v1"),
+            ("demo_portfolio.json", "personal-portfolio-v1"),
+        )
+        for fixture, template_id in cases:
+            with self.subTest(template_id=template_id):
+                html = render_site(load_demo(fixture))
+                self.assertIn(f'<body data-template="{template_id}">', html)
+                self.assertIn(f'body[data-template="{template_id}"]', html)
+                self.assertIn("prefers-reduced-motion", html)
+                self.assertIn("Fictional demonstration website", html)
+
+    def test_brand_overrides_are_scoped_to_the_selected_template(self):
+        html = render_site(load_demo("demo_portfolio.json"))
+        self.assertIn('body[data-template="personal-portfolio-v1"]{--primary:#F5F7F0', html)
+        self.assertNotIn(':root{--primary:#F5F7F0', html)
+
+
+
+class MultiPageWebsiteTemplateTests(unittest.TestCase):
+    FIXTURES = {
+        "salon-service-v1": "demo_salon.json",
+        "restaurant-menu-v1": "demo_restaurant.json",
+        "clinic-healthcare-v1": "demo_clinic.json",
+        "legal-practice-v1": "demo_legal.json",
+        "automotive-service-v1": "demo_automotive.json",
+        "retail-ecommerce-v1": "demo_retail.json",
+        "personal-portfolio-v1": "demo_portfolio.json",
+    }
+
+    def test_every_template_renders_five_linked_html_pages_with_photos(self):
+        from templates.multipage import render_site_pages
+        required = {"index.html", "about.html", "services.html", "gallery.html", "contact.html"}
+        for template_id, fixture in self.FIXTURES.items():
+            with self.subTest(template_id=template_id):
+                pages = render_site_pages(load_demo(fixture), template_id)
+                self.assertEqual(set(pages), required)
+                for filename, html in pages.items():
+                    self.assertIn('<main id="main-content">', html)
+                    self.assertIn('name="viewport"', html)
+                    self.assertIn(f'data-template="{template_id}"', html)
+                    self.assertIn('https://images.unsplash.com/', html)
+                    self.assertRegex(html, r'<img[^>]+alt="[^"]+"')
+                    self.assertIn('href="about.html"', html)
+                    self.assertIn('href="services.html"', html)
+                    self.assertIn('href="gallery.html"', html)
+                    self.assertIn('href="contact.html"', html)
+
+    def test_fictional_multi_page_site_has_no_live_contact_links(self):
+        from templates.multipage import render_site_pages
+        pages = render_site_pages(load_demo("demo_salon.json"), "salon-service-v1")
+        for filename, html in pages.items():
+            with self.subTest(page=filename):
+                self.assertNotIn('href="tel:', html)
+                self.assertNotIn('href="https://wa.me/', html)
+                self.assertIn("Fictional demonstration website", html)
+
+    def test_approved_images_take_priority_over_stock_photography(self):
+        from templates.multipage import render_site_pages
+        data = load_demo("demo_salon.json")
+        data["images"] = [{"url": "https://assets.example.com/approved-salon.jpg", "alt": "Approved salon room"}]
+        pages = render_site_pages(data, "salon-service-v1")
+        self.assertIn("https://assets.example.com/approved-salon.jpg", pages["index.html"])
+        self.assertIn("Approved salon room", pages["index.html"])
+        self.assertIn("Illustrative stock photography", pages["index.html"])
+
+
 if __name__ == "__main__":
     unittest.main()

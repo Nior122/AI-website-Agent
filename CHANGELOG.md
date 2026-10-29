@@ -4,6 +4,25 @@ All notable project changes are recorded here. Dates use ISO 8601 (`YYYY-MM-DD`)
 
 ## [Unreleased]
 
+### Updated — 2026-10-29 (Mature multi-page image-led website templates)
+
+- Added `templates/multipage.py` so the renderer can output five separate linked pages per site: Home, About, Services/Menu, Gallery, and Contact. The legacy single-document renderer remains available for compatibility.
+- Added `templates/multipage.css`: seven scoped visual art directions, photographic heroes and galleries, responsive image cards, page navigation, accessible focus treatment, and reduced-motion support.
+- Added category-matched Unsplash stock-photo fallbacks when approved business images are unavailable; supplied assets take priority. Placeholder photography is disclosed and must be replaced by approved images before publishing a real site.
+- Updated `WebsiteBuilder` to write all five pages together and validate expected pages, relative links, semantic landmarks, viewport metadata, and image alt text before marking the site build complete.
+- Updated the template CLI with `--site-output`, added multi-page renderer and builder regression tests, and expanded the preview catalogue to browse five linked pages for each of the seven template categories.
+- This change updates only the feature branch and its automatically generated preview. No production deployment, Render API deployment, or client website deployment is part of this task.
+
+### Added — 2026-10-29 (Distinct Industry Website Design System)
+
+- Added `templates/themes.css`, a dependency-free layer of seven distinct art directions for salon, restaurant, healthcare, legal, automotive, retail, and portfolio websites.
+- Updated `templates/renderer.py` to tag documents with the selected template ID, embed the selected industry's theme, and scope brand-variable overrides to the selected template.
+- Refreshed the seven fictional preview pages and added `templates/previews/index.html`, a local catalogue with links, color palettes, and intended industry fit.
+- Added regression coverage for all seven theme selectors and brand-variable scoping.
+- GitHub Actions run `40818492124` passed 823 tests on Ubuntu and 823 tests on Windows. Browser-based desktop/mobile visual review remains.
+- This template change did not deploy the Render API or create/modify a client Vercel project.
+
+
 ### Added — 2026-10-29 (Per-Business Vercel Provisioning & Live Preview Verification)
 
 - **Vercel Readback Verification Fix (`deployment/site_management.py`)**:

@@ -12,20 +12,54 @@
   "linkedin_url": "https://www.linkedin.com/in/example-demo-dev",
   "twitter_url": "https://x.com/example_demo_dev",
   "projects": [
-    { "name": "Cloud Ledger Engine", "description": "Fictional high-throughput event sourcing and audit ledger built with Python and PostgreSQL." },
-    { "name": "AI Workflow Automator", "description": "Fictional orchestration agent integrating LLMs with asynchronous queue workers." },
-    { "name": "Minimalist CSS UI Kit", "description": "Fictional accessible, responsive web component library designed without external dependencies." }
+    {
+      "name": "Cloud Ledger Engine",
+      "description": "Fictional high-throughput event sourcing and audit ledger built with Python and PostgreSQL."
+    },
+    {
+      "name": "AI Workflow Automator",
+      "description": "Fictional orchestration agent integrating LLMs with asynchronous queue workers."
+    },
+    {
+      "name": "Minimalist CSS UI Kit",
+      "description": "Fictional accessible, responsive web component library designed without external dependencies."
+    }
   ],
   "skills": [
-    { "name": "Backend Engineering", "description": "Python, PostgreSQL, FastAPI, async architecture, RESTful API design." },
-    { "name": "Automation & Integration", "description": "Queue processing, webhook coordination, OAuth 2.0 flows, and job state machines." },
-    { "name": "Frontend & UI Systems", "description": "Semantic HTML5, accessible CSS layout architectures, and vanilla JS interfaces." }
+    {
+      "name": "Backend Engineering",
+      "description": "Python, PostgreSQL, FastAPI, async architecture, RESTful API design."
+    },
+    {
+      "name": "Automation & Integration",
+      "description": "Queue processing, webhook coordination, OAuth 2.0 flows, and job state machines."
+    },
+    {
+      "name": "Frontend & UI Systems",
+      "description": "Semantic HTML5, accessible CSS layout architectures, and vanilla JS interfaces."
+    }
   ],
   "services": [
-    { "name": "Full-Stack Web Development", "description": "End-to-end web applications with clean domain models and accessible user interfaces." },
-    { "name": "Workflow Automation Consulting", "description": "Custom integration pipelines connecting external SaaS tools and background job processors." }
+    {
+      "name": "Full-Stack Web Development",
+      "description": "End-to-end web applications with clean domain models and accessible user interfaces."
+    },
+    {
+      "name": "Workflow Automation Consulting",
+      "description": "Custom integration pipelines connecting external SaaS tools and background job processors."
+    }
   ],
   "images": [],
-  "brand": { "primary_color": "#0f172a", "secondary_color": "#f8fafc", "accent_color": "#2563eb", "border_radius": "0.75rem" },
-  "content": { "hero_title": "Demo Alex Chen Portfolio", "hero_subtitle": "Fictional developer portfolio demo content; replace only with approved portfolio facts." }
+  "brand": {
+    "primary_color": "#F5F7F0",
+    "secondary_color": "#1D232B",
+    "accent_color": "#C7F36B",
+    "background_color": "#0E1218",
+    "text_color": "#F3F5F0",
+    "border_radius": "0.9rem"
+  },
+  "content": {
+    "hero_title": "Demo Alex Chen Portfolio",
+    "hero_subtitle": "Fictional developer portfolio demo content; replace only with approved portfolio facts."
+  }
 }

@@ -6,15 +6,15 @@ Keep this file concise. It is the shared handoff record, not a replacement for G
 
 | Field | Current value |
 | --- | --- |
-| Current phase | Live Production Deployment & Isolated Per-Business Preview Verification: COMPLETE |
-| Current task | Operator-approved live smoke test of per-business Vercel provisioning (`project-0002` / Pitstop Lagos); fixed deployment readback verification against Vercel domain aliases in `deployment/site_management.py`; verified live HTTP 200 responses; synchronized main branch with remote origin. |
-| Status | **CLEAN & VERIFIED**: Working tree clean; all 821 unit tests passing (0 failures, 1 skipped); Vercel isolated preview deployment verified live (`https://pitstop-lagos-preview-88142ba94c.vercel.app` & `https://pitstop-lagos-preview-88142ba94c-guatk7m0o.vercel.app` -> HTTP 200, 11,242 bytes); Render API live at `https://ai-website-agent-api.onrender.com/healthz` (HTTP 200 `{"status": "ok"}`). |
-| Next task | Operator review of live deployment verification and operational sign-off. |
-| Files currently being modified | `TASKS.md`, `CHANGELOG.md`, `deployment/cli.py`, `deployment/site_management.py` |
-| Tests/checks performed | Full test suite: 821 passed (0 failed, 1 skipped); `git diff --check` clean; live HTTPS anonymous GET checks confirmed HTTP 200 across Vercel and Render services. |
-| Deployment status | Isolated Pitstop Lagos preview LIVE at `https://pitstop-lagos-preview-88142ba94c.vercel.app` (project `prj_c0xA939pwZirqEtofAFbPaNEQJ7r`). Shared fictional preview live at `https://ai-website-agent-preview.vercel.app`. Render API live at `https://ai-website-agent-api.onrender.com`. |
-| Known issues | None. Live readback verification fixed and verified. |
-| Approval required | None. All planned phases approved and executed. |
+| Current phase | Multi-page Image-led Website Template Upgrade (draft PR #5) |
+| Current task | Replace the original single-page visual demos with seven mature, responsive five-page website templates and photographic galleries. |
+| Status | **Implementation committed to the feature branch; CI pending.** The generator outputs Home, About, Services/Menu, Gallery, and Contact as separate HTML files. A preview catalogue links into every page. |
+| Next task | Review GitHub Actions and the Vercel branch preview; fix any regressions; manually inspect desktop/mobile behavior before requesting merge authorization. |
+| Files changed | `templates/multipage.py`, `templates/multipage.css`, `templates/cli.py`, builder/validator changes, template tests, `templates/previews/`, and the relevant project documentation. |
+| Checks performed | Static file generation and source review completed. Await the CI run after the branch update; do not claim it passed until checked. |
+| Deployment status | No Render API or production deployment. Vercel's Git integration may create a protected preview for the feature branch. |
+| Known limits | Stock photography is referenced by remote Unsplash URLs and requires internet access in the browser. Replace stock assets with approved client-owned/licensed images before launch. |
+| Approval required | Keep PR #5 unmerged. Do not push to main, deploy the Render API, or create/modify the separate Pitstop Lagos project. |
 
 ## Completed
 
