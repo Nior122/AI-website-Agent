@@ -134,3 +134,65 @@ nav{display:flex;flex-wrap:wrap;align-items:center;gap:clamp(.75rem,2.1vw,1.9rem
 @media (max-width: 640px) {
   .home-jump-links{gap:.65rem 1rem}
 }
+
+/* Industry-specific art direction: intentional differences beyond brand colours. */
+body[data-template="salon-service-v1"] h1,
+body[data-template="salon-service-v1"] h2{font-style:italic;letter-spacing:-.055em}
+body[data-template="salon-service-v1"] .hero-visual,
+body[data-template="salon-service-v1"] .page-hero-image{border-radius:48% 48% 2px 2px}
+body[data-template="salon-service-v1"] .story-image{border-radius:48% 48% 0 0;overflow:hidden}
+body[data-template="salon-service-v1"] .entry-card{border-radius:12px;overflow:hidden}
+body[data-template="salon-service-v1"] .button{border-radius:999px}
+body[data-template="salon-service-v1"] .hero-stamp{width:110px;height:110px;right:1.2rem;top:1.2rem}
+body[data-template="restaurant-menu-v1"] .home-hero{align-items:end}
+body[data-template="restaurant-menu-v1"] .hero-visual{aspect-ratio:1/1.12}
+body[data-template="restaurant-menu-v1"] .entry-card{border:0;background:transparent}
+body[data-template="restaurant-menu-v1"] .entry-content{border-top:2px solid var(--accent);padding-inline:.25rem}
+body[data-template="restaurant-menu-v1"] .entry-image{height:245px}
+body[data-template="restaurant-menu-v1"] .photo-band{background:#163429}
+body[data-template="clinic-healthcare-v1"] .home-hero{padding-inline:clamp(1rem,3.4vw,3.2rem);background:linear-gradient(130deg,var(--secondary),transparent 80%);border-radius:24px}
+body[data-template="clinic-healthcare-v1"] .hero-visual,
+body[data-template="clinic-healthcare-v1"] .page-hero-image{border-radius:22px}
+body[data-template="clinic-healthcare-v1"] .entry-card{border-radius:16px;overflow:hidden}
+body[data-template="clinic-healthcare-v1"] .button{border-radius:999px}
+body[data-template="clinic-healthcare-v1"] .fact-strip{background:var(--surface);padding-inline:1.5rem;border-radius:12px}
+body[data-template="legal-practice-v1"] .site-header{border-top:4px solid var(--accent)}
+body[data-template="legal-practice-v1"] h1{max-width:11ch;line-height:1.02}
+body[data-template="legal-practice-v1"] .hero-visual,
+body[data-template="legal-practice-v1"] .page-hero-image{border-inline-start:7px solid var(--accent)}
+body[data-template="legal-practice-v1"] .hero-stamp{border-radius:2px;transform:none}
+body[data-template="legal-practice-v1"] .entry-card{border:0;border-top:2px solid var(--accent);background:transparent}
+body[data-template="legal-practice-v1"] .entry-content{padding-inline:.1rem}
+body[data-template="automotive-service-v1"] h1,
+body[data-template="automotive-service-v1"] h2,
+body[data-template="automotive-service-v1"] h3{font-family:var(--sans);font-weight:850;letter-spacing:-.065em}
+body[data-template="automotive-service-v1"] h1{text-transform:uppercase;line-height:.92}
+body[data-template="automotive-service-v1"] .hero-visual,
+body[data-template="automotive-service-v1"] .page-hero-image{border:6px solid var(--primary)}
+body[data-template="automotive-service-v1"] .hero-stamp{border-radius:2px;transform:none;background:var(--accent);color:#171e25}
+body[data-template="automotive-service-v1"] .button{text-transform:uppercase;letter-spacing:.08em;border-width:2px}
+body[data-template="automotive-service-v1"] .entry-card{border-radius:0;border-top:3px solid var(--accent)}
+body[data-template="automotive-service-v1"] .entry-index{font-size:.78rem}
+body[data-template="retail-ecommerce-v1"] h1{font-size:clamp(3.4rem,7.8vw,7.6rem);font-style:italic;line-height:.88}
+body[data-template="retail-ecommerce-v1"] .home-hero{grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr)}
+body[data-template="retail-ecommerce-v1"] .hero-visual{aspect-ratio:.8/1}
+body[data-template="retail-ecommerce-v1"] .entry-card{border:0;border-bottom:1px solid var(--line);background:transparent}
+body[data-template="retail-ecommerce-v1"] .entry-image{height:260px}
+body[data-template="retail-ecommerce-v1"] .entry-content{padding-inline:0}
+body[data-template="retail-ecommerce-v1"] .button-primary{background:var(--accent);border-color:var(--accent);color:#fff}
+body[data-template="personal-portfolio-v1"] h1,
+body[data-template="personal-portfolio-v1"] h2,
+body[data-template="personal-portfolio-v1"] h3{font-family:var(--sans);font-weight:800;letter-spacing:-.075em}
+body[data-template="personal-portfolio-v1"] h1{font-size:clamp(3.5rem,7.2vw,7.3rem);line-height:.88}
+body[data-template="personal-portfolio-v1"] .eyebrow{color:var(--accent)}
+body[data-template="personal-portfolio-v1"] .hero-visual,
+body[data-template="personal-portfolio-v1"] .page-hero-image{border:1px solid var(--line)}
+body[data-template="personal-portfolio-v1"] .hero-stamp{background:var(--accent);color:#10161b;transform:rotate(-8deg)}
+body[data-template="personal-portfolio-v1"] .entry-card{border-color:var(--line);background:linear-gradient(150deg,#1c262c,#141c22)}
+body[data-template="personal-portfolio-v1"] .entry-content h3{color:var(--primary)}
+body[data-template="personal-portfolio-v1"] .button-primary{background:var(--accent);border-color:var(--accent);color:#10161b}
+body[data-template="personal-portfolio-v1"] .button-outline{border-color:var(--line);color:var(--primary)}
+@media (max-width: 640px) {
+  body[data-template="retail-ecommerce-v1"] .home-hero{grid-template-columns:1fr}
+  body[data-template="salon-service-v1"] .hero-visual{aspect-ratio:4/4.5}
+}
