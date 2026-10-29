@@ -1096,7 +1096,8 @@ class IntegrationRouteTests(BotTestCase):
 
     def test_status_reports_configuration_without_contacting_a_provider(self) -> None:
         call = self.serve()
-        status, payload = call("/integrations/status")
+        with mock.patch.dict("os.environ", {}, clear=True):
+            status, payload = call("/integrations/status")
         self.assertEqual(status, 200)
         self.assertFalse(payload["verified"])
         self.assertFalse(payload["telegram"]["configured"])
