@@ -10,6 +10,7 @@ import json
 import re
 
 from templates.registry import select_template
+from templates.multipage import render_site_pages
 from templates.renderer import render_site
 from research.research_agent import classify_evidence_tier, is_fixture_or_doc_source
 
@@ -81,12 +82,13 @@ class WebsiteBuilder:
             result.generated_content = content
             facts["content"] = content
             result.status = "BUILDING"
-            html = render_site(facts, template.template_id)
+            pages = render_site_pages(facts, template.template_id)
+            html = pages["index.html"]
             is_fixture = _is_fixture(lead)
             artifact_dir = self.output_root / _safe_segment(lead_id) / build_id
             artifact_html_path = str(artifact_dir / "index.html")
             validation = validate_html(
-                html,
+                "\n".join(pages.values()),
                 facts["business_name"],
                 real_build=not is_fixture,
                 build_id=build_id,
@@ -95,14 +97,24 @@ class WebsiteBuilder:
                 expected_facts=None if is_fixture else facts,
                 synthetic_contact=is_fixture,
             )
+            bundle_errors = _validate_site_bundle(pages)
+            validation["site_pages"] = {"count": len(pages), "files": list(pages), "bundle_errors": bundle_errors}
+            result.metadata["page_files"] = list(pages)
             validation["artifact_path"] = artifact_html_path
             result.validation = validation
+            if bundle_errors:
+                validation["passed"] = False
+                validation.setdefault("errors", []).extend(
+                    {"severity": "ERROR", "code": "INVALID_SITE_BUNDLE", "message": message}
+                    for message in bundle_errors
+                )
             if not validation["passed"]:
                 result.status = "NEEDS_REVIEW"
-                result.errors.extend(validation["errors"])
+                result.errors.extend(validation.get("errors", []))
             else:
                 artifact_dir.mkdir(parents=True, exist_ok=True)
-                (artifact_dir / "index.html").write_text(html, encoding="utf-8")
+                for filename, page_html in pages.items():
+                    (artifact_dir / filename).write_text(page_html, encoding="utf-8")
                 result.output_location = artifact_html_path
                 result.status = "COMPLETED"
                 result.completed_at = _now()
@@ -505,3 +517,24 @@ def _text(value: Any) -> str | None:
 
 def _now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _validate_site_bundle(pages: dict[str, str]) -> list[str]:
+    expected = {"index.html", "about.html", "services.html", "gallery.html", "contact.html"}
+    errors = []
+    missing = sorted(expected - set(pages))
+    if missing:
+        errors.append("Missing required site pages: " + ", ".join(missing))
+    for filename, html in pages.items():
+        if not filename.endswith(".html") or "/" in filename or "\\" in filename:
+            errors.append(f"Unsafe output page filename: {filename}")
+            continue
+        if '<main id="main-content">' not in html or 'name="viewport"' not in html:
+            errors.append(f"Page {filename} is missing semantic main or viewport metadata.")
+        if not re.search(r"<img\b[^>]*\balt=", html):
+            errors.append(f"Page {filename} has no accessible photo with alt text.")
+        for href in re.findall(r'href="([A-Za-z0-9_-]+\.html(?:#[A-Za-z0-9_-]+)?)"', html):
+            target = href.split("#", 1)[0]
+            if target not in pages:
+                errors.append(f"Page {filename} links to missing local page {target}.")
+    return errors
