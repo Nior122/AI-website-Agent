@@ -6,12 +6,28 @@ All notable project changes are recorded here. Dates use ISO 8601 (`YYYY-MM-DD`)
 
 ### Added — 2026-10-29 (Distinct Industry Website Design System)
 
-- Added `templates/themes.css`, a dependency-free layer of seven distinct art directions for salon, restaurant, healthcare, legal, automotive, retail and portfolio websites.
-- Updated `templates/renderer.py` to mark generated documents with their selected template ID and embed the industry theme. Brand-variable overrides are scoped to that template instead of the global root.
-- Added responsive art direction, clearer calls to action, refined cards and panels, focus treatment and reduced-motion handling while retaining shared semantic components and fictional-contact safety.
-- Added theme-selection and brand-scoping regression tests. Updated the template handoff documentation and a local preview catalogue.
-- No Render API push/deployment, customer project creation or client-site deployment is part of this change.
+- Added `templates/themes.css`, a dependency-free layer of seven distinct art directions for salon, restaurant, healthcare, legal, automotive, retail, and portfolio websites.
+- Updated `templates/renderer.py` to tag documents with the selected template ID, embed the selected industry's theme, and scope brand-variable overrides to the selected template.
+- Refreshed the seven fictional preview pages and added `templates/previews/index.html`, a local catalogue with links, color palettes, and intended industry fit.
+- Added regression coverage for all seven theme selectors and brand-variable scoping.
+- GitHub Actions run `40818492124` passed 823 tests on Ubuntu and 823 tests on Windows. Browser-based desktop/mobile visual review remains.
+- This template change did not deploy the Render API or create/modify a client Vercel project.
 
+
+### Added — 2026-10-29 (Per-Business Vercel Provisioning & Live Preview Verification)
+
+- **Vercel Readback Verification Fix (`deployment/site_management.py`)**:
+  - Fixed `VercelProjectsClient.get_deployment_by_url()` to check both the primary deployment `url` and the assigned domain `alias` list (`payload.get("alias")`).
+  - Resolved root cause where Vercel returns immutable deployment hostnames (e.g. `<project>-<hash>.vercel.app`) in `url` and project domain aliases in `alias`, which previously triggered false-positive `VERCEL_DEPLOYMENT_IDENTITY_MISMATCH` errors.
+  - Returns verified matching host in `url` to satisfy strict downstream project-target assertions.
+- **Environment Resolution in Deployment CLI (`deployment/cli.py`)**:
+  - Added safe optional `load_dotenv` call in `deployment.cli.main()` with `override=False` to ensure local environment files are consulted for Vercel credentials without overriding runtime-provided variables.
+- **Live Smoke Test Execution (`project-0002` / Pitstop Lagos)**:
+  - Successfully provisioned dedicated Vercel project `pitstop-lagos-preview-88142ba94c` (`prj_c0xA939pwZirqEtofAFbPaNEQJ7r`) with public access confirmed (`ssoProtection: null`).
+  - Successfully deployed validated build `build-2026-10-13T012227z` (`dpl_8PChiowwNBJYxhYWJpR62bpPPM5P`).
+  - Authoritatively verified live HTTP 200 responses across both `https://pitstop-lagos-preview-88142ba94c.vercel.app` and `https://pitstop-lagos-preview-88142ba94c-guatk7m0o.vercel.app` (11,242 bytes).
+- **Test Suite Integrity**:
+  - Restored baseline tracking store records via `tracking.cli recover-verified-exports` so unit test discovery passes with 821 passed, 0 failures, 1 skipped.
 
 ### Added — 2026-10-23 (Gmail API Endpoint and Outbound State Fixes)
 

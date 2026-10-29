@@ -6,15 +6,15 @@ Keep this file concise. It is the shared handoff record, not a replacement for G
 
 | Field | Current value |
 | --- | --- |
-| Current phase | Reusable Website Template Design Upgrade (isolated feature branch) |
-| Current task | Give all seven registered website templates distinctive art direction while preserving grounded content, semantic components, accessibility and fictional fixture safety. |
-| Status | **CI VERIFIED**: All 823 unit tests pass on Ubuntu and Windows. New theme-selection and brand-scoping tests pass. Browser-based visual review remains for the operator; `main` unchanged and this draft PR is not merged. |
-| Next task | Review the preview catalogue and seven template pages at desktop/mobile sizes; make any visual refinements needed, then request separate authorization before merging or any deployment. |
-| Files currently being modified | `templates/themes.css`, renderer/registry/tests, template previews/catalogue, and related docs. |
-| Tests/checks performed | GitHub Actions run `40818492124`: `python -m unittest discover -s tests -v` passed 823 tests on Ubuntu and 823 on Windows. The two new theme tests passed on both platforms. No separate browser visual check has been completed. |
-| Deployment status | No Render API push/deployment. No Pitstop Lagos project created or customer preview deployed. |
-| Known issues | New theme code requires CI/local validation. Commercial Vercel hosting policy remains a separate launch gate. |
-| Approval required | No Render API deployment, new Vercel project, or Pitstop Lagos live smoke test without separate explicit approval. |
+| Current phase | Reusable Website Template Design Upgrade (draft PR #5) |
+| Current task | Add seven distinct visual systems to the reusable site renderer, refresh their fictional HTML previews, and verify the rendered output on CI. |
+| Status | **CI VERIFIED**: all 823 unit tests pass on Ubuntu and Windows. New theme-selection and scoped-brand tests pass on both. Browser-based visual review remains; PR #5 is still a draft and unmerged. |
+| Next task | Review the seven template pages and preview catalogue at desktop/mobile sizes. Only consider merging after visual review and separate authorization. |
+| Files currently being modified | `templates/themes.css`, `templates/renderer.py`, `templates/registry.py`, fictional template previews/data, template tests and related documentation. |
+| Tests/checks performed | GitHub Actions run `40818492124`: 823 tests passed on Ubuntu and 823 passed on Windows, including both new theme tests. Browser-based visual review and local `git diff --check` were not performed in this chat. |
+| Deployment status | No Render API push/deployment from this template work. Vercel automatically produced a READY branch preview on the existing shared demo project (`target: null`; no new Vercel project). Current `main` already records a Pitstop Lagos preview deployment in commit `58c1b78`; this template task did not create or modify it. |
+| Known issues | Desktop/mobile visual review remains; commercial hosting policy remains a separate launch gate. |
+| Approval required | Keep PR #5 as draft. No merge or Render API deployment without separate explicit authorization. Do not create or modify any Pitstop Lagos Vercel resources through this task. |
 
 ## Completed
 
