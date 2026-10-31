@@ -7,14 +7,14 @@ Keep this file concise. It is the shared handoff record, not a replacement for G
 | Field | Current value |
 | --- | --- |
 | Current phase | Cloud Operation & Phone Control Platform Implementation |
-| Current task | Implemented mobile operator dashboard (`GET /` and `GET /dashboard`), automation hold/release control API endpoints, autonomous background job worker thread, in-process Telegram long-polling daemon, and `ModelContentGenerator` with OpenRouter/NVIDIA integration and deterministic fallback. Added comprehensive unit test suite in `tests/test_dashboard_and_controls.py`. |
-| Status | **VERIFIED & READY FOR UAT**: 826 unit tests passing (0 failures, 1 skipped). Clean `git diff --check`. Server lifecycle properly manages background workers. Dashboard accessible without authentication for mobile operator ease of use. |
-| Next task | Guided User Acceptance Testing (UAT) starting from Test 1: Phone connection to mobile operator dashboard. |
-| Files currently being modified | `orchestration/api.py`, `orchestration/dashboard.py`, `builder/content_generator.py`, `tests/test_dashboard_and_controls.py`, `TASKS.md`, `CHANGELOG.md` |
-| Tests/checks performed | Full test suite: 826 passed (0 failed, 1 skipped); `tests/test_dashboard_and_controls.py` passed (6/6); `git diff --check` clean. |
-| Deployment status | Isolated Pitstop Lagos preview LIVE at `https://pitstop-lagos-preview-88142ba94c.vercel.app`. Shared preview at `https://ai-website-agent-preview.vercel.app`. Render API at `https://ai-website-agent-api.onrender.com`. Local server ready for mobile access. |
+| Current task | Implemented full mobile dashboard settings engine (`GET /settings`, `POST /settings`, `orchestration/settings.py`), live Overpass discovery, autonomous background job worker thread, in-process Telegram daemon, and `ModelContentGenerator`. Tested with 827 unit tests passing. |
+| Status | **VERIFIED & RUNNING LOCALLY**: 827 unit tests passing (0 failures, 1 skipped). Clean `git diff --check`. Server running on port 8080 with live settings persistence and live discovery. |
+| Next task | Operator verification of expanded settings on phone dashboard; cloud deployment upon approval. |
+| Files currently being modified | `orchestration/settings.py`, `orchestration/dashboard.py`, `orchestration/api.py`, `builder/content_generator.py`, `tests/test_dashboard_and_controls.py`, `TASKS.md`, `CHANGELOG.md` |
+| Tests/checks performed | Full test suite: 827 passed (0 failed, 1 skipped); `tests/test_dashboard_and_controls.py` passed (7/7); `git diff --check` clean; live HTTP endpoint tests passed. |
+| Deployment status | Local server running on port 8080. Isolated Pitstop Lagos preview LIVE at `https://pitstop-lagos-preview-88142ba94c.vercel.app`. Render deployment pending operator approval. |
 | Known issues | None. |
-| Approval required | None for testing. Production git push requires explicit operator authorization. |
+| Approval required | Cloud git push requires explicit operator authorization. |
 
 ## Completed
 

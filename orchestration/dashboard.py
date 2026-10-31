@@ -521,33 +521,192 @@ def get_dashboard_html() -> str:
 
     <!-- 5. SETTINGS & CHANNELS VIEW -->
     <section id="view-settings" class="view-section">
+      <!-- 1. AI Content Generation Settings -->
       <div class="card">
-        <div class="card-title">System & Operator Identity</div>
-        <div class="card-subtitle">Phone authentication and backend connectivity.</div>
+        <div class="card-title">
+          <span>AI Content Generation</span>
+          <span id="aiActiveBadge" class="badge badge-ok">OPENROUTER</span>
+        </div>
+        <div class="card-subtitle">Model providers and fact-grounded copywriting inference.</div>
+        <div class="form-group">
+          <label class="form-label">Active Provider</label>
+          <select id="setAiProvider" class="form-select" onchange="toggleAiProviderFields()">
+            <option value="openrouter">OpenRouter (Recommended)</option>
+            <option value="nvidia">NVIDIA NIM</option>
+            <option value="deterministic">Deterministic Fallback (No API Keys)</option>
+          </select>
+        </div>
+        <div id="openrouterFields">
+          <div class="form-group">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <label class="form-label">OpenRouter API Key</label>
+              <span id="orKeyBadge" class="badge badge-warn">NOT SET</span>
+            </div>
+            <input type="password" id="setOpenRouterKey" class="form-input" placeholder="sk-or-v1-...">
+            <div class="form-help">Leave empty to keep existing configured key.</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">OpenRouter Model</label>
+            <input type="text" id="setOpenRouterModel" class="form-input" placeholder="openrouter/free">
+          </div>
+        </div>
+        <div id="nvidiaFields">
+          <div class="form-group">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <label class="form-label">NVIDIA API Key</label>
+              <span id="nvKeyBadge" class="badge badge-warn">NOT SET</span>
+            </div>
+            <input type="password" id="setNvidiaKey" class="form-input" placeholder="nvapi-...">
+            <div class="form-help">Leave empty to keep existing configured key.</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">NVIDIA Model</label>
+            <input type="text" id="setNvidiaModel" class="form-input" placeholder="meta/llama-3.1-70b-instruct">
+          </div>
+        </div>
+      </div>
+
+      <!-- 2. Discovery & Scouting Defaults -->
+      <div class="card">
+        <div class="card-title">Scouting & Discovery Defaults</div>
+        <div class="card-subtitle">Default parameters when launching new lead discovery batches.</div>
+        <div class="form-group">
+          <label class="form-label">Default City</label>
+          <input type="text" id="setDefaultCity" class="form-input" placeholder="Lagos">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Default Country</label>
+          <input type="text" id="setDefaultCountry" class="form-input" placeholder="Nigeria">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Default Category</label>
+          <select id="setDefaultCategory" class="form-select">
+            <option value="Restaurants">Restaurants & Dining</option>
+            <option value="Salons">Salons & Spas</option>
+            <option value="Clinics">Clinics & Healthcare</option>
+            <option value="Automotive">Automotive & Repair</option>
+            <option value="Retail">Retail & Boutiques</option>
+            <option value="Legal">Legal & Professional</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Default Lead Limit (1-25)</label>
+          <input type="number" id="setDefaultLimit" class="form-input" min="1" max="25" placeholder="5">
+        </div>
+      </div>
+
+      <!-- 3. Telegram Operator Bot & Notifications -->
+      <div class="card">
+        <div class="card-title">
+          <span>Telegram Operator Bot</span>
+          <span id="tgBotBadge" class="badge badge-warn">NOT CONNECTED</span>
+        </div>
+        <div class="card-subtitle">24/7 phone control and real-time operational notifications.</div>
+        <div class="form-group">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <label class="form-label">Telegram Bot Token</label>
+            <span id="tgKeyBadge" class="badge badge-warn">NOT SET</span>
+          </div>
+          <input type="password" id="setTelegramToken" class="form-input" placeholder="123456789:ABCdefGhIjkLmNoPqRsTuVwXyZ">
+          <div class="form-help">Obtain from @BotFather on Telegram.</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Allowed User IDs</label>
+          <input type="text" id="setTelegramUsers" class="form-input" placeholder="e.g. 12345678, 87654321">
+          <div class="form-help">Comma-separated numeric Telegram user IDs permitted to command the bot.</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Allowed Chat IDs</label>
+          <input type="text" id="setTelegramChats" class="form-input" placeholder="e.g. -100123456789">
+        </div>
+        <div class="form-group" style="display:flex; align-items:center; justify-content:space-between; margin-top:12px;">
+          <label class="form-label" style="margin-bottom:0;">Operational Notifications</label>
+          <input type="checkbox" id="setNotifications" style="width:20px; height:20px; accent-color:var(--primary);">
+        </div>
+      </div>
+
+      <!-- 4. Autonomous Worker & Dispatch Engine -->
+      <div class="card">
+        <div class="card-title">Autonomous Worker Engine</div>
+        <div class="card-subtitle">Background daemon polling, dispatch gates, and auto-recovery.</div>
+        <div class="form-group" style="display:flex; align-items:center; justify-content:space-between;">
+          <label class="form-label" style="margin-bottom:0;">Auto-Dispatch Queued Jobs</label>
+          <input type="checkbox" id="setAutoDispatch" style="width:20px; height:20px; accent-color:var(--primary);">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Worker Poll Interval (1 - 60 seconds)</label>
+          <input type="number" id="setWorkerInterval" class="form-input" min="1" max="60" placeholder="5">
+          <div class="form-help">How frequently the background thread checks for queued pipeline jobs.</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Stale Job Recovery Timeout (seconds)</label>
+          <input type="number" id="setStaleTimeout" class="form-input" min="60" max="7200" placeholder="900">
+          <div class="form-help">Jobs running longer than this are automatically marked retry-eligible.</div>
+        </div>
+      </div>
+
+      <!-- 5. Deployment & Vercel Preview -->
+      <div class="card">
+        <div class="card-title">Deployment & Hosting</div>
+        <div class="card-subtitle">Vercel isolated preview provisioning and domain configuration.</div>
+        <div class="form-group">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <label class="form-label">Vercel API Token</label>
+            <span id="vercelKeyBadge" class="badge badge-warn">NOT SET</span>
+          </div>
+          <input type="password" id="setVercelToken" class="form-input" placeholder="Bearer token or personal access token">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Vercel Project Name</label>
+          <input type="text" id="setVercelProject" class="form-input" placeholder="ai-website-agent-preview">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Preview Base Domain</label>
+          <input type="text" id="setPreviewDomain" class="form-input" placeholder="https://ai-website-agent-preview.vercel.app">
+        </div>
+      </div>
+
+      <!-- Save Button Fixed at bottom of settings -->
+      <div style="margin-bottom: 24px;">
+        <button class="btn btn-primary btn-block" style="padding:14px; font-size:1rem; font-weight:700;" onclick="saveAllSettings()">Save System Settings</button>
+      </div>
+
+      <!-- 6. Phone Authentication Token -->
+      <div class="card">
+        <div class="card-title">Phone Security Token</div>
+        <div class="card-subtitle">This device's local bearer token for authenticating with the API.</div>
         <div class="form-group">
           <label class="form-label">Operator Bearer Token</label>
           <input type="password" id="authTokenInput" class="form-input" placeholder="Paste your API token here">
-          <div class="form-help">Stored securely in your phone's local storage.</div>
+          <div class="form-help">Stored in this phone's localStorage.</div>
         </div>
-        <button class="btn btn-primary btn-block" onclick="saveAuthToken()">Save Credentials</button>
+        <button class="btn btn-outline btn-block" onclick="saveAuthToken()">Save Phone Token</button>
       </div>
 
+      <!-- 7. Live Infrastructure Status -->
       <div class="card">
-        <div class="card-title">Configured Infrastructure</div>
+        <div class="card-title">Live Infrastructure</div>
         <div id="infraStatusList" class="item-list">
           <div class="item-row">
             <div class="item-header">
               <span class="item-title">Backend API</span>
-              <span class="badge badge-ok">HEALTHY</span>
+              <span class="badge badge-ok" id="infraApiBadge">ONLINE</span>
             </div>
-            <div class="item-desc">Render Cloud Service</div>
+            <div class="item-desc" id="infraApiDesc">Operational</div>
           </div>
           <div class="item-row">
             <div class="item-header">
               <span class="item-title">Database Storage</span>
-              <span class="badge badge-ok" id="infraStorageBadge">POSTGRES</span>
+              <span class="badge badge-ok" id="infraStorageBadge">JSON</span>
             </div>
-            <div class="item-desc" id="infraStorageDesc">Connected to Cloud Database</div>
+            <div class="item-desc" id="infraStorageDesc">Connected</div>
+          </div>
+          <div class="item-row">
+            <div class="item-header">
+              <span class="item-title">Background Worker</span>
+              <span class="badge badge-ok" id="infraWorkerBadge">RUNNING</span>
+            </div>
+            <div class="item-desc" id="infraWorkerDesc">Autonomous queue polling</div>
           </div>
         </div>
       </div>
@@ -728,9 +887,7 @@ def get_dashboard_html() -> str:
       else if (viewName === 'jobs') loadJobs();
       else if (viewName === 'leads') loadLeads();
       else if (viewName === 'projects') loadProjects();
-      else if (viewName === 'settings') {
-        document.getElementById('authTokenInput').value = getToken();
-      }
+      else if (viewName === 'settings') loadSettings();
     }
 
     // 1. Overview Loader
@@ -1095,12 +1252,140 @@ def get_dashboard_html() -> str:
       } catch (err) {
         alert('Error: ' + err.message);
       }
+    // Settings Management
+    function toggleAiProviderFields() {
+      const p = document.getElementById('setAiProvider').value;
+      const or = document.getElementById('openrouterFields');
+      const nv = document.getElementById('nvidiaFields');
+      if (or) or.style.display = (p === 'openrouter') ? 'block' : 'none';
+      if (nv) nv.style.display = (p === 'nvidia') ? 'block' : 'none';
+    }
+
+    async function loadSettings() {
+      document.getElementById('authTokenInput').value = getToken();
+      try {
+        const [settingsRes, healthRes] = await Promise.all([
+          fetch(`${API_BASE}/settings`, { headers: authHeaders() }),
+          fetch(`${API_BASE}/health`, { headers: authHeaders() })
+        ]);
+        if (settingsRes.ok) {
+          const cfg = await settingsRes.json();
+          // AI
+          document.getElementById('setAiProvider').value = cfg.ai_provider || 'openrouter';
+          document.getElementById('setOpenRouterModel').value = cfg.openrouter_model || '';
+          document.getElementById('setNvidiaModel').value = cfg.nvidia_model || '';
+          document.getElementById('orKeyBadge').innerText = cfg.openrouter_api_key_configured ? 'CONFIGURED' : 'NOT SET';
+          document.getElementById('orKeyBadge').className = cfg.openrouter_api_key_configured ? 'badge badge-ok' : 'badge badge-warn';
+          document.getElementById('nvKeyBadge').innerText = cfg.nvidia_api_key_configured ? 'CONFIGURED' : 'NOT SET';
+          document.getElementById('nvKeyBadge').className = cfg.nvidia_api_key_configured ? 'badge badge-ok' : 'badge badge-warn';
+          document.getElementById('aiActiveBadge').innerText = (cfg.ai_provider || 'OPENROUTER').toUpperCase();
+
+          // Discovery
+          document.getElementById('setDefaultCity').value = cfg.default_city || 'Lagos';
+          document.getElementById('setDefaultCountry').value = cfg.default_country || 'Nigeria';
+          document.getElementById('setDefaultCategory').value = cfg.default_category || 'Restaurants';
+          document.getElementById('setDefaultLimit').value = cfg.default_lead_limit || 5;
+
+          // Telegram
+          document.getElementById('tgKeyBadge').innerText = cfg.telegram_bot_token_configured ? 'CONFIGURED' : 'NOT SET';
+          document.getElementById('tgKeyBadge').className = cfg.telegram_bot_token_configured ? 'badge badge-ok' : 'badge badge-warn';
+          document.getElementById('tgBotBadge').innerText = cfg.telegram_bot_token_configured ? 'CONNECTED' : 'NOT CONNECTED';
+          document.getElementById('tgBotBadge').className = cfg.telegram_bot_token_configured ? 'badge badge-ok' : 'badge badge-warn';
+          document.getElementById('setTelegramUsers').value = cfg.telegram_allowed_user_ids || '';
+          document.getElementById('setTelegramChats').value = cfg.telegram_allowed_chat_ids || '';
+          document.getElementById('setNotifications').checked = cfg.notifications_enabled !== false;
+
+          // Worker
+          document.getElementById('setAutoDispatch').checked = cfg.auto_dispatch !== false;
+          document.getElementById('setWorkerInterval').value = cfg.worker_poll_interval || 5;
+          document.getElementById('setStaleTimeout').value = cfg.stale_job_timeout || 900;
+
+          // Deployment
+          document.getElementById('vercelKeyBadge').innerText = cfg.vercel_token_configured ? 'CONFIGURED' : 'NOT SET';
+          document.getElementById('vercelKeyBadge').className = cfg.vercel_token_configured ? 'badge badge-ok' : 'badge badge-warn';
+          document.getElementById('setVercelProject').value = cfg.vercel_project_name || '';
+          document.getElementById('setPreviewDomain').value = cfg.preview_domain || '';
+
+          toggleAiProviderFields();
+        }
+
+        if (healthRes.ok) {
+          const h = await healthRes.json();
+          const storage = h.health?.source_of_truth?.storage?.backend || 'JSON';
+          document.getElementById('infraStorageBadge').innerText = storage.toUpperCase();
+        }
+      } catch (err) {
+        console.error('Settings load error:', err);
+      }
+    }
+
+    async function saveAllSettings() {
+      const updates = {
+        ai_provider: document.getElementById('setAiProvider').value,
+        openrouter_model: document.getElementById('setOpenRouterModel').value,
+        nvidia_model: document.getElementById('setNvidiaModel').value,
+        default_city: document.getElementById('setDefaultCity').value,
+        default_country: document.getElementById('setDefaultCountry').value,
+        default_category: document.getElementById('setDefaultCategory').value,
+        default_lead_limit: parseInt(document.getElementById('setDefaultLimit').value) || 5,
+        telegram_allowed_user_ids: document.getElementById('setTelegramUsers').value,
+        telegram_allowed_chat_ids: document.getElementById('setTelegramChats').value,
+        notifications_enabled: document.getElementById('setNotifications').checked,
+        auto_dispatch: document.getElementById('setAutoDispatch').checked,
+        worker_poll_interval: parseInt(document.getElementById('setWorkerInterval').value) || 5,
+        stale_job_timeout: parseInt(document.getElementById('setStaleTimeout').value) || 900,
+        vercel_project_name: document.getElementById('setVercelProject').value,
+        preview_domain: document.getElementById('setPreviewDomain').value,
+      };
+
+      const orKey = document.getElementById('setOpenRouterKey').value.trim();
+      if (orKey && !orKey.includes('...')) updates.openrouter_api_key = orKey;
+
+      const nvKey = document.getElementById('setNvidiaKey').value.trim();
+      if (nvKey && !nvKey.includes('...')) updates.nvidia_api_key = nvKey;
+
+      const tgToken = document.getElementById('setTelegramToken').value.trim();
+      if (tgToken && !tgToken.includes('...')) updates.telegram_bot_token = tgToken;
+
+      const vercelToken = document.getElementById('setVercelToken').value.trim();
+      if (vercelToken && !vercelToken.includes('...')) updates.vercel_token = vercelToken;
+
+      try {
+        const res = await fetch(`${API_BASE}/settings`, {
+          method: 'POST',
+          headers: authHeaders(),
+          body: JSON.stringify(updates)
+        });
+        if (res.ok) {
+          alert('Settings saved successfully!');
+          document.getElementById('setOpenRouterKey').value = '';
+          document.getElementById('setNvidiaKey').value = '';
+          document.getElementById('setTelegramToken').value = '';
+          document.getElementById('setVercelToken').value = '';
+          loadSettings();
+        } else {
+          const err = await res.json();
+          alert('Failed to save settings: ' + (err.error || err.message || 'Unknown error'));
+        }
+      } catch (err) {
+        alert('Network error saving settings: ' + err.message);
+      }
     }
 
     // Modal Helpers
     function openModal(id) { document.getElementById(id).classList.add('active'); }
     function closeModal(id) { document.getElementById(id).classList.remove('active'); }
-    function openNewScoutModal() { openModal('scoutModal'); }
+    function openNewScoutModal() {
+      const defCity = document.getElementById('setDefaultCity');
+      if (defCity && defCity.value) document.getElementById('scoutCity').value = defCity.value;
+      const defCountry = document.getElementById('setDefaultCountry');
+      if (defCountry && defCountry.value) document.getElementById('scoutCountry').value = defCountry.value;
+      const defCat = document.getElementById('setDefaultCategory');
+      if (defCat && defCat.value) document.getElementById('scoutCategory').value = defCat.value;
+      const defLim = document.getElementById('setDefaultLimit');
+      if (defLim && defLim.value) document.getElementById('scoutLimit').value = defLim.value;
+      openModal('scoutModal');
+    }
     function openAuthModal() { switchView('settings'); }
 
     async function submitScoutJob() {
@@ -1118,6 +1403,8 @@ def get_dashboard_html() -> str:
             job_type: 'SCOUT',
             job_id: jobId,
             input: {
+              source: 'overpass',
+              approve_live_lookups: true,
               city: city,
               country: country,
               niche: category,

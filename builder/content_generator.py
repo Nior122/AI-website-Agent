@@ -62,9 +62,11 @@ class ModelContentGenerator:
         request: Any = provider_request,
         fallback: ContentGenerator | None = None,
         production: bool | None = None,
+        store: Any = None,
     ) -> None:
         self.request = request
         self.fallback = fallback or DeterministicContentGenerator()
+        self.store = store
         if production is None:
             from tracking.database import is_production_mode
             production = is_production_mode()
@@ -75,13 +77,24 @@ class ModelContentGenerator:
         if not business_name:
             return self.fallback.generate(facts, category)
 
-        # Check configured providers
+        try:
+            from orchestration.settings import get_runtime_settings
+            settings = get_runtime_settings(self.store)
+        except Exception:
+            settings = {}
+
+        selected_provider = (settings.get("ai_provider") or "").strip().lower()
+        if selected_provider == "deterministic":
+            return self.fallback.generate(facts, category)
+
         raw_order = os.environ.get("AI_WEBSITE_AGENT_BUILDER_PROVIDERS", "openrouter,nvidia")
         order = [x.strip().lower() for x in raw_order.split(",") if x.strip()]
+        if selected_provider in {"openrouter", "nvidia"}:
+            order = [selected_provider] + [p for p in order if p != selected_provider]
 
         for provider in order:
             try:
-                content = self._call_provider(provider, facts, category)
+                content = self._call_provider(provider, facts, category, settings=settings)
                 if content:
                     return content
             except (ProviderError, ValueError, Exception):
@@ -91,7 +104,12 @@ class ModelContentGenerator:
         return self.fallback.generate(facts, category)
 
     def _call_provider(
-        self, provider: str, facts: dict[str, Any], category: str
+        self,
+        provider: str,
+        facts: dict[str, Any],
+        category: str,
+        *,
+        settings: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         business_name = facts.get("business_name", "")
         city = facts.get("city", "")
@@ -113,15 +131,22 @@ class ModelContentGenerator:
         if facts.get("phone"):
             fact_lines.append(f"Phone available: yes")
 
+        cfg = settings or {}
+
         if provider == "openrouter":
             key = (
-                os.environ.get("AI_WEBSITE_AGENT_OPENROUTER_API_KEY")
+                cfg.get("openrouter_api_key")
+                or os.environ.get("AI_WEBSITE_AGENT_OPENROUTER_API_KEY")
                 or os.environ.get("OPENROUTER_API_KEY")
                 or ""
             ).strip()
             if not key:
                 raise ValueError("OpenRouter API key missing")
-            model = (os.environ.get("AI_WEBSITE_AGENT_OPENROUTER_MODEL") or "openrouter/free").strip()
+            model = (
+                cfg.get("openrouter_model")
+                or os.environ.get("AI_WEBSITE_AGENT_OPENROUTER_MODEL")
+                or "openrouter/free"
+            ).strip()
             endpoint = "https://openrouter.ai/api/v1/chat/completions"
             headers = {
                 "Authorization": f"Bearer {key}",
@@ -130,11 +155,16 @@ class ModelContentGenerator:
             }
         elif provider == "nvidia":
             key = (
-                os.environ.get("AI_WEBSITE_AGENT_NVIDIA_API_KEY")
+                cfg.get("nvidia_api_key")
+                or os.environ.get("AI_WEBSITE_AGENT_NVIDIA_API_KEY")
                 or os.environ.get("NVIDIA_API_KEY")
                 or ""
             ).strip()
-            model = (os.environ.get("AI_WEBSITE_AGENT_NVIDIA_MODEL") or "meta/llama-3.1-70b-instruct").strip()
+            model = (
+                cfg.get("nvidia_model")
+                or os.environ.get("AI_WEBSITE_AGENT_NVIDIA_MODEL")
+                or "meta/llama-3.1-70b-instruct"
+            ).strip()
             if not key or not model:
                 raise ValueError("NVIDIA key/model missing")
             if self.production and os.environ.get("AI_WEBSITE_AGENT_NVIDIA_PRODUCTION_LICENSE_CONFIRMED") != "1":

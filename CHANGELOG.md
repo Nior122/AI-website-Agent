@@ -18,8 +18,14 @@ All notable project changes are recorded here. Dates use ISO 8601 (`YYYY-MM-DD`)
   - Updated `serve()` to gracefully supervise background threads and stop them cleanly upon server termination.
 - **ModelContentGenerator (`builder/content_generator.py`)**:
   - Implemented `ModelContentGenerator` with support for OpenRouter and NVIDIA inference providers, strict fact-grounding, claim safety screening (rejecting unverified superlatives), and deterministic fallback.
+- **Runtime System & Operator Settings Engine (`orchestration/settings.py`, `orchestration/api.py`)**:
+  - Implemented transactional `system_settings` persistence inside `store.state["automation_controls"]` with automatic PostgreSQL, SQLite, and JSON sync.
+  - Added `GET /settings` and `POST /settings` API routes with secret masking (API keys, bot tokens, and deployment tokens masked with `...`).
+  - Added full mobile dashboard controls for AI Model provider/keys/models, discovery defaults (city, country, limit, category), Telegram Bot credentials/allowed IDs/alerts, Autonomous Worker intervals/stale timeouts/auto-dispatch toggle, and Vercel project configuration.
+  - Connected `ModelContentGenerator` and `start_background_job_worker()` to dynamic runtime settings so changes from the mobile dashboard take effect immediately.
+  - Fixed mobile discovery job submission to pass `source: "overpass"` and `approve_live_lookups: true` for live candidate discovery.
 - **Automated Verification Suite (`tests/test_dashboard_and_controls.py`)**:
-  - Added 6 unit tests covering dashboard HTML serving, hold/release lifecycle, worker hold adherence, and ModelContentGenerator fallback/rejection behaviors.
+  - Added 7 unit tests covering dashboard HTML serving, hold/release lifecycle, worker hold adherence, ModelContentGenerator fallback/rejection behaviors, and settings lifecycle.
 
 ### Added — 2026-10-29 (Per-Business Vercel Provisioning & Live Preview Verification)
 

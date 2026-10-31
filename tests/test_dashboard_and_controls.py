@@ -237,6 +237,43 @@ class ModelContentGeneratorTests(unittest.TestCase):
             else:
                 os.environ["OPENROUTER_API_KEY"] = old_key
 
+    def test_settings_api_lifecycle(self) -> None:
+        """GET /settings returns defaults and POST /settings updates runtime configurations."""
+        from orchestration.settings import get_runtime_settings, update_settings
+
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            store = TrackingStore(Path(tmp.name) / "state.json")
+            # 1. Defaults
+            initial = get_runtime_settings(store)
+            self.assertEqual(initial["default_city"], "Lagos")
+            self.assertEqual(initial["ai_provider"], "openrouter")
+
+            # 2. Update via function
+            updated = update_settings(
+                store,
+                {
+                    "default_city": "Abuja",
+                    "openrouter_api_key": "sk-or-v1-my-secret-key-12345",
+                    "ai_provider": "deterministic",
+                    "default_lead_limit": 10,
+                },
+                actor="test_op",
+            )
+            self.assertEqual(updated["default_city"], "Abuja")
+            self.assertEqual(updated["ai_provider"], "deterministic")
+            self.assertEqual(updated["default_lead_limit"], 10)
+            self.assertTrue(updated["openrouter_api_key_configured"])
+            self.assertTrue("..." in updated["openrouter_api_key"])
+
+            # 3. Model generator uses the updated deterministic provider
+            gen = ModelContentGenerator(store=store)
+            res = gen.generate({"business_name": "Abuja Lounge"}, "restaurant")
+            self.assertEqual(res["hero_title"], "Abuja Lounge")
+            self.assertNotIn("metadata", res)  # Deterministic has no metadata
+        finally:
+            tmp.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()

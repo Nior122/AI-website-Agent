@@ -557,6 +557,9 @@ def make_handler(
                         from .controls import blocked_by_hold
                         limit = int((query.get("limit") or ["25"])[0])
                         return self._json(200, {"blocked": blocked_by_hold(service.store, limit=limit)})
+                    if path == ["settings"]:
+                        from .settings import get_masked_settings
+                        return self._json(200, get_masked_settings(service.store))
                     if path == ["jobs"]:
                         jobs = [_enrich_job(j) for j in service.store.state["jobs"].values()]
                         status_filter = (query.get("status") or [None])[0]
@@ -998,6 +1001,11 @@ def make_handler(
                         note = str(payload.get("note") or "").strip() or None
                         view = release_hold(service.store, actor=actor, note=note)
                         return self._json(200, view)
+                    if path == ["settings"]:
+                        from .settings import update_settings
+                        actor = str(payload.get("actor") or "operator").strip()
+                        updated = update_settings(service.store, payload, actor=actor)
+                        return self._json(200, updated)
                     if path == ["jobs"]:
                         if "job_type" not in payload or "job_id" not in payload:
                             raise BadRequest("POST /jobs requires 'job_type' and 'job_id'.")
@@ -1322,12 +1330,19 @@ def start_background_job_worker(
         stale_check_interval = 60.0
         last_stale_check = 0.0
         while not stop_event.is_set():
+            current_interval = poll_interval
             try:
+                from .settings import get_runtime_settings
+                runtime_settings = get_runtime_settings(service.store)
+                current_interval = float(runtime_settings.get("worker_poll_interval", poll_interval))
+                stale_timeout = int(runtime_settings.get("stale_job_timeout", 900))
+                auto_dispatch = bool(runtime_settings.get("auto_dispatch", True))
+
                 now = time.time()
                 if now - last_stale_check > stale_check_interval:
-                    service.recover_stale(older_than_seconds=900)
+                    service.recover_stale(older_than_seconds=stale_timeout)
                     last_stale_check = now
-                if not held(service.store):
+                if auto_dispatch and not held(service.store):
                     jobs = list(service.store.state.get("jobs", {}).values())
                     pending_jobs = [
                         j for j in jobs
@@ -1356,7 +1371,7 @@ def start_background_job_worker(
                     code="LOOP_EXCEPTION",
                     message=str(err),
                 )
-            stop_event.wait(poll_interval)
+            stop_event.wait(current_interval)
 
     thread = threading.Thread(target=_loop, name="AutonomousJobWorker", daemon=True)
     thread.start()
