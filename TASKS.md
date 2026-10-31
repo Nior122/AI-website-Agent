@@ -6,15 +6,15 @@ Keep this file concise. It is the shared handoff record, not a replacement for G
 
 | Field | Current value |
 | --- | --- |
-| Current phase | Live Production Deployment & Isolated Per-Business Preview Verification: COMPLETE |
-| Current task | Operator-approved live smoke test of per-business Vercel provisioning (`project-0002` / Pitstop Lagos); fixed deployment readback verification against Vercel domain aliases in `deployment/site_management.py`; verified live HTTP 200 responses; synchronized main branch with remote origin. |
-| Status | **CLEAN & VERIFIED**: Working tree clean; all 821 unit tests passing (0 failures, 1 skipped); Vercel isolated preview deployment verified live (`https://pitstop-lagos-preview-88142ba94c.vercel.app` & `https://pitstop-lagos-preview-88142ba94c-guatk7m0o.vercel.app` -> HTTP 200, 11,242 bytes); Render API live at `https://ai-website-agent-api.onrender.com/healthz` (HTTP 200 `{"status": "ok"}`). |
-| Next task | Operator review of live deployment verification and operational sign-off. |
-| Files currently being modified | `TASKS.md`, `CHANGELOG.md`, `deployment/cli.py`, `deployment/site_management.py` |
-| Tests/checks performed | Full test suite: 821 passed (0 failed, 1 skipped); `git diff --check` clean; live HTTPS anonymous GET checks confirmed HTTP 200 across Vercel and Render services. |
-| Deployment status | Isolated Pitstop Lagos preview LIVE at `https://pitstop-lagos-preview-88142ba94c.vercel.app` (project `prj_c0xA939pwZirqEtofAFbPaNEQJ7r`). Shared fictional preview live at `https://ai-website-agent-preview.vercel.app`. Render API live at `https://ai-website-agent-api.onrender.com`. |
-| Known issues | None. Live readback verification fixed and verified. |
-| Approval required | None. All planned phases approved and executed. |
+| Current phase | Cloud Operation & Phone Control Platform Implementation |
+| Current task | Implemented mobile operator dashboard (`GET /` and `GET /dashboard`), automation hold/release control API endpoints, autonomous background job worker thread, in-process Telegram long-polling daemon, and `ModelContentGenerator` with OpenRouter/NVIDIA integration and deterministic fallback. Added comprehensive unit test suite in `tests/test_dashboard_and_controls.py`. |
+| Status | **VERIFIED & READY FOR UAT**: 826 unit tests passing (0 failures, 1 skipped). Clean `git diff --check`. Server lifecycle properly manages background workers. Dashboard accessible without authentication for mobile operator ease of use. |
+| Next task | Guided User Acceptance Testing (UAT) starting from Test 1: Phone connection to mobile operator dashboard. |
+| Files currently being modified | `orchestration/api.py`, `orchestration/dashboard.py`, `builder/content_generator.py`, `tests/test_dashboard_and_controls.py`, `TASKS.md`, `CHANGELOG.md` |
+| Tests/checks performed | Full test suite: 826 passed (0 failed, 1 skipped); `tests/test_dashboard_and_controls.py` passed (6/6); `git diff --check` clean. |
+| Deployment status | Isolated Pitstop Lagos preview LIVE at `https://pitstop-lagos-preview-88142ba94c.vercel.app`. Shared preview at `https://ai-website-agent-preview.vercel.app`. Render API at `https://ai-website-agent-api.onrender.com`. Local server ready for mobile access. |
+| Known issues | None. |
+| Approval required | None for testing. Production git push requires explicit operator authorization. |
 
 ## Completed
 

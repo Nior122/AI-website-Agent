@@ -4,6 +4,23 @@ All notable project changes are recorded here. Dates use ISO 8601 (`YYYY-MM-DD`)
 
 ## [Unreleased]
 
+### Added — 2026-10-31 (Cloud Operation & Phone Control Platform)
+
+- **Mobile Operator Dashboard Integration (`orchestration/api.py`, `orchestration/dashboard.py`)**:
+  - Wired mobile-first operator dashboard to `GET /` and `GET /dashboard`, serving unauthenticated responsive HTML for direct mobile browser control.
+  - Implemented real-time system metrics, recent activity feeds, one-tap automation hold/resume controls, and direct quick-job triggers.
+- **Automation Control Endpoints (`orchestration/api.py`)**:
+  - Added `GET /controls/hold` and `GET /controls/blocked` to inspect global automation dispatch hold status and pending blocked jobs.
+  - Added `POST /controls/hold` and `POST /controls/release` to engage and disengage operational brakes without modifying approvals.
+- **Autonomous Background Workers (`orchestration/api.py`)**:
+  - Added `start_background_job_worker()` daemon thread to poll and autonomously execute pending/queued pipeline jobs while respecting the global hold gate.
+  - Added `start_telegram_daemon()` daemon thread for 24/7 long-polling Telegram operator interaction in cloud environments.
+  - Updated `serve()` to gracefully supervise background threads and stop them cleanly upon server termination.
+- **ModelContentGenerator (`builder/content_generator.py`)**:
+  - Implemented `ModelContentGenerator` with support for OpenRouter and NVIDIA inference providers, strict fact-grounding, claim safety screening (rejecting unverified superlatives), and deterministic fallback.
+- **Automated Verification Suite (`tests/test_dashboard_and_controls.py`)**:
+  - Added 6 unit tests covering dashboard HTML serving, hold/release lifecycle, worker hold adherence, and ModelContentGenerator fallback/rejection behaviors.
+
 ### Added — 2026-10-29 (Per-Business Vercel Provisioning & Live Preview Verification)
 
 - **Vercel Readback Verification Fix (`deployment/site_management.py`)**:

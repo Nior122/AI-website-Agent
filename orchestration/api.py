@@ -424,6 +424,15 @@ def make_handler(
                 # Readiness (which verifies the database) is the authenticated GET /readiness, and
                 # operational state is GET /health, GET /attention and GET /deployment-status.
                 return self._json(200, {"status": "ok"})
+            if path in ([], ["dashboard"]):
+                from .dashboard import get_dashboard_html
+                html_bytes = get_dashboard_html().encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(html_bytes)))
+                self.end_headers()
+                self.wfile.write(html_bytes)
+                return
             if not self._require_auth():
                 return
             query = parse_qs(parsed_url.query)
@@ -541,6 +550,13 @@ def make_handler(
                                 "note": "No deployment attention recorded for this project.",
                             }]
                         return self._json(200, report)
+                    if path == ["controls", "hold"]:
+                        from .controls import hold_view
+                        return self._json(200, hold_view(service.store))
+                    if path == ["controls", "blocked"]:
+                        from .controls import blocked_by_hold
+                        limit = int((query.get("limit") or ["25"])[0])
+                        return self._json(200, {"blocked": blocked_by_hold(service.store, limit=limit)})
                     if path == ["jobs"]:
                         jobs = [_enrich_job(j) for j in service.store.state["jobs"].values()]
                         status_filter = (query.get("status") or [None])[0]
@@ -969,6 +985,19 @@ def make_handler(
                     if path == ["integrations", "telegram", "notify"]:
                         return self._handle_telegram_notify()
                     payload = self._body()
+                    if path == ["controls", "hold"]:
+                        from .controls import set_hold
+                        reason = str(payload.get("reason") or "Operator hold via dashboard/API").strip()
+                        actor = str(payload.get("actor") or "operator").strip()
+                        note = str(payload.get("note") or "").strip() or None
+                        view = set_hold(service.store, actor=actor, reason=reason, note=note)
+                        return self._json(200, view)
+                    if path == ["controls", "release"]:
+                        from .controls import release_hold
+                        actor = str(payload.get("actor") or "operator").strip()
+                        note = str(payload.get("note") or "").strip() or None
+                        view = release_hold(service.store, actor=actor, note=note)
+                        return self._json(200, view)
                     if path == ["jobs"]:
                         if "job_type" not in payload or "job_id" not in payload:
                             raise BadRequest("POST /jobs requires 'job_type' and 'job_id'.")
@@ -1272,6 +1301,118 @@ def make_handler(
     return Handler
 
 
+def start_background_job_worker(
+    service: JobService,
+    worker: JobWorker | None,
+    stop_event: threading.Event,
+    *,
+    poll_interval: float = 5.0,
+) -> threading.Thread | None:
+    """Autonomous background execution of queued/pending pipeline jobs.
+
+    Adheres strictly to the global automation hold (controls.held) and gate checks.
+    Periodically recovers stale jobs.
+    """
+    if worker is None:
+        return None
+    import time
+    from .controls import held
+
+    def _loop() -> None:
+        stale_check_interval = 60.0
+        last_stale_check = 0.0
+        while not stop_event.is_set():
+            try:
+                now = time.time()
+                if now - last_stale_check > stale_check_interval:
+                    service.recover_stale(older_than_seconds=900)
+                    last_stale_check = now
+                if not held(service.store):
+                    jobs = list(service.store.state.get("jobs", {}).values())
+                    pending_jobs = [
+                        j for j in jobs
+                        if isinstance(j, dict) and j.get("status") in {"PENDING", "QUEUED"}
+                    ]
+                    if pending_jobs:
+                        pending_jobs.sort(key=lambda j: str(j.get("created_at") or ""))
+                        for candidate in pending_jobs:
+                            job_id = candidate.get("job_id")
+                            if not job_id:
+                                continue
+                            reason = service.gate_failure(job_id)
+                            if reason is None:
+                                log_event(
+                                    severity="INFO",
+                                    operation="job.autonomous_dispatch",
+                                    code="DISPATCH_START",
+                                    job_id=job_id,
+                                )
+                                service.run(job_id, worker)
+                                break
+            except Exception as err:
+                log_event(
+                    severity="WARNING",
+                    operation="job.autonomous_loop",
+                    code="LOOP_EXCEPTION",
+                    message=str(err),
+                )
+            stop_event.wait(poll_interval)
+
+    thread = threading.Thread(target=_loop, name="AutonomousJobWorker", daemon=True)
+    thread.start()
+    return thread
+
+
+def start_telegram_daemon(
+    store: TrackingStore,
+    stop_event: threading.Event,
+) -> threading.Thread | None:
+    """In-process Telegram operator poller for 24/7 autonomous cloud operation."""
+    token = (os.environ.get(TELEGRAM_TOKEN_ENV) or "").strip()
+    if not token:
+        return None
+    try:
+        from integrations.telegram import TelegramBotApi, telegram_config
+        from .telegram_bot import TelegramOperatorBot
+
+        config = telegram_config(os.environ)
+        if not config["configured"]:
+            return None
+
+        def _loop() -> None:
+            api = TelegramBotApi(token, api_root=config["api_root"], timeout=10.0)
+            bot = TelegramOperatorBot(
+                api,
+                store=store,
+                allowed_user_ids=config["allowed_user_ids"],
+                allowed_chat_ids=config["allowed_chat_ids"],
+            )
+            while not stop_event.is_set():
+                try:
+                    bot.poll_once(timeout=10.0)
+                except Exception as err:
+                    log_event(
+                        severity="WARNING",
+                        operation="telegram.poll_daemon",
+                        code="POLL_ERROR",
+                        message=str(err),
+                    )
+                    stop_event.wait(10.0)
+                stop_event.wait(1.0)
+
+        thread = threading.Thread(target=_loop, name="TelegramOperatorPoller", daemon=True)
+        thread.start()
+        return thread
+    except Exception as err:
+        log_event(
+            severity="WARNING",
+            operation="telegram.init_daemon",
+            code="INIT_ERROR",
+            message=str(err),
+        )
+        return None
+
+
 def serve(
     *,
     state_path: str = "data/tracking/state.json",
@@ -1306,14 +1447,21 @@ def serve(
     store = TrackingStore(state_path, database_url=database_url)
     service = JobService(store)
     worker = LocalPipelineWorker(repository_root=repository_root, output_root=output_root)
-    ThreadingHTTPServer(
-        (resolved_host, resolved_port),
-        make_handler(
-            service,
-            token,
-            worker=worker,
-            output_root=output_root,
-            export_root=export_root,
-            repository_root=repository_root,
-        ),
-    ).serve_forever()
+    stop_event = threading.Event()
+    start_background_job_worker(service, worker, stop_event)
+    start_telegram_daemon(store, stop_event)
+    try:
+        server = ThreadingHTTPServer(
+            (resolved_host, resolved_port),
+            make_handler(
+                service,
+                token,
+                worker=worker,
+                output_root=output_root,
+                export_root=export_root,
+                repository_root=repository_root,
+            ),
+        )
+        server.serve_forever()
+    finally:
+        stop_event.set()
