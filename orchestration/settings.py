@@ -40,6 +40,28 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "vercel_team_id": "",
     "vercel_project_name": "ai-website-agent-preview",
     "preview_domain": "https://ai-website-agent-preview.vercel.app",
+    # Email Outreach (SMTP / Gmail)
+    "email_provider": "smtp",
+    "email_sender_address": "",
+    "smtp_host": "smtp.gmail.com",
+    "smtp_port": 587,
+    "smtp_username": "",
+    "smtp_password": "",
+    "gmail_client_id": "",
+    "gmail_client_secret": "",
+    "gmail_refresh_token": "",
+    "email_outreach_enabled": False,
+    # Buffer & Social Media Engine
+    "buffer_access_token": "",
+    "buffer_instagram_profile_id": "",
+    "buffer_facebook_profile_id": "",
+    "buffer_twitter_profile_id": "",
+    "buffer_linkedin_profile_id": "",
+    "social_channels_enabled": True,
+    # Meta / Instagram Graph API
+    "meta_access_token": "",
+    "meta_page_id": "",
+    "meta_instagram_account_id": "",
 }
 
 SECRET_KEYS = {
@@ -47,6 +69,11 @@ SECRET_KEYS = {
     "nvidia_api_key",
     "telegram_bot_token",
     "vercel_token",
+    "smtp_password",
+    "gmail_client_secret",
+    "gmail_refresh_token",
+    "buffer_access_token",
+    "meta_access_token",
 }
 
 

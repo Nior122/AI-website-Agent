@@ -103,14 +103,18 @@ def get_dashboard_html() -> str:
       cursor: pointer;
       transition: all 0.15s ease;
       text-decoration: none;
+      touch-action: manipulation;
+      user-select: none;
+      -webkit-user-select: none;
     }
+    .btn * { pointer-events: none; }
     .btn-sm { padding: 5px 10px; font-size: 0.8rem; }
     .btn-primary { background: var(--primary); color: #fff; }
-    .btn-primary:active { background: var(--primary-hover); transform: scale(0.98); }
+    .btn-primary:active { background: var(--primary-hover); transform: scale(0.96); }
     .btn-success { background: var(--accent); color: #fff; }
     .btn-warning { background: var(--warning); color: #000; }
     .btn-danger { background: var(--danger); color: #fff; }
-    .btn-danger:active { background: var(--danger-hover); transform: scale(0.98); }
+    .btn-danger:active { background: var(--danger-hover); transform: scale(0.96); }
     .btn-outline {
       background: transparent;
       border-color: var(--card-border);
@@ -146,7 +150,12 @@ def get_dashboard_html() -> str:
       text-decoration: none;
       cursor: pointer;
       transition: color 0.15s ease;
+      touch-action: manipulation;
+      user-select: none;
+      -webkit-user-select: none;
     }
+    .nav-item * { pointer-events: none; }
+    .nav-item:active { transform: scale(0.92); opacity: 0.8; }
     .nav-item svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 2; }
     .nav-item.active { color: var(--primary); }
     .nav-item.active svg { stroke: var(--primary); }
@@ -414,6 +423,15 @@ def get_dashboard_html() -> str:
   <!-- Main Container -->
   <main class="main-content">
 
+    <!-- Unauthenticated Warning Banner -->
+    <div id="unauthBanner" style="display:none; background:rgba(239, 68, 68, 0.15); border:1px solid rgba(239, 68, 68, 0.4); border-radius:var(--radius); padding:14px 16px; margin-bottom:16px; align-items:center; justify-content:space-between; gap:12px;">
+      <div>
+        <strong style="color:#f87171; font-size:0.92rem; display:block;">Device Not Authenticated</strong>
+        <p style="font-size:0.78rem; color:var(--text-muted); margin-top:2px;">Phone needs Bearer token to communicate with backend.</p>
+      </div>
+      <button class="btn btn-sm btn-danger" onclick="switchView('settings')">Authenticate</button>
+    </div>
+
     <!-- 1. OVERVIEW & ATTENTION VIEW -->
     <section id="view-overview" class="view-section active">
       <!-- Automation Hold Banner -->
@@ -666,6 +684,129 @@ def get_dashboard_html() -> str:
         </div>
       </div>
 
+      <!-- 6. Email Outreach (SMTP & Gmail API) -->
+      <div class="card">
+        <div class="card-title">
+          <span>Email Outreach Engine</span>
+          <span id="emailStatusBadge" class="badge badge-warn">NOT CONNECTED</span>
+        </div>
+        <div class="card-subtitle">Connect your agency email to send approved prospect pitches directly.</div>
+        <div class="form-group" style="display:flex; align-items:center; justify-content:space-between;">
+          <label class="form-label" style="margin-bottom:0;">Enable Email Outreach</label>
+          <input type="checkbox" id="setEmailOutreach" style="width:20px; height:20px; accent-color:var(--primary);">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Sender Email Address</label>
+          <input type="email" id="setEmailSender" class="form-input" placeholder="e.g. outreach@youragency.com">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Email Provider</label>
+          <select id="setEmailProvider" class="form-select" onchange="toggleEmailProviderFields()">
+            <option value="smtp">Standard SMTP (Gmail / Custom Domain)</option>
+            <option value="gmail">Google Gmail API</option>
+          </select>
+        </div>
+        <div id="smtpFields">
+          <div class="form-group">
+            <label class="form-label">SMTP Host</label>
+            <input type="text" id="setSmtpHost" class="form-input" placeholder="smtp.gmail.com">
+          </div>
+          <div class="form-group">
+            <label class="form-label">SMTP Port</label>
+            <input type="number" id="setSmtpPort" class="form-input" placeholder="587">
+          </div>
+          <div class="form-group">
+            <label class="form-label">SMTP Username / Email</label>
+            <input type="text" id="setSmtpUser" class="form-input" placeholder="yourname@gmail.com">
+          </div>
+          <div class="form-group">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <label class="form-label">SMTP App Password</label>
+              <span id="smtpKeyBadge" class="badge badge-warn">NOT SET</span>
+            </div>
+            <input type="password" id="setSmtpPass" class="form-input" placeholder="16-character Google App Password">
+            <div class="form-help">For Gmail: Use an App Password generated from Google Account Security.</div>
+          </div>
+        </div>
+        <div id="gmailApiFields" style="display:none;">
+          <div class="form-group">
+            <label class="form-label">Gmail Client ID</label>
+            <input type="text" id="setGmailClientId" class="form-input" placeholder="12345-xxx.apps.googleusercontent.com">
+          </div>
+          <div class="form-group">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <label class="form-label">Gmail Client Secret</label>
+              <span id="gmailSecretBadge" class="badge badge-warn">NOT SET</span>
+            </div>
+            <input type="password" id="setGmailClientSecret" class="form-input" placeholder="GOCSPX-...">
+          </div>
+          <div class="form-group">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <label class="form-label">Gmail Refresh Token</label>
+              <span id="gmailRefreshBadge" class="badge badge-warn">NOT SET</span>
+            </div>
+            <input type="password" id="setGmailRefreshToken" class="form-input" placeholder="1//04...">
+          </div>
+        </div>
+      </div>
+
+      <!-- 7. Buffer & Meta Social Media API -->
+      <div class="card">
+        <div class="card-title">
+          <span>Buffer & Social Media API</span>
+          <span id="bufferStatusBadge" class="badge badge-warn">NOT CONNECTED</span>
+        </div>
+        <div class="card-subtitle">Connect Buffer to publish preview showcase posts across Instagram, Twitter/X, Facebook, and LinkedIn.</div>
+        <div class="form-group" style="display:flex; align-items:center; justify-content:space-between;">
+          <label class="form-label" style="margin-bottom:0;">Enable Social Publishing</label>
+          <input type="checkbox" id="setSocialChannels" style="width:20px; height:20px; accent-color:var(--primary);">
+        </div>
+        <div class="form-group">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <label class="form-label">Buffer Access Token</label>
+            <span id="bufferKeyBadge" class="badge badge-warn">NOT SET</span>
+          </div>
+          <input type="password" id="setBufferToken" class="form-input" placeholder="1/xxx... access token">
+          <div class="form-help">Obtain from buffer.com/developers/apps.</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Buffer Instagram Profile ID</label>
+          <input type="text" id="setBufferInstagram" class="form-input" placeholder="e.g. 64a8b7...">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Buffer Facebook Profile ID</label>
+          <input type="text" id="setBufferFacebook" class="form-input" placeholder="e.g. 64a8c9...">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Buffer Twitter / X Profile ID</label>
+          <input type="text" id="setBufferTwitter" class="form-input" placeholder="e.g. 64a8d0...">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Buffer LinkedIn Profile ID</label>
+          <input type="text" id="setBufferLinkedin" class="form-input" placeholder="e.g. 64a8e1...">
+        </div>
+
+        <div style="border-top:1px solid rgba(255,255,255,0.06); margin:14px 0; padding-top:10px;">
+          <strong style="font-size:0.88rem; color:#fff; display:block; margin-bottom:6px;">Meta / Instagram Graph API (Direct)</strong>
+          <div class="form-group">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <label class="form-label">Meta Graph Access Token</label>
+              <span id="metaKeyBadge" class="badge badge-warn">NOT SET</span>
+            </div>
+            <input type="password" id="setMetaToken" class="form-input" placeholder="EAAB...">
+            <div class="form-help">Long-lived Page or Instagram Graph API token.</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Meta Facebook Page ID</label>
+            <input type="text" id="setMetaPageId" class="form-input" placeholder="e.g. 1029384756">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Meta Instagram Business Account ID</label>
+            <input type="text" id="setMetaInstaId" class="form-input" placeholder="e.g. 17841400...">
+          </div>
+        </div>
+      </div>
+
       <!-- Save Button Fixed at bottom of settings -->
       <div style="margin-bottom: 24px;">
         <button class="btn btn-primary btn-block" style="padding:14px; font-size:1rem; font-weight:700;" onclick="saveAllSettings()">Save System Settings</button>
@@ -890,10 +1031,21 @@ def get_dashboard_html() -> str:
       else if (viewName === 'settings') loadSettings();
     }
 
+    function checkAuthBanner() {
+      const banner = document.getElementById('unauthBanner');
+      if (!banner) return;
+      if (!getToken()) {
+        banner.style.display = 'flex';
+      } else {
+        banner.style.display = 'none';
+      }
+    }
+
     // 1. Overview Loader
     async function loadOverview() {
+      checkAuthBanner();
       try {
-        const [healthRes, holdRes, attnRes, leadsRes, projRes, jobsRes] = await Promise.all([
+        const results = await Promise.allSettled([
           fetch(`${API_BASE}/health`, { headers: authHeaders() }),
           fetch(`${API_BASE}/controls/hold`, { headers: authHeaders() }),
           fetch(`${API_BASE}/attention`, { headers: authHeaders() }),
@@ -901,30 +1053,31 @@ def get_dashboard_html() -> str:
           fetch(`${API_BASE}/projects`, { headers: authHeaders() }),
           fetch(`${API_BASE}/jobs`, { headers: authHeaders() })
         ]);
+        const [healthRes, holdRes, attnRes, leadsRes, projRes, jobsRes] = results;
 
-        if (holdRes.ok) {
-          const hold = await holdRes.json();
+        if (holdRes.status === 'fulfilled' && holdRes.value.ok) {
+          const hold = await holdRes.value.json();
           renderHoldBanner(hold);
         }
 
-        if (leadsRes.ok) {
-          const leadsData = await leadsRes.json();
+        if (leadsRes.status === 'fulfilled' && leadsRes.value.ok) {
+          const leadsData = await leadsRes.value.json();
           document.getElementById('statLeads').innerText = (leadsData.leads || []).length;
         }
 
-        if (projRes.ok) {
-          const projData = await projRes.json();
+        if (projRes.status === 'fulfilled' && projRes.value.ok) {
+          const projData = await projRes.value.json();
           document.getElementById('statProjects').innerText = projData.project_count || (projData.projects || []).length || 0;
         }
 
-        if (jobsRes.ok) {
-          const jobsData = await jobsRes.json();
+        if (jobsRes.status === 'fulfilled' && jobsRes.value.ok) {
+          const jobsData = await jobsRes.value.json();
           const queued = (jobsData.jobs || []).filter(j => ['PENDING', 'QUEUED'].includes(j.status));
           document.getElementById('statQueued').innerText = queued.length;
         }
 
-        if (attnRes.ok) {
-          const attn = await attnRes.json();
+        if (attnRes.status === 'fulfilled' && attnRes.value.ok) {
+          const attn = await attnRes.value.json();
           renderAttention(attn);
         }
       } catch (err) {
@@ -1252,6 +1405,8 @@ def get_dashboard_html() -> str:
       } catch (err) {
         alert('Error: ' + err.message);
       }
+    }
+
     // Settings Management
     function toggleAiProviderFields() {
       const p = document.getElementById('setAiProvider').value;
@@ -1259,6 +1414,14 @@ def get_dashboard_html() -> str:
       const nv = document.getElementById('nvidiaFields');
       if (or) or.style.display = (p === 'openrouter') ? 'block' : 'none';
       if (nv) nv.style.display = (p === 'nvidia') ? 'block' : 'none';
+    }
+
+    function toggleEmailProviderFields() {
+      const p = document.getElementById('setEmailProvider').value;
+      const smtp = document.getElementById('smtpFields');
+      const gmail = document.getElementById('gmailApiFields');
+      if (smtp) smtp.style.display = (p === 'smtp') ? 'block' : 'none';
+      if (gmail) gmail.style.display = (p === 'gmail') ? 'block' : 'none';
     }
 
     async function loadSettings() {
@@ -1306,7 +1469,42 @@ def get_dashboard_html() -> str:
           document.getElementById('setVercelProject').value = cfg.vercel_project_name || '';
           document.getElementById('setPreviewDomain').value = cfg.preview_domain || '';
 
+          // Email
+          document.getElementById('setEmailOutreach').checked = cfg.email_outreach_enabled === true;
+          document.getElementById('setEmailSender').value = cfg.email_sender_address || '';
+          document.getElementById('setEmailProvider').value = cfg.email_provider || 'smtp';
+          document.getElementById('setSmtpHost').value = cfg.smtp_host || 'smtp.gmail.com';
+          document.getElementById('setSmtpPort').value = cfg.smtp_port || 587;
+          document.getElementById('setSmtpUser').value = cfg.smtp_username || '';
+          document.getElementById('smtpKeyBadge').innerText = cfg.smtp_password_configured ? 'CONFIGURED' : 'NOT SET';
+          document.getElementById('smtpKeyBadge').className = cfg.smtp_password_configured ? 'badge badge-ok' : 'badge badge-warn';
+          document.getElementById('setGmailClientId').value = cfg.gmail_client_id || '';
+          document.getElementById('gmailSecretBadge').innerText = cfg.gmail_client_secret_configured ? 'CONFIGURED' : 'NOT SET';
+          document.getElementById('gmailSecretBadge').className = cfg.gmail_client_secret_configured ? 'badge badge-ok' : 'badge badge-warn';
+          document.getElementById('gmailRefreshBadge').innerText = cfg.gmail_refresh_token_configured ? 'CONFIGURED' : 'NOT SET';
+          document.getElementById('gmailRefreshBadge').className = cfg.gmail_refresh_token_configured ? 'badge badge-ok' : 'badge badge-warn';
+          const emailConnected = cfg.smtp_password_configured || cfg.gmail_refresh_token_configured;
+          document.getElementById('emailStatusBadge').innerText = emailConnected ? 'CONNECTED' : 'NOT CONNECTED';
+          document.getElementById('emailStatusBadge').className = emailConnected ? 'badge badge-ok' : 'badge badge-warn';
+
+          // Buffer & Meta Social Media
+          document.getElementById('setSocialChannels').checked = cfg.social_channels_enabled !== false;
+          document.getElementById('bufferKeyBadge').innerText = cfg.buffer_access_token_configured ? 'CONFIGURED' : 'NOT SET';
+          document.getElementById('bufferKeyBadge').className = cfg.buffer_access_token_configured ? 'badge badge-ok' : 'badge badge-warn';
+          document.getElementById('setBufferInstagram').value = cfg.buffer_instagram_profile_id || '';
+          document.getElementById('setBufferFacebook').value = cfg.buffer_facebook_profile_id || '';
+          document.getElementById('setBufferTwitter').value = cfg.buffer_twitter_profile_id || '';
+          document.getElementById('setBufferLinkedin').value = cfg.buffer_linkedin_profile_id || '';
+          document.getElementById('metaKeyBadge').innerText = cfg.meta_access_token_configured ? 'CONFIGURED' : 'NOT SET';
+          document.getElementById('metaKeyBadge').className = cfg.meta_access_token_configured ? 'badge badge-ok' : 'badge badge-warn';
+          document.getElementById('setMetaPageId').value = cfg.meta_page_id || '';
+          document.getElementById('setMetaInstaId').value = cfg.meta_instagram_account_id || '';
+          const socialConnected = cfg.buffer_access_token_configured || cfg.meta_access_token_configured;
+          document.getElementById('bufferStatusBadge').innerText = socialConnected ? 'CONNECTED' : 'NOT CONNECTED';
+          document.getElementById('bufferStatusBadge').className = socialConnected ? 'badge badge-ok' : 'badge badge-warn';
+
           toggleAiProviderFields();
+          toggleEmailProviderFields();
         }
 
         if (healthRes.ok) {
@@ -1336,6 +1534,22 @@ def get_dashboard_html() -> str:
         stale_job_timeout: parseInt(document.getElementById('setStaleTimeout').value) || 900,
         vercel_project_name: document.getElementById('setVercelProject').value,
         preview_domain: document.getElementById('setPreviewDomain').value,
+        // Email
+        email_outreach_enabled: document.getElementById('setEmailOutreach').checked,
+        email_sender_address: document.getElementById('setEmailSender').value,
+        email_provider: document.getElementById('setEmailProvider').value,
+        smtp_host: document.getElementById('setSmtpHost').value,
+        smtp_port: parseInt(document.getElementById('setSmtpPort').value) || 587,
+        smtp_username: document.getElementById('setSmtpUser').value,
+        gmail_client_id: document.getElementById('setGmailClientId').value,
+        // Social Media
+        social_channels_enabled: document.getElementById('setSocialChannels').checked,
+        buffer_instagram_profile_id: document.getElementById('setBufferInstagram').value,
+        buffer_facebook_profile_id: document.getElementById('setBufferFacebook').value,
+        buffer_twitter_profile_id: document.getElementById('setBufferTwitter').value,
+        buffer_linkedin_profile_id: document.getElementById('setBufferLinkedin').value,
+        meta_page_id: document.getElementById('setMetaPageId').value,
+        meta_instagram_account_id: document.getElementById('setMetaInstaId').value,
       };
 
       const orKey = document.getElementById('setOpenRouterKey').value.trim();
@@ -1350,6 +1564,21 @@ def get_dashboard_html() -> str:
       const vercelToken = document.getElementById('setVercelToken').value.trim();
       if (vercelToken && !vercelToken.includes('...')) updates.vercel_token = vercelToken;
 
+      const smtpPass = document.getElementById('setSmtpPass').value.trim();
+      if (smtpPass && !smtpPass.includes('...')) updates.smtp_password = smtpPass;
+
+      const gmailSecret = document.getElementById('setGmailClientSecret').value.trim();
+      if (gmailSecret && !gmailSecret.includes('...')) updates.gmail_client_secret = gmailSecret;
+
+      const gmailRefresh = document.getElementById('setGmailRefreshToken').value.trim();
+      if (gmailRefresh && !gmailRefresh.includes('...')) updates.gmail_refresh_token = gmailRefresh;
+
+      const bufToken = document.getElementById('setBufferToken').value.trim();
+      if (bufToken && !bufToken.includes('...')) updates.buffer_access_token = bufToken;
+
+      const metaToken = document.getElementById('setMetaToken').value.trim();
+      if (metaToken && !metaToken.includes('...')) updates.meta_access_token = metaToken;
+
       try {
         const res = await fetch(`${API_BASE}/settings`, {
           method: 'POST',
@@ -1362,6 +1591,11 @@ def get_dashboard_html() -> str:
           document.getElementById('setNvidiaKey').value = '';
           document.getElementById('setTelegramToken').value = '';
           document.getElementById('setVercelToken').value = '';
+          document.getElementById('setSmtpPass').value = '';
+          document.getElementById('setGmailClientSecret').value = '';
+          document.getElementById('setGmailRefreshToken').value = '';
+          document.getElementById('setBufferToken').value = '';
+          document.getElementById('setMetaToken').value = '';
           loadSettings();
         } else {
           const err = await res.json();
@@ -1385,6 +1619,9 @@ def get_dashboard_html() -> str:
       const defLim = document.getElementById('setDefaultLimit');
       if (defLim && defLim.value) document.getElementById('scoutLimit').value = defLim.value;
       openModal('scoutModal');
+    }
+    function openNewJobModal() {
+      openNewScoutModal();
     }
     function openAuthModal() { switchView('settings'); }
 
@@ -1423,10 +1660,43 @@ def get_dashboard_html() -> str:
       }
     }
 
-    // Initial load
-    window.addEventListener('DOMContentLoaded', () => {
+    // Explicitly bind all handler functions to window so mobile browsers always resolve them
+    window.switchView = switchView;
+    window.refreshCurrentView = refreshCurrentView;
+    window.refreshView = refreshView;
+    window.toggleHoldPrompt = toggleHoldPrompt;
+    window.releaseHold = releaseHold;
+    window.openModal = openModal;
+    window.closeModal = closeModal;
+    window.openNewScoutModal = openNewScoutModal;
+    window.openNewJobModal = openNewJobModal;
+    window.openAuthModal = openAuthModal;
+    window.submitScoutJob = submitScoutJob;
+    window.submitReviewDecision = submitReviewDecision;
+    window.saveAllSettings = saveAllSettings;
+    window.saveAuthToken = saveAuthToken;
+    window.retryJob = retryJob;
+    window.runJob = runJob;
+    window.recoverStaleJobs = recoverStaleJobs;
+    window.buildWebsiteForLead = buildWebsiteForLead;
+    window.openPreview = openPreview;
+    window.openPreviewInNewTab = openPreviewInNewTab;
+    window.openReviewDialog = openReviewDialog;
+    window.updateExpectedConfirmation = updateExpectedConfirmation;
+    window.toggleAiProviderFields = toggleAiProviderFields;
+    window.toggleEmailProviderFields = toggleEmailProviderFields;
+    window.loadOverview = loadOverview;
+    window.loadJobs = loadJobs;
+    window.loadLeads = loadLeads;
+    window.loadProjects = loadProjects;
+    window.loadSettings = loadSettings;
+
+    // Resilient initial load
+    if (document.readyState === 'loading') {
+      window.addEventListener('DOMContentLoaded', loadOverview);
+    } else {
       loadOverview();
-    });
+    }
   </script>
 </body>
 </html>

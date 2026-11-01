@@ -4,6 +4,23 @@ All notable project changes are recorded here. Dates use ISO 8601 (`YYYY-MM-DD`)
 
 ## [Unreleased]
 
+### Added — 2026-11-01 (Mobile Dashboard Interactivity, Multi-Niche Discovery & Email/Social Channel Settings)
+
+- **Mobile Operator Dashboard Interactivity & Touch Hardening (`orchestration/dashboard.py`)**:
+  - Fixed syntax error in `submitReviewDecision()` (missing closing brace) that prevented JavaScript from executing on mobile browsers.
+  - Implemented missing `openNewJobModal()` linking to lead discovery workflow.
+  - Added `touch-action: manipulation`, active tap scaling (`transform: scale(0.95)`), and `pointer-events: none` on button and navigation child elements (SVGs/spans) to ensure all mobile touches trigger reliably.
+  - Bound all dashboard controller functions explicitly to `window.*` for universal mobile browser compatibility.
+  - Added non-blocking unauthenticated device warning banner with one-tap authentication.
+  - Converted dashboard data fetching from `Promise.all` to `Promise.allSettled` to prevent network hiccups on a single endpoint from crashing the dashboard view.
+- **Overpass Lead Discovery Multi-Niche & Subdistrict Expansion (`scout/scout_agent.py`)**:
+  - Expanded OpenStreetMap Overpass discovery adapter to support subdistricts across Lagos metropolitan area (`Ikeja`, `Victoria Island`, `Lekki`, `Surulere`, `Yaba`, `Lagos`).
+  - Added category-to-tag mapping for all supported business niches (`Restaurants`, `Salons & Spas`, `Clinics & Healthcare`, `Automotive`, `Retail & Boutiques`, `Legal & Professional`).
+- **Email Outreach & Buffer / Meta API Settings Engine (`orchestration/settings.py`, `orchestration/dashboard.py`)**:
+  - Expanded runtime settings schema and secrets masking for Email Outreach Engine (SMTP host/port/credentials and Google Gmail API Client ID/Secret/Refresh Token).
+  - Added Buffer Multi-Channel Publisher settings (Buffer Access Token, Profile IDs for Instagram, Facebook, Twitter/X, LinkedIn) and direct Meta / Instagram Graph API configuration.
+  - Added corresponding configuration cards with live connection status badges directly to the mobile Settings tab.
+
 ### Added — 2026-10-31 (Cloud Operation & Phone Control Platform)
 
 - **Mobile Operator Dashboard Integration (`orchestration/api.py`, `orchestration/dashboard.py`)**:

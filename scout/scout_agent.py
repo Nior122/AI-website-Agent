@@ -117,10 +117,14 @@ class OverpassRestaurantSource:
     _last_request_at: float | None = field(default=None, init=False, repr=False)
 
     def discover(self, target: Target) -> list[dict[str, Any]]:
-        if _normal(target.country) != "nigeria" or _normal(target.city) != "lagos" or _normal(target.niche) not in {"restaurant", "restaurants"}:
+        norm_country = _normal(target.country) or ""
+        norm_city = _normal(target.city) or ""
+        # Accept Lagos or any subdistrict in Lagos (Ikeja, Lekki, Victoria Island, Surulere, Yaba, etc.)
+        is_lagos_area = "lagos" in norm_city or norm_city in {"ikeja", "lekki", "victoriaisland", "surulere", "yaba"}
+        if norm_country != "nigeria" or not is_lagos_area:
             raise ValueError("This pilot adapter is approved only for Lagos, Nigeria restaurants.")
         limit = min(target.lead_limit, 5)
-        query = _overpass_lagos_restaurants_query(limit)
+        query = _overpass_query_for_niche(target.niche, limit)
         endpoints = [self.endpoint, *self.fallback_endpoints]
         last_error = None
         for ep in endpoints:
@@ -146,7 +150,7 @@ class OverpassRestaurantSource:
                     if response.status != 200: raise RuntimeError(f"Overpass returned HTTP {response.status}.")
                     payload = json.loads(response.read().decode("utf-8"))
                     elements = payload.get("elements", [])
-                    mapped = [c for c in (_overpass_candidate(element) for element in elements) if c]
+                    mapped = [c for c in (_overpass_candidate(element, target=target) for element in elements) if c]
                     # Order first, then truncate: taking the first N elements is what made every run
                     # return the same businesses, because the API's order has nothing to do with priority.
                     mapped.sort(key=_candidate_sort_key)
@@ -159,31 +163,42 @@ class OverpassRestaurantSource:
         raise RuntimeError("Overpass request limit reached for this source run.")
 
 
-def _overpass_lagos_restaurants_query(limit: int) -> str:
-    """One bounded, read-only request over metropolitan Lagos restaurants.
-
-    The union is what makes the run useful rather than merely legal. A single ``amenity=restaurant``
-    query returns the same first ``limit`` elements of the box on every run, so discovery re-reported the
-    same handful of businesses and yielded nothing new to review; the pilot needed candidates matching
-    the actual business priority (publicly active on social media, no website on the record). Each clause
-    uses only documented ``key="value"`` existence filters - no negation, no regular expressions - and the
-    website-absence judgement is derived from the returned tags locally, because a missing OSM tag is
-    missing evidence, never a fact about the business. The window is wider than ``limit`` precisely so
-    that ranking can choose; the adapter still hands back at most ``limit`` candidates.
-    """
+def _overpass_query_for_niche(niche: str, limit: int) -> str:
+    """Bounded, read-only request over metropolitan Lagos businesses in the specified category."""
     window = max(min(4 * limit, limit + 35), limit)
     box = "(6.40,3.20,6.70,3.60)"
-    clauses = ";".join(
-        f'nwr["amenity"="restaurant"][{tag}]{box}' for tag in ('"contact:facebook"', '"contact:instagram"')
-    )
+    norm = _normal(niche) or "restaurants"
+    if norm in {"salon", "salons", "spa", "spas"}:
+        key_vals = [("shop", "hairdresser"), ("shop", "beauty"), ("amenity", "spa")]
+    elif norm in {"clinic", "clinics", "healthcare", "health"}:
+        key_vals = [("amenity", "clinic"), ("amenity", "doctors"), ("amenity", "dentist"), ("amenity", "pharmacy")]
+    elif norm in {"automotive", "auto", "repair"}:
+        key_vals = [("shop", "car_repair"), ("shop", "car")]
+    elif norm in {"retail", "boutique", "boutiques", "shop"}:
+        key_vals = [("shop", "clothes"), ("shop", "boutique")]
+    elif norm in {"legal", "lawyer", "law"}:
+        key_vals = [("office", "lawyer"), ("office", "company")]
+    else:
+        key_vals = [("amenity", "restaurant"), ("amenity", "cafe"), ("amenity", "fast_food")]
+
+    clauses = []
+    for k, v in key_vals:
+        for tag in ('"contact:facebook"', '"contact:instagram"'):
+            clauses.append(f'nwr["{k}"="{v}"][{tag}]{box}')
+        clauses.append(f'nwr["{k}"="{v}"]{box}')
+
     return (
-        f"[out:json][timeout:25];({clauses};nwr[\"amenity\"=\"restaurant\"]{box};);"
+        f"[out:json][timeout:25];({';'.join(clauses)};);"
         f"out center {window};"
     )
 
 
+def _overpass_lagos_restaurants_query(limit: int) -> str:
+    """Backward compatible helper for Lagos restaurants."""
+    return _overpass_query_for_niche("restaurants", limit)
 
-def _overpass_candidate(element: dict[str, Any]) -> dict[str, Any] | None:
+
+def _overpass_candidate(element: dict[str, Any], target: Target | None = None) -> dict[str, Any] | None:
     tags = element.get("tags") or {}; name = _text(tags.get("name"))
     if not name: return None
     kind, ident = element.get("type"), element.get("id")
@@ -192,7 +207,10 @@ def _overpass_candidate(element: dict[str, Any]) -> dict[str, Any] | None:
     phone = _text(tags.get("phone") or tags.get("contact:phone")); email = _text(tags.get("email") or tags.get("contact:email"))
     whatsapp = _text(tags.get("contact:whatsapp") or tags.get("whatsapp"))
     social = [url for url in (_url(tags.get("contact:instagram")), _url(tags.get("contact:facebook"))) if url]
-    return {"candidate_id":f"osm-{kind}-{ident}","business_name":name,"niche":"Restaurants","city":"Lagos","country":"Nigeria","address":_text(tags.get("addr:full")) or _address(tags),"phone":phone,"email":email,"whatsapp":whatsapp,"website":website,"other_social_urls":social,"description":_text(tags.get("description")) or _text(tags.get("cuisine")),"source_url":f"https://www.openstreetmap.org/{kind}/{ident}","source_type":"OPENSTREETMAP_ELEMENT","data_classification":"REAL_PUBLIC_DATA","discovered_at":_now(),"raw_data":{"osm_type":kind,"osm_id":ident,"tags":tags}}
+    niche_label = (target.niche if target else "Restaurants") or "Restaurants"
+    city_label = (target.city if target else "Lagos") or "Lagos"
+    country_label = (target.country if target else "Nigeria") or "Nigeria"
+    return {"candidate_id":f"osm-{kind}-{ident}","business_name":name,"niche":niche_label,"city":city_label,"country":country_label,"address":_text(tags.get("addr:full")) or _address(tags),"phone":phone,"email":email,"whatsapp":whatsapp,"website":website,"other_social_urls":social,"description":_text(tags.get("description")) or _text(tags.get("cuisine")),"source_url":f"https://www.openstreetmap.org/{kind}/{ident}","source_type":"OPENSTREETMAP_ELEMENT","data_classification":"REAL_PUBLIC_DATA","discovered_at":_now(),"raw_data":{"osm_type":kind,"osm_id":ident,"tags":tags}}
 
 
 def _candidate_sort_key(candidate: dict[str, Any]) -> tuple[int, int, int, str]:

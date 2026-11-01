@@ -40,3 +40,5 @@ __pycache__/
 Thumbs.db
 .vscode/
 .idea/
+workflow_backups/
+deployment/hosting/

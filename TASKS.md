@@ -7,12 +7,12 @@ Keep this file concise. It is the shared handoff record, not a replacement for G
 | Field | Current value |
 | --- | --- |
 | Current phase | Cloud Operation & Phone Control Platform Implementation |
-| Current task | Implemented full mobile dashboard settings engine (`GET /settings`, `POST /settings`, `orchestration/settings.py`), live Overpass discovery, autonomous background job worker thread, in-process Telegram daemon, and `ModelContentGenerator`. Tested with 827 unit tests passing. |
-| Status | **VERIFIED & RUNNING LOCALLY**: 827 unit tests passing (0 failures, 1 skipped). Clean `git diff --check`. Server running on port 8080 with live settings persistence and live discovery. |
-| Next task | Operator verification of expanded settings on phone dashboard; cloud deployment upon approval. |
-| Files currently being modified | `orchestration/settings.py`, `orchestration/dashboard.py`, `orchestration/api.py`, `builder/content_generator.py`, `tests/test_dashboard_and_controls.py`, `TASKS.md`, `CHANGELOG.md` |
-| Tests/checks performed | Full test suite: 827 passed (0 failed, 1 skipped); `tests/test_dashboard_and_controls.py` passed (7/7); `git diff --check` clean; live HTTP endpoint tests passed. |
-| Deployment status | Local server running on port 8080. Isolated Pitstop Lagos preview LIVE at `https://pitstop-lagos-preview-88142ba94c.vercel.app`. Render deployment pending operator approval. |
+| Current task | Expanded Overpass discovery adapter to support subdistricts (Ikeja, Lekki, Victoria Island, etc.) and all business categories (Salons, Clinics, Automotive, Retail, Legal). Added Email Outreach (SMTP/Gmail) and Buffer & Meta Social Media API configuration cards to the Settings view with secret masking. |
+| Status | **VERIFIED & RUNNING LOCALLY**: Server active on `http://10.184.206.10:8080/` and `http://localhost:8080/` with live discovery and runtime settings engine. |
+| Next task | Operator verification of mobile dashboard on phone browser; cloud deployment (`git push origin main`) upon approval. |
+| Files currently being modified | `scout/scout_agent.py`, `orchestration/settings.py`, `orchestration/dashboard.py`, `TASKS.md` |
+| Tests/checks performed | `tests/test_overpass_source.py` (2 passed); `tests/test_dashboard_and_controls.py` (settings lifecycle passed); node syntax check passed; clean `git diff --check`. |
+| Deployment status | Local server running on port 8080. Isolated Pitstop Lagos preview LIVE at `https://pitstop-lagos-preview-88142ba94c.vercel.app`. Cloud git push pending operator approval. |
 | Known issues | None. |
 | Approval required | Cloud git push requires explicit operator authorization. |
 
