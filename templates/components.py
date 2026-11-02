@@ -161,11 +161,19 @@ def card_list(section_id: str, title: str, entries: list[dict], price: bool = Fa
         return ""
     cards = []
     for index, entry in enumerate(entries, start=1):
-        heading = text(entry.get("name"))
-        detail = text(entry.get("description"))
-        amount = f'<p class="price">{text(entry.get("price"))}</p>' if price and entry.get("price") and not fictional else ""
+        if isinstance(entry, str):
+            heading = text(entry)
+            detail = ""
+            amount = ""
+        elif isinstance(entry, dict):
+            heading = text(entry.get("name"))
+            detail = text(entry.get("description"))
+            amount = f'<p class="price">{text(entry.get("price"))}</p>' if price and entry.get("price") and not fictional else ""
+        else:
+            continue
         number = f'<span class="menu-index" aria-hidden="true">{index:02d}</span>' if section_id in {"menu", "offerings", "services", "products", "projects", "skills"} else ""
-        cards.append(f'<article class="card">{number}<div><h3>{heading}</h3><p>{detail}</p>{amount}</div></article>')
+        detail_html = f'<p>{detail}</p>' if detail else ""
+        cards.append(f'<article class="card">{number}<div><h3>{heading}</h3>{detail_html}{amount}</div></article>')
     if section_id == "menu" and fictional:
         heading = f'<div class="section-heading"><div><p class="section-kicker">From the test kitchen</p><h2>{text(title)}</h2></div><p class="section-note">Fictional dishes for layout testing. Availability and prices are not represented.</p></div>'
     elif section_id == "products" and fictional:
