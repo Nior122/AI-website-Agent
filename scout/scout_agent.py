@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Protocol
 import json
 import re
-from urllib.parse import urlencode, urlparse
+from urllib.parse import quote_plus, urlencode, urlparse
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 import time
@@ -159,8 +159,91 @@ class OverpassRestaurantSource:
                 last_error = error
                 continue
         if last_error:
+            fallback = _nominatim_fallback(target, limit)
+            if fallback:
+                return fallback
             raise RuntimeError(f"Overpass discovery failed safely: {type(last_error).__name__}: {last_error}") from last_error
         raise RuntimeError("Overpass request limit reached for this source run.")
+
+
+def _nominatim_candidate(element: dict[str, Any], target: Target | None = None) -> dict[str, Any] | None:
+    name = _text(element.get("name"))
+    if not name:
+        return None
+    kind = element.get("osm_type")
+    ident = element.get("osm_id")
+    if not kind or not ident:
+        return None
+    extratags = element.get("extratags") or {}
+    website = _url(extratags.get("website") or extratags.get("contact:website"))
+    phone = _text(extratags.get("phone") or extratags.get("contact:phone"))
+    email = _text(extratags.get("email") or extratags.get("contact:email"))
+    whatsapp = _text(extratags.get("contact:whatsapp") or extratags.get("whatsapp"))
+    social = [url for url in (_url(extratags.get("contact:instagram")), _url(extratags.get("contact:facebook"))) if url]
+    display_addr = element.get("display_name")
+    niche_label = (target.niche if target else "Restaurants") or "Restaurants"
+    city_label = (target.city if target else "Lagos") or "Lagos"
+    country_label = (target.country if target else "Nigeria") or "Nigeria"
+    return {
+        "candidate_id": f"osm-{kind}-{ident}",
+        "business_name": name,
+        "niche": niche_label,
+        "city": city_label,
+        "country": country_label,
+        "address": display_addr or city_label,
+        "phone": phone,
+        "email": email,
+        "whatsapp": whatsapp,
+        "website": website,
+        "other_social_urls": social,
+        "description": _text(extratags.get("description")) or _text(extratags.get("cuisine")) or f"Verified {niche_label} business in {city_label}, {country_label}",
+        "source_url": f"https://www.openstreetmap.org/{kind}/{ident}",
+        "source_type": "OPENSTREETMAP_ELEMENT",
+        "data_classification": "REAL_PUBLIC_DATA",
+        "discovered_at": _now(),
+        "raw_data": {"osm_type": kind, "osm_id": ident, "tags": extratags},
+    }
+
+
+def _nominatim_fallback(target: Target, limit: int) -> list[dict[str, Any]]:
+    norm_niche = _normal(target.niche) or "restaurants"
+    search_term = "restaurants"
+    if norm_niche in {"salon", "salons", "spa", "spas"}:
+        search_term = "hairdresser"
+    elif norm_niche in {"clinic", "clinics", "healthcare", "health"}:
+        search_term = "clinic"
+    elif norm_niche in {"automotive", "auto", "repair"}:
+        search_term = "car repair"
+    elif norm_niche in {"retail", "boutique", "boutiques", "shop"}:
+        search_term = "boutique"
+    elif norm_niche in {"legal", "lawyer", "law"}:
+        search_term = "lawyer"
+
+    q = f"{search_term} in {target.city} {target.country}"
+    url = f"https://nominatim.openstreetmap.org/search?q={quote_plus(q)}&format=json&limit={limit * 2}&addressdetails=1&extratags=1"
+    try:
+        req = Request(
+            url,
+            headers={
+                "User-Agent": "AI-Website-Agent/0.1 (business-ops-scout; contact: local-operator)",
+            },
+        )
+        with urlopen(req, timeout=10) as resp:
+            if resp.status == 200:
+                raw_items = json.loads(resp.read().decode("utf-8"))
+                candidates = []
+                for item in raw_items:
+                    cand = _nominatim_candidate(item, target=target)
+                    if cand:
+                        candidates.append(cand)
+                    if len(candidates) >= limit:
+                        break
+                if candidates:
+                    candidates.sort(key=_candidate_sort_key)
+                    return candidates[:limit]
+    except Exception:
+        pass
+    return []
 
 
 def _overpass_query_for_niche(niche: str, limit: int) -> str:
@@ -179,7 +262,7 @@ def _overpass_query_for_niche(niche: str, limit: int) -> str:
     elif norm in {"legal", "lawyer", "law"}:
         key_vals = [("office", "lawyer"), ("office", "company")]
     else:
-        key_vals = [("amenity", "restaurant"), ("amenity", "cafe"), ("amenity", "fast_food")]
+        key_vals = [("amenity", "restaurant")]
 
     clauses = []
     for k, v in key_vals:

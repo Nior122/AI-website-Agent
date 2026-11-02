@@ -7,11 +7,11 @@ Keep this file concise. It is the shared handoff record, not a replacement for G
 | Field | Current value |
 | --- | --- |
 | Current phase | Cloud Operation & Phone Control Platform Implementation |
-| Current task | Expanded Overpass discovery adapter to support subdistricts (Ikeja, Lekki, Victoria Island, etc.) and all business categories (Salons, Clinics, Automotive, Retail, Legal). Added Email Outreach (SMTP/Gmail) and Buffer & Meta Social Media API configuration cards to the Settings view with secret masking. |
+| Current task | Added OpenStreetMap Nominatim automated resilience fallback to Overpass discovery in `scout/scout_agent.py`; verified live discovery creates real candidate leads (Sweet Sensation, Casper & Gambini's, Mama Cass) with zero errors; preserved 100% test suite compatibility (828 passed). |
 | Status | **VERIFIED & RUNNING LOCALLY**: Server active on `http://10.184.206.10:8080/` and `http://localhost:8080/` with live discovery and runtime settings engine. |
 | Next task | Operator verification of mobile dashboard on phone browser; cloud deployment (`git push origin main`) upon approval. |
 | Files currently being modified | `scout/scout_agent.py`, `orchestration/settings.py`, `orchestration/dashboard.py`, `TASKS.md` |
-| Tests/checks performed | `tests/test_overpass_source.py` (2 passed); `tests/test_dashboard_and_controls.py` (settings lifecycle passed); node syntax check passed; clean `git diff --check`. |
+| Tests/checks performed | `tests/test_phase44_live_discovery_reachability.py` (18 passed); `tests/test_cloud_deployment_readiness.py`, `tests/test_phase25_discovery.py`, `tests/test_phase26_real_draft.py` (41 passed); `tests/test_overpass_source.py` (2 passed); clean `git diff --check`. |
 | Deployment status | Local server running on port 8080. Isolated Pitstop Lagos preview LIVE at `https://pitstop-lagos-preview-88142ba94c.vercel.app`. Cloud git push pending operator approval. |
 | Known issues | None. |
 | Approval required | Cloud git push requires explicit operator authorization. |

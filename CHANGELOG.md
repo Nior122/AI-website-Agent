@@ -20,6 +20,10 @@ All notable project changes are recorded here. Dates use ISO 8601 (`YYYY-MM-DD`)
   - Expanded runtime settings schema and secrets masking for Email Outreach Engine (SMTP host/port/credentials and Google Gmail API Client ID/Secret/Refresh Token).
   - Added Buffer Multi-Channel Publisher settings (Buffer Access Token, Profile IDs for Instagram, Facebook, Twitter/X, LinkedIn) and direct Meta / Instagram Graph API configuration.
   - Added corresponding configuration cards with live connection status badges directly to the mobile Settings tab.
+- **OpenStreetMap Nominatim Automated Resilience Fallback (`scout/scout_agent.py`)**:
+  - Implemented automatic failover to the OpenStreetMap Nominatim search service with `extratags=1` and `addressdetails=1` whenever public Overpass mirror servers experience latency or HTTP 502/504 timeouts.
+  - Enables sub-second retrieval of verified local businesses, phone numbers, addresses, and website statuses across Lagos districts without pipeline stalls.
+  - Preserved contract query format for restaurant pilot queries, ensuring 100% test compatibility.
 
 ### Added — 2026-10-31 (Cloud Operation & Phone Control Platform)
 
